@@ -24,17 +24,24 @@ Capture possible long-term context as candidates. Do not create long-term memory
    - durable project or workflow decisions
    - user corrections to agent behavior
    - stable identity-level context such as background, role, language, or work environment
-4. Reject non-signals:
+4. Classify candidate priority by what the information is, not only by what it influences:
+   - `P0`: explicit user identity and background facts, including age, career length, current or previous company, role/title, domain, family structure, location, and language.
+   - `P1`: technical or collaboration preferences, including how the user wants the agent to communicate, decide, review, test, or work.
+   - `P2`: coding habits and engineering style, including framework preferences, architecture style, error handling, testing style, and code organization habits.
+   - `P3`: project and work-environment knowledge, including repo facts, local environment facts, team conventions, and project-specific domain context.
+   - `P4`: temporary session state that only helps resume recent work.
+   If a fact is identity/background and also affects technical collaboration, keep it `P0`; explain the technical effect in the rationale.
+5. Reject non-signals:
    - one-off task details
    - temporary state
    - undecided exploratory ideas
    - small talk or unrelated discussion
    - unconfirmed psychological, personality, motivation, or emotional-state inferences
-5. Apply sensitive filtering during observe.
-6. Write ordinary candidates to `staging/inbox.md`.
-7. Write legitimate high-impact candidates requiring confirmation to `staging/pending-review.md`.
-8. Never write secrets, tokens, passwords, private keys, or recovery codes.
-9. If pending candidate count or age crosses review thresholds, suggest review without blocking normal work.
+6. Apply sensitive filtering during observe.
+7. Write ordinary candidates to `staging/inbox.md`.
+8. Write legitimate high-impact candidates requiring confirmation to `staging/pending-review.md`.
+9. Never write secrets, tokens, passwords, private keys, or recovery codes.
+10. If pending candidate count or age crosses review thresholds, suggest review without blocking normal work.
 
 ## Candidate Format
 
