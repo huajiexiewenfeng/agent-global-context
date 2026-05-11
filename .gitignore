@@ -1,0 +1,13 @@
+# Local exports and transient Codex workspace files
+codex-session-export-*/
+codex-session-export-*.zip
+codex-conversation-context.md
+codex-windows-newbie-guide.md
+skills-lock.json
+.agents/
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

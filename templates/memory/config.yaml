@@ -1,0 +1,38 @@
+memory_root: "~/.agent-global-context"
+
+active_capture: true
+capture_mode: staging_only
+min_priority_to_capture: P3
+
+recall_policy:
+  P0: always_summary
+  P1: task_relevant
+  P2: code_task
+  P3: project_relevant
+  P4: continuation_only
+
+recall_limits:
+  max_files_default: 4
+  max_session_files: 2
+  prefer_summary_sections: true
+
+write_policy:
+  explicit_remember:
+    normal: direct_commit
+    sensitive: confirm
+  active_capture:
+    P0: pending_review
+    P1: inbox_or_commit
+    P2: inbox_or_commit
+    P3: commit_if_source_reliable
+    P4: session_only
+
+sensitive_memory:
+  require_confirmation: true
+  never_store:
+    - secrets
+    - tokens
+    - passwords
+    - private_keys
+    - recovery_codes
+
