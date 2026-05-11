@@ -1,5 +1,7 @@
 # Agent Global Context
 
+[English](README.md) | 简体中文
+
 面向 AI Agent 的 Markdown-first 全局上下文 skills。
 
 Agent Global Context 帮助 coding agent 跨 session 保存关键用户身份、技术偏好、代码习惯、工作环境和项目知识。它不是完整聊天归档，而是一个选择性、可审计、会影响未来 agent 行为的全局上下文层。
@@ -147,4 +149,3 @@ C:\Users\<user>\.agent-global-context\
 ## 状态
 
 当前项目处于 alpha MVP 阶段。
-
