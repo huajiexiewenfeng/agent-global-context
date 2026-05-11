@@ -43,3 +43,47 @@ Expected action:
 - Update `active.md`.
 - Promote only durable `P0-P3` facts that meet the write policy.
 
+## Capture a Candidate
+
+User:
+
+```text
+I usually want design discussion before implementation.
+```
+
+Expected action:
+
+- If `auto_capture.enabled` is true, write a candidate to `staging/inbox.md`.
+- Use `proposed_priority: P1`.
+- Use `proposed_confidence: inferred` or `observed`, depending on evidence.
+- Do not write to `user/preferences.md` yet.
+
+## Promote a Candidate
+
+User:
+
+```text
+Review my staged global context candidates and promote the useful ones.
+```
+
+Expected action:
+
+- Read `staging/inbox.md` and `staging/pending-review.md`.
+- Promote confirmed or reliable observed candidates.
+- Ask before promoting inferred, tentative, sensitive, or high-impact candidates.
+- Commit promoted candidates to the correct long-term memory file.
+- Mark promoted candidates with `promoted_to` and `reviewed_at`.
+
+## Review Prompt
+
+When pending candidates reach the configured threshold:
+
+```text
+You have 6 pending global context candidates. Review now, later, or ignore for this session?
+```
+
+Expected action:
+
+- If the user chooses review, use `agent-global-context-review`.
+- If the user chooses later, continue the current task.
+- If the user ignores for the session, do not prompt again during the same session unless sensitive/high-impact candidates require confirmation.

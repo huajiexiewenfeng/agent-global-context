@@ -30,6 +30,10 @@ Load the smallest useful set of global context files for the current task.
 6. Read only the relevant files.
 7. Briefly tell the user which memory areas were loaded.
 
+For project work, resolve the project id using explicit user bindings and `index.md` `Project Map` first, then Git remote slug, then current directory slug. Ask before relying on a new or ambiguous project id.
+
+When multiple priorities match, load summaries first. Preserve active project context and directly relevant user preferences before old session details.
+
 ## Priority Loading
 
 - `P0`: load summary by default for substantial work.
@@ -37,6 +41,8 @@ Load the smallest useful set of global context files for the current task.
 - `P2`: load for code work.
 - `P3`: load for matching project or environment tasks.
 - `P4`: load only for continuation requests such as "continue", "resume", or "last time".
+
+If project-specific context conflicts with general user preferences, project conventions win inside that project unless the current user request says otherwise.
 
 ## Important Rules
 
@@ -48,4 +54,3 @@ Load the smallest useful set of global context files for the current task.
 ## When Memory Is Missing
 
 If the memory root or files are missing, say so briefly and offer to initialize from the project template. Do not invent memory.
-

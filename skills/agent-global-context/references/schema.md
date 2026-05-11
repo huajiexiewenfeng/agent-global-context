@@ -18,6 +18,7 @@ Use Markdown entries with small metadata blocks.
 - `review_after`: `YYYY-MM-DD`
 - `supersedes`: memory id
 - `related`: memory ids
+- `expires_after`: `YYYY-MM-DD` for temporary `P4` state
 
 ## Entry Template
 
@@ -39,6 +40,8 @@ Rationale:
 Why this information matters for future agent behavior.
 ```
 
+`Rationale` is required for `P0-P2`. It is recommended but optional for `P3-P4`, where the value may be obvious from project commands, decisions, or task state.
+
 ## Session Summary Template
 
 ```markdown
@@ -54,4 +57,3 @@ Why this information matters for future agent behavior.
 
 ## Next Actions
 ```
-

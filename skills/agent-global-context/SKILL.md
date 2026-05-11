@@ -74,7 +74,7 @@ Write long-term memory only when the information:
 - Is likely to be reused in future sessions.
 - Affects collaboration, technical choices, code style, or project work.
 - Comes from the user explicitly, reliable project files, command output, or repeated observation.
-- Has a clear rationale.
+- Has a clear rationale for `P0-P2`; `P3-P4` rationale is recommended but optional when obvious.
 
 Do not write:
 
@@ -101,8 +101,16 @@ Read these references only when needed:
 
 - `references/directory-layout.md`
 - `references/schema.md`
+- `references/auto-capture-policy.md`
 - `references/priority-policy.md`
+- `references/project-resolution.md`
+- `references/recall-budget-policy.md`
 - `references/recall-policy.md`
 - `references/write-policy.md`
+- `references/dedupe-policy.md`
+- `references/confidence-policy.md`
+- `references/conflict-policy.md`
+- `references/index-schema.md`
+- `references/lifecycle-policy.md`
+- `references/review-policy.md`
 - `references/sensitive-policy.md`
-

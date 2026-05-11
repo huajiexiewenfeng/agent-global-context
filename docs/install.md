@@ -16,6 +16,8 @@ Install the MVP skills:
 skills/agent-global-context/
 skills/agent-global-context-recall/
 skills/agent-global-context-commit/
+skills/agent-global-context-capture/
+skills/agent-global-context-review/
 ```
 
 ## 2. Create Memory Root
@@ -38,6 +40,7 @@ Add an instruction to your agent profile or project instructions:
 
 ```text
 At the start of substantial work, use agent-global-context-recall to load relevant global context. When the user asks to remember something or compress a session, use agent-global-context-commit.
+When auto capture is enabled, use agent-global-context-capture to write strong candidate memories to staging only. Use agent-global-context-review to promote, reject, or expire staged candidates.
 ```
 
 ## 4. Customize
@@ -50,4 +53,3 @@ Edit:
 ```
 
 Add project mappings for your local workspaces.
-

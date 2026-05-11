@@ -21,10 +21,11 @@ Write durable, useful context into the global context system.
 2. Read `config.yaml`, `index.md`, and the relevant target file.
 3. Classify the information as `P0-P4`.
 4. Check whether it is sensitive or high-impact.
-5. Deduplicate or update an existing entry when possible.
-6. Write a Markdown memory item with metadata and rationale.
-7. Update `index.md` when recall behavior changes.
-8. Report changed files.
+5. Resolve project id for project-scoped memory.
+6. Deduplicate or update an existing entry when possible.
+7. Write a Markdown memory item with metadata and rationale when required.
+8. Update `index.md` when recall behavior changes.
+9. Report changed files.
 
 ## Classification
 
@@ -33,6 +34,20 @@ Write durable, useful context into the global context system.
 - `P2`: coding habit or engineering style -> `user/coding-style.md`
 - `P3`: project or environment knowledge -> `environment/` or `projects/<project-id>/`
 - `P4`: current task state -> project `active.md` or `sessions/`
+
+## Project Resolution
+
+For project-scoped memory, use explicit user bindings and `index.md` `Project Map` first, then Git remote slug, then current directory slug. Ask the user before creating memory for a new or ambiguous project id.
+
+## Dedupe and Update
+
+Before appending, scan the target file for an existing memory with the same meaning. Update the existing memory when the new information clarifies or refreshes the same fact, preference, habit, or decision. Append only when the information is distinct.
+
+If a new memory replaces an old one, mark the old memory `status: superseded` and use `supersedes` on the new entry when useful.
+
+## Confidence
+
+Use `confirmed` for explicit user statements or approvals. Use `observed` for reliable files, command output, configuration, or repeated visible behavior. Use `inferred` for agent-derived context that is not directly confirmed. Use `tentative` for weak, ambiguous, or likely temporary context.
 
 ## Sensitive Gate
 
@@ -52,6 +67,8 @@ When asked to compress a session:
 2. Update `projects/<project-id>/active.md`.
 3. Promote only durable `P0-P3` information that has clear future value.
 4. Do not save the full transcript.
+
+Treat `P4` active state as temporary. Remove completed next actions and avoid carrying stale blockers into unrelated tasks.
 
 ## Memory Item Template
 
@@ -80,4 +97,3 @@ After writing, summarize:
 - What was written.
 - Which file changed.
 - Whether anything was staged or skipped.
-
