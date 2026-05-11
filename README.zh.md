@@ -32,7 +32,13 @@ Agent Global Context 使用五个优先级：
 
 ## 快速开始
 
-1. 复制 skills 到你的 agent skill 目录。
+1. 使用 `npx` 安装 skills。
+
+```bash
+npx skills add huajiexiewenfeng/agent-global-context
+```
+
+这会安装全部五个 skills：
 
 ```text
 skills/agent-global-context/

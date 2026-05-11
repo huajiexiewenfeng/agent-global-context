@@ -30,7 +30,13 @@ The goal is not perfect memory. The goal is better continuity.
 
 ## Quick Start
 
-1. Copy the skills into your agent skill directory.
+1. Install the skills with `npx`.
+
+```bash
+npx skills add huajiexiewenfeng/agent-global-context
+```
+
+This installs all five skills:
 
 ```text
 skills/agent-global-context/
@@ -147,4 +153,3 @@ C:\Users\<user>\.agent-global-context\
 ## Status
 
 This project is in alpha MVP stage.
-
