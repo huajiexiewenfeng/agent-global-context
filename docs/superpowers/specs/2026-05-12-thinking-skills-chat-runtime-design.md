@@ -4,17 +4,17 @@
 
 Build a lightweight server-side chat runtime that lets a WeChat Mini Program use the existing thinking skills as a safe emotional-support chatbot for close family members.
 
-The product is not a server-side clone of Codex. It is a narrow chat service that loads selected skill instructions, manages conversation context, calls the OpenAI API from the server, and returns emotionally supportive responses to the Mini Program.
+The product is not a server-side clone of Codex. It is a narrow chat service that loads selected skill instructions, accepts conversation context from the Mini Program, calls a configurable model provider from the server, and returns emotionally supportive responses to the Mini Program.
 
 ## Goals
 
 - Provide a WeChat Mini Program chat experience for family users.
-- Keep OpenAI API keys and WeChat secrets on the server only.
+- Keep model provider keys and WeChat secrets on the server only.
 - Reuse the existing `thinking-router`, `emotional-support`, and `safety-boundary` skill behavior.
 - Support short, warm, low-jargon emotional-support conversations.
 - Detect crisis signals and switch to a safety-first response path.
-- Allow the Mini Program to cache lightweight session state locally.
-- Avoid storing full sensitive chat history on the server by default.
+- Keep session state and recent chat context on the phone by default.
+- Avoid storing full sensitive chat history on the server.
 
 ## Non-Goals
 
@@ -27,9 +27,9 @@ The product is not a server-side clone of Codex. It is a narrow chat service tha
 
 ## Recommended Approach
 
-Implement a lightweight Node.js and TypeScript backend using Fastify. The backend exposes one primary chat endpoint for the WeChat Mini Program and calls the OpenAI Responses API from the server.
+Implement a lightweight Node.js and TypeScript backend using Fastify. The backend exposes one primary chat endpoint for the WeChat Mini Program and calls a configurable model provider from the server.
 
-SQLite is enough for the first version if server-side storage is needed. The schema should be small and replaceable so the service can move to PostgreSQL later without changing the Mini Program API.
+The first version should not require server-side conversation storage. SQLite is optional for session metadata, audit-light usage records, or future summaries. If storage is added, the schema should be small and replaceable so the service can move to PostgreSQL later without changing the Mini Program API.
 
 ## System Architecture
 
@@ -40,7 +40,7 @@ WeChat Mini Program
     -> Session handling
     -> Skill runtime
     -> Safety layer
-    -> OpenAI model client
+    -> Model provider client
     -> Response post-processing
   -> WeChat Mini Program
 ```
@@ -55,7 +55,7 @@ WeChat Mini Program
 5. If risk is detected, backend uses the safety response path.
 6. If no risk is detected, backend uses emotional-support instructions.
 7. Backend assembles model input with recent context or summary.
-8. Backend calls the OpenAI Responses API.
+8. Backend calls the configured model provider.
 9. Backend post-processes the reply for tone and safety.
 10. Backend returns the assistant message to the Mini Program.
 11. Backend optionally updates a lightweight session summary.
@@ -105,7 +105,7 @@ The response should use a stable envelope from the beginning so the Mini Program
 
 ## Session Strategy
 
-The Mini Program may cache:
+The Mini Program is the default session owner. It may cache:
 
 - `userId`
 - `sessionId`
@@ -115,20 +115,20 @@ The Mini Program may cache:
 
 The Mini Program must not cache:
 
-- OpenAI API keys
+- model provider API keys
 - WeChat AppSecret
 - backend signing secrets
 - long-term sensitive labels
 - hidden safety classifications
 
-The backend may store:
+The backend should be stateless for conversation content by default. It may store:
 
 - session metadata
-- short conversation summaries
+- short conversation summaries, only if explicitly enabled
 - timestamps
 - model usage metadata
 
-The backend should not store full sensitive chat history by default. If full history is later required, it must be an explicit product decision with user-facing privacy language.
+The backend must not store full sensitive chat history by default. If full history is later required, it must be an explicit product decision with user-facing privacy language.
 
 ## Skill Runtime
 
@@ -157,15 +157,21 @@ If the user message suggests self-harm, harm to others, abuse, coercion, severe 
 
 The product must not present itself as therapy, diagnosis, medical care, or a replacement for professional support.
 
-## Model Integration
+## Model Provider Integration
 
-The backend calls the OpenAI API using a server-side API key stored in environment variables.
+The backend calls a configurable model provider using a server-side API key stored in environment variables.
+
+The first version should target OpenAI-compatible chat APIs because many providers and relay services support that interface shape. The app must keep the provider behind an adapter so the thinking skills runtime is independent from the chosen model.
+
+Supported provider examples can include domestic model services, self-controlled overseas deployments, or a temporary relay service for personal testing. A relay service should not be treated as the long-term default for sensitive family conversations unless its privacy, reliability, and legal posture are understood.
 
 Required environment variables:
 
 ```text
-OPENAI_API_KEY
-OPENAI_MODEL
+MODEL_PROVIDER
+MODEL_BASE_URL
+MODEL_API_KEY
+MODEL_NAME
 ```
 
 Optional environment variables:
@@ -177,7 +183,7 @@ WECHAT_APP_ID
 WECHAT_APP_SECRET
 ```
 
-The first version should keep model selection configurable instead of hard-coding a model name throughout the codebase.
+The first version should keep model provider, base URL, and model name configurable instead of hard-coding a vendor throughout the codebase.
 
 ## Error Handling
 
@@ -198,7 +204,7 @@ For model failures, the Mini Program should receive a gentle retryable message i
 ## Privacy and Security
 
 - Keep all provider keys on the backend.
-- Never send OpenAI API keys, WeChat AppSecret, or backend secrets to the Mini Program.
+- Never send model provider API keys, WeChat AppSecret, or backend secrets to the Mini Program.
 - Use HTTPS in production.
 - Configure the backend domain as a legal request domain in the WeChat Mini Program console.
 - Avoid logging raw user messages in production by default.
@@ -235,10 +241,10 @@ The first milestone is a local backend MVP with:
 
 - Fastify server
 - `POST /chat`
-- environment-based OpenAI configuration
+- environment-based model provider configuration
 - fixed emotional-support prompt assembly
 - safety pre-check path
-- local session handling
+- phone-owned session context handling
 - basic tests
 - README instructions for local setup
 
