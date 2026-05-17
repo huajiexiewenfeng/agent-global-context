@@ -98,12 +98,6 @@ auto capture
 
 Candidates are not facts. They do not enter default recall unless the user asks to review them or they are directly relevant.
 
-## Related Learning Workflow
-
-This workspace also uses a local `learning-companion` workflow to track the Agent/RAG Knowledge Runtime learning plan. It keeps daily learning state in Markdown dashboards and logs, then uses close-out reviews to separate plan progress from effective mastery.
-
-The companion now supports a lightweight tutor mode for prompts such as `teach me`, `continue learning`, `I don't understand`, `give me another example`, or `teacher mode`. Tutor mode explains the current learning item in small steps, connects it to the user's source material or project, gives one focused example, and asks one check question. Effective progress still advances only after a `下课` close-out review.
-
 ## Repository Layout
 
 ```text
