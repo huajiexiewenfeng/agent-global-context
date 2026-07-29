@@ -33,6 +33,12 @@ RESULT_KEYS = {
     "backup_path",
     "restart_required",
 }
+USER_INSTALL_DOCS = (
+    ROOT / "README.md",
+    ROOT / "README.en.md",
+    ROOT / "README.zh.md",
+    ROOT / "docs" / "install.md",
+)
 
 
 def _powershell() -> str:
@@ -41,6 +47,26 @@ def _powershell() -> str:
         if executable:
             return executable
     pytest.skip("PowerShell is required for the local installer integration test")
+
+
+def _windows_powershell() -> str:
+    executable = shutil.which("powershell.exe")
+    assert executable, "Windows PowerShell 5.1 is required for this regression"
+    return executable
+
+
+def _create_junction(link: Path, target: Path) -> None:
+    completed = subprocess.run(
+        ["cmd.exe", "/d", "/c", "mklink", "/J", str(link), str(target)],
+        capture_output=True,
+        check=False,
+    )
+    assert completed.returncode == 0, (
+        "junction creation failed explicitly: "
+        + completed.stdout.decode(errors="replace")
+        + completed.stderr.decode(errors="replace")
+    )
+    assert link.is_dir()
 
 
 def _write_utf8(path: Path, text: str, *, newline: str = "\n") -> None:
@@ -82,10 +108,11 @@ def _invoke(
     install: Path,
     *,
     env: dict[str, str] | None = None,
+    powershell: str | None = None,
     check: bool = True,
 ) -> tuple[subprocess.CompletedProcess[bytes], dict[str, object] | None]:
     command = [
-        _powershell(),
+        powershell or _powershell(),
         "-NoProfile",
         "-ExecutionPolicy",
         "Bypass",
@@ -449,3 +476,193 @@ def test_caught_mid_mutation_failure_restores_config_and_all_skills(
     backups = list((install / "backups").iterdir())
     assert len(backups) == 1
     assert _tree_snapshot(backups[0])
+
+
+def test_install_root_junction_alias_to_skills_is_rejected_before_writes(
+    tmp_path: Path,
+):
+    repository = _create_repository(tmp_path)
+    skills, config = _create_active_install(tmp_path)
+    for name in ("agent-global-context", *RETIRED_SKILLS):
+        shutil.rmtree(skills / name)
+    before_skills = _tree_snapshot(skills)
+    before_config = config.read_bytes()
+    install = tmp_path / "runtime-junction"
+    _create_junction(install, skills)
+
+    completed, result = _invoke(
+        repository,
+        skills,
+        config,
+        tmp_path / "memory",
+        install,
+        check=False,
+    )
+
+    assert completed.returncode != 0
+    assert result is None
+    assert config.read_bytes() == before_config
+    assert _tree_snapshot(skills) == before_skills
+
+
+def test_active_agc_skill_junction_is_rejected_before_writes(tmp_path: Path):
+    repository = _create_repository(tmp_path)
+    skills, config = _create_active_install(tmp_path)
+    active = skills / "agent-global-context-recall"
+    shutil.rmtree(active)
+    junction_target = tmp_path / "junction-target"
+    _write_utf8(junction_target / "SKILL.md", "external sentinel\n")
+    _create_junction(active, junction_target)
+    before_config = config.read_bytes()
+    before_target = _tree_snapshot(junction_target)
+    install = tmp_path / "runtime"
+
+    completed, result = _invoke(
+        repository,
+        skills,
+        config,
+        tmp_path / "memory",
+        install,
+        check=False,
+    )
+
+    assert completed.returncode != 0
+    assert result is None
+    assert config.read_bytes() == before_config
+    assert active.is_dir()
+    assert _tree_snapshot(junction_target) == before_target
+    assert not install.exists()
+
+
+@pytest.mark.parametrize(
+    "declaration",
+    [
+        "[mcp_servers.agent_global_context]",
+        "[mcp_servers.agent_global_context.env]",
+        "[mcp_servers.agent_global_context.logging]",
+        '["mcp_servers"."agent_global_context"]',
+    ],
+)
+def test_unmanaged_agc_server_table_fails_before_active_mutation(
+    tmp_path: Path, declaration: str
+):
+    repository = _create_repository(tmp_path)
+    skills, config = _create_active_install(tmp_path)
+    _write_utf8(config, f'{declaration}\nenabled = false\n')
+    before_config = config.read_bytes()
+    before_skills = _tree_snapshot(skills)
+    install = tmp_path / "runtime"
+
+    completed, result = _invoke(
+        repository,
+        skills,
+        config,
+        tmp_path / "memory",
+        install,
+        check=False,
+    )
+
+    assert completed.returncode != 0
+    assert result is None
+    assert config.read_bytes() == before_config
+    assert _tree_snapshot(skills) == before_skills
+    assert not install.exists()
+
+
+def test_windows_powershell_native_stderr_helper_uses_exit_code(
+    tmp_path: Path,
+):
+    host = _windows_powershell()
+    zero_root = tmp_path / "zero"
+    repository = _create_repository(zero_root)
+    skills, config = _create_active_install(zero_root)
+    zero_probe = tmp_path / "stderr-zero.cmd"
+    _write_utf8(
+        zero_probe,
+        "@echo harmless-native-warning 1>&2\n@exit /b 0\n",
+        newline="\r\n",
+    )
+
+    completed, result = _invoke(
+        repository,
+        skills,
+        config,
+        zero_root / "memory",
+        zero_root / "runtime",
+        env={"AGC_INSTALL_TEST_NATIVE_PROBE": str(zero_probe)},
+        powershell=host,
+        check=False,
+    )
+
+    assert completed.returncode == 0
+    assert result is not None
+    assert b"harmless-native-warning" in completed.stderr
+
+    nonzero_root = tmp_path / "nonzero"
+    repository = _create_repository(nonzero_root)
+    skills, config = _create_active_install(nonzero_root)
+    nonzero_probe = tmp_path / "stderr-nonzero.cmd"
+    _write_utf8(
+        nonzero_probe,
+        "@echo fatal-native-warning 1>&2\n@exit /b 7\n",
+        newline="\r\n",
+    )
+    before_config = config.read_bytes()
+    before_skills = _tree_snapshot(skills)
+
+    completed, result = _invoke(
+        repository,
+        skills,
+        config,
+        nonzero_root / "memory",
+        nonzero_root / "runtime",
+        env={"AGC_INSTALL_TEST_NATIVE_PROBE": str(nonzero_probe)},
+        powershell=host,
+        check=False,
+    )
+
+    assert completed.returncode != 0
+    assert result is None
+    assert b"fatal-native-warning" in completed.stderr
+    assert config.read_bytes() == before_config
+    assert _tree_snapshot(skills) == before_skills
+    assert not (nonzero_root / "runtime").exists()
+
+
+def test_user_install_docs_describe_only_the_v2_public_surface():
+    forbidden = (
+        "agent-global-context-recall",
+        "agent-global-context-commit",
+        "agent-global-context-capture",
+        "agent-global-context-review",
+        "all five skills",
+        "five alpha",
+        "五个",
+    )
+    for path in USER_INSTALL_DOCS:
+        text = path.read_text(encoding="utf-8")
+        assert all(token not in text for token in forbidden), path
+        assert ".agent-global-context-v2" in text, path
+        assert all(tool in text for tool in ("agc.read", "agc.write", "agc.admin")), path
+        assert "backfill" in text, path
+
+
+def test_launcher_escapes_literal_percent_characters_for_cmd(tmp_path: Path):
+    repository = _create_repository(tmp_path)
+    skills, config = _create_active_install(tmp_path)
+    install = tmp_path / "runtime%literal%"
+
+    _, result = _invoke(
+        repository,
+        skills,
+        config,
+        tmp_path / "memory",
+        install,
+    )
+
+    executable = Path(str(result["mcp_executable"]))
+    launcher = Path(str(result["launcher"]))
+    launcher_text = _strict_utf8_without_bom(launcher)
+    escaped_executable = str(executable).replace("%", "%%")
+    assert launcher_text == f'@"{escaped_executable}" %*\n'
+    assert launcher_text.replace("%%", "%") == f'@"{executable}" %*\n'

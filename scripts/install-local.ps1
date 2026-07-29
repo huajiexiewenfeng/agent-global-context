@@ -75,6 +75,49 @@ function Get-AbsolutePath {
     return [System.IO.Path]::GetFullPath($canonical)
 }
 
+function Assert-NoReparsePointInAncestors {
+    param([string]$Path, [string]$Label)
+
+    $current = [System.IO.Path]::GetFullPath($Path)
+    while (-not [string]::IsNullOrEmpty($current)) {
+        if (Test-Path -LiteralPath $current) {
+            $item = Get-Item -LiteralPath $current -Force
+            if (
+                ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0
+            ) {
+                throw "$Label must not use a reparse point: $current"
+            }
+        }
+        $parent = [System.IO.Path]::GetDirectoryName(
+            $current.TrimEnd(
+                [System.IO.Path]::DirectorySeparatorChar,
+                [System.IO.Path]::AltDirectorySeparatorChar
+            )
+        )
+        if (
+            [string]::IsNullOrEmpty($parent) -or
+            $parent.Equals($current, [System.StringComparison]::OrdinalIgnoreCase)
+        ) {
+            break
+        }
+        $current = $parent
+    }
+}
+
+function Assert-NoReparsePointTree {
+    param([string]$Root, [string]$Label)
+
+    $rootItem = Get-Item -LiteralPath $Root -Force
+    if (($rootItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "$Label must not be a reparse point: $Root"
+    }
+    foreach ($item in Get-ChildItem -LiteralPath $Root -Recurse -Force) {
+        if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "$Label must not contain reparse points: $($item.FullName)"
+        }
+    }
+}
+
 function Test-IsSameOrDescendant {
     param([string]$Candidate, [string]$Parent)
 
@@ -146,14 +189,8 @@ function Read-StrictUtf8 {
 function Assert-StrictUtf8Skill {
     param([string]$SkillRoot)
 
-    $rootItem = Get-Item -LiteralPath $SkillRoot
-    if (($rootItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
-        throw "The source Skill directory must not be a reparse point."
-    }
+    Assert-NoReparsePointTree -Root $SkillRoot -Label "The source Skill"
     foreach ($item in Get-ChildItem -LiteralPath $SkillRoot -Recurse -Force) {
-        if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
-            throw "The source Skill must not contain reparse points: $($item.FullName)"
-        }
         if (-not $item.PSIsContainer) {
             [void](Read-StrictUtf8 -Path $item.FullName -Label "Source Skill file")
         }
@@ -208,6 +245,29 @@ function Get-MarkerState {
         HasBlock = $true
         Begin = $begin
         EndExclusive = $endExclusive
+    }
+}
+
+function Assert-NoUnmanagedAgcTable {
+    param([string]$Text, [object]$MarkerState)
+
+    $outside = $Text
+    if ($MarkerState.HasBlock) {
+        $outside = (
+            $Text.Substring(0, $MarkerState.Begin) +
+            $Text.Substring($MarkerState.EndExclusive)
+        )
+    }
+    $mcpKey = '(?:mcp_servers|"mcp_servers"|''mcp_servers'')'
+    $serverKey = (
+        '(?:agent_global_context|"agent_global_context"|''agent_global_context'')'
+    )
+    $pattern = (
+        "(?m)^[ `t]*\[{1,2}[ `t]*$mcpKey[ `t]*\.[ `t]*" +
+        "$serverKey[ `t]*(?:\.|\])"
+    )
+    if ([regex]::IsMatch($outside, $pattern)) {
+        throw "Codex config contains an unmanaged agent_global_context MCP table."
     }
 }
 
@@ -340,6 +400,26 @@ function Write-Utf8NoBomIfChanged {
     Write-Utf8NoBom -Path $Path -Text $normalized
 }
 
+function Invoke-NativeCommand {
+    param([string]$Executable, [string[]]$Arguments)
+
+    $previousPreference = $ErrorActionPreference
+    $captured = @()
+    $exitCode = 1
+    try {
+        $ErrorActionPreference = "Continue"
+        $captured = @(& $Executable @Arguments 2>&1)
+        $exitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousPreference
+    }
+    foreach ($line in $captured) {
+        [Console]::Error.WriteLine([string]$line)
+    }
+    return $exitCode
+}
+
 $activeMutationStarted = $false
 $backupPath = $null
 $skillsToMove = @()
@@ -348,6 +428,14 @@ $publicNeedsCopy = $false
 $configChanged = $false
 
 try {
+    # Reject path aliases before resolving or creating any input path.
+    Assert-NoReparsePointInAncestors `
+        -Path $RepositoryRoot -Label "RepositoryRoot"
+    Assert-NoReparsePointInAncestors -Path $SkillsRoot -Label "SkillsRoot"
+    Assert-NoReparsePointInAncestors -Path $CodexConfig -Label "CodexConfig"
+    Assert-NoReparsePointInAncestors -Path $MemoryRoot -Label "MemoryRoot"
+    Assert-NoReparsePointInAncestors -Path $InstallRoot -Label "InstallRoot"
+
     # Canonicalize and validate every input before creating any directory.
     $resolvedRepository = Get-ExistingDirectoryPath `
         -Path $RepositoryRoot -Label "RepositoryRoot"
@@ -374,6 +462,16 @@ try {
     $sourceSkill = Get-ExistingDirectoryPath `
         -Path $sourceSkill -Label "Repository source Skill"
     $activePublicSkill = Join-Path $resolvedSkills $PublicSkillName
+    foreach ($name in @($PublicSkillName) + $RetiredSkillNames) {
+        $activeAgcSkill = Join-Path $resolvedSkills $name
+        if (Test-Path -LiteralPath $activeAgcSkill) {
+            if (-not (Test-Path -LiteralPath $activeAgcSkill -PathType Container)) {
+                throw "Active AGC Skill must be a directory: $activeAgcSkill"
+            }
+            Assert-NoReparsePointTree `
+                -Root $activeAgcSkill -Label "Active AGC Skill $name"
+        }
+    }
 
     Assert-SeparateTrees `
         -First $resolvedRepository -FirstLabel "RepositoryRoot" `
@@ -412,6 +510,8 @@ try {
         -Path $resolvedConfig -Label "Codex config"
     $normalizedConfig = Get-NormalizedLf -Text $originalConfigText
     $markerState = Get-MarkerState -Text $normalizedConfig
+    Assert-NoUnmanagedAgcTable `
+        -Text $normalizedConfig -MarkerState $markerState
 
     $mcpExecutable = [System.IO.Path]::GetFullPath(
         (Join-Path $resolvedInstall "venv\Scripts\agc-mcp.exe")
@@ -440,32 +540,39 @@ try {
         $skillsToMove += $PublicSkillName
     }
 
+    if (-not [string]::IsNullOrEmpty($env:AGC_INSTALL_TEST_NATIVE_PROBE)) {
+        $probeExitCode = Invoke-NativeCommand `
+            -Executable $env:AGC_INSTALL_TEST_NATIVE_PROBE -Arguments @()
+        if ($probeExitCode -ne 0) {
+            throw "The native-command probe failed with exit code $probeExitCode."
+        }
+    }
+
     # Runtime writes are isolated under InstallRoot and finish before active mutation.
     [System.IO.Directory]::CreateDirectory($resolvedInstall) | Out-Null
     if (-not $SkipRuntimeInstall) {
         $venvPython = Join-Path $resolvedInstall "venv\Scripts\python.exe"
         if (-not (Test-Path -LiteralPath $venvPython -PathType Leaf)) {
             $pythonCommand = Get-Command python -ErrorAction Stop
-            $venvOutput = @(
-                & $pythonCommand.Source -m venv (
-                    Join-Path $resolvedInstall "venv"
-                ) 2>&1
-            )
-            $venvExitCode = $LASTEXITCODE
-            foreach ($line in $venvOutput) {
-                [Console]::Error.WriteLine([string]$line)
-            }
+            $venvExitCode = Invoke-NativeCommand `
+                -Executable $pythonCommand.Source `
+                -Arguments @(
+                    "-m",
+                    "venv",
+                    (Join-Path $resolvedInstall "venv")
+                )
             if ($venvExitCode -ne 0) {
                 throw "Creating the dedicated Runtime virtual environment failed."
             }
         }
-        $installOutput = @(
-            & $venvPython -m pip install "$resolvedRepository[mcp]" 2>&1
-        )
-        $installExitCode = $LASTEXITCODE
-        foreach ($line in $installOutput) {
-            [Console]::Error.WriteLine([string]$line)
-        }
+        $installExitCode = Invoke-NativeCommand `
+            -Executable $venvPython `
+            -Arguments @(
+                "-m",
+                "pip",
+                "install",
+                "$resolvedRepository[mcp]"
+            )
         if ($installExitCode -ne 0) {
             throw "Installing the AGC Runtime MCP adapter failed."
         }
@@ -473,8 +580,9 @@ try {
             throw "The installed AGC MCP executable was not found."
         }
     }
+    $batchExecutable = $mcpExecutable.Replace("%", "%%")
     Write-Utf8NoBomIfChanged `
-        -Path $launcher -Text "@`"$mcpExecutable`" %*`n"
+        -Path $launcher -Text "@`"$batchExecutable`" %*`n"
 
     $activeMutationNeeded = (
         $configChanged -or

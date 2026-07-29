@@ -38,77 +38,37 @@ Sensitive persistence is fixed to `disabled` in v2, and secrets are never stored
 
 The Runtime exposes `agc.read`, `agc.write`, and `agc.admin`. Its CLI is a host adapter rather than a required human workflow.
 
-Codex side-channel capture and v1 migration are separate rollout plans and are not activated by this foundation.
+The Runtime Core is independent. MCP is an optional Host Adapter; installing
+the adapter does not enable Codex task capture or backfill.
 
 ## Quick Start
 
-1. Install the skills with `npx`.
+1. Choose distinct repository, active Skills, Codex config, Runtime install, and
+   memory paths. A parallel v2 memory root such as
+   `~/.agent-global-context-v2` is recommended for a v1 upgrade.
 
-```bash
-npx skills add huajiexiewenfeng/agent-global-context
+2. Run the repeatable local installer with explicit paths.
+
+```powershell
+$repository = (Resolve-Path "D:\src\agent-global-context").Path
+& "$repository\scripts\install-local.ps1" `
+  -RepositoryRoot $repository `
+  -SkillsRoot "$env:USERPROFILE\.agents\skills" `
+  -CodexConfig "$env:USERPROFILE\.codex\config.toml" `
+  -MemoryRoot "$env:USERPROFILE\.agent-global-context-v2" `
+  -InstallRoot "$env:USERPROFILE\.agent-global-context-runtime"
 ```
 
-This installs all five skills:
+3. Restart Codex and start a new task.
 
-```text
-skills/agent-global-context/
-skills/agent-global-context-recall/
-skills/agent-global-context-commit/
-skills/agent-global-context-capture/
-skills/agent-global-context-review/
-```
+The installer leaves one public `agent-global-context` Skill and registers
+exactly three MCP tools through one server: `agc.read`, `agc.write`, and
+`agc.admin`. It keeps unique backups of replaced active files and is safe to
+rerun.
 
-2. Create the memory root.
-
-```text
-~/.agent-global-context/
-```
-
-3. Copy the template memory files.
-
-```text
-templates/memory/* -> ~/.agent-global-context/
-```
-
-4. Add an agent instruction.
-
-```text
-At the start of substantial work, use agent-global-context-recall.
-Use agent-global-context-capture for strong durable context signals.
-Use agent-global-context-review when candidate review is suggested.
-Use agent-global-context-commit when the user asks to remember something or compress a session.
-```
-
-5. Try the basic flow.
-
-```text
-Load my global context.
-Remember that I prefer design discussion before implementation.
-Review my pending global context candidates.
-Compress this session into global context.
-```
-
-## Alpha Skills During the Runtime Phase
-
-- `agent-global-context`: shared schema, directory layout, and policy.
-- `agent-global-context-recall`: loads relevant global context before or during work.
-- `agent-global-context-capture`: observes strong signals and writes candidates to staging only.
-- `agent-global-context-review`: reviews, promotes, rejects, expires, and cleans candidates.
-- `agent-global-context-commit`: writes confirmed long-term context and session summaries.
-
-These five skills remain the active compatibility layer while the v2 Recall/Skill Adapter is implemented. The Runtime does not silently activate Codex capture or migrate v1 data.
-
-## Candidate Flow
-
-```text
-auto capture
-  -> staging/inbox.md or staging/pending-review.md
-  -> review
-  -> commit
-  -> long-term memory
-```
-
-Candidates are not facts. They do not enter default recall unless the user asks to review them or they are directly relevant.
+The installer does not migrate memory and does not enable Codex task capture
+or backfill. Keep v1 read-only as rollback material until a later explicit,
+verified retirement.
 
 ## Repository Layout
 
@@ -116,10 +76,6 @@ Candidates are not facts. They do not enter default recall unless the user asks 
 skills/
   agent-global-context/
     references/
-  agent-global-context-recall/
-  agent-global-context-commit/
-  agent-global-context-capture/
-  agent-global-context-review/
 
 templates/
   memory/
@@ -142,17 +98,20 @@ docs/
   full-flow-example.md
 ```
 
-## Default Memory Root
+## Memory Root
 
 ```text
-~/.agent-global-context/
+~/.agent-global-context-v2/
 ```
 
 On Windows:
 
 ```text
-C:\Users\<user>\.agent-global-context\
+C:\Users\<user>\.agent-global-context-v2\
 ```
+
+An existing v1 `~/.agent-global-context` root should remain read-only rollback
+material until it is explicitly retired.
 
 ## Documentation
 
@@ -164,4 +123,6 @@ C:\Users\<user>\.agent-global-context\
 
 ## Status
 
-The v2 Runtime Foundation is implemented in the repository. The five alpha skills remain active during the adapter phase. Codex side-channel capture and v1 migration are designed but not activated.
+The v2 Runtime, single public Skill, three-tool MCP adapter, deterministic
+parallel migration support, and repeatable local installer are implemented.
+The installer does not enable Codex side-channel capture or backfill.
