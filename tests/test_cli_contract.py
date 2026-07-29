@@ -1,4 +1,6 @@
 import json
+import subprocess
+import sys
 import tomllib
 from pathlib import Path
 
@@ -35,5 +37,29 @@ def test_package_exposes_the_pinned_mcp_stdio_entry_point():
         project = tomllib.load(stream)["project"]
 
     assert project["version"] == "0.2.0"
-    assert "mcp==2.0.0" in project["dependencies"]
+    assert project["dependencies"] == ["PyYAML>=6.0.2,<7"]
+    assert project["optional-dependencies"]["mcp"] == ["mcp==2.0.0"]
+    assert "mcp==2.0.0" in project["optional-dependencies"]["test"]
     assert project["scripts"]["agc-mcp"] == "agc_runtime.mcp_server:main"
+
+
+def test_core_cli_import_does_not_require_mcp():
+    script = """
+import builtins
+real_import = builtins.__import__
+def reject_mcp(name, *args, **kwargs):
+    if name == "mcp" or name.startswith("mcp."):
+        raise AssertionError("core CLI imported optional MCP SDK")
+    return real_import(name, *args, **kwargs)
+builtins.__import__ = reject_mcp
+import agc_runtime.cli
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=REPOSITORY_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr

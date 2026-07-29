@@ -91,6 +91,31 @@ def test_main_refuses_to_start_without_memory_root(monkeypatch):
         mcp_server_module.main()
 
 
+def test_main_starts_stdio_without_stdout_contamination(
+    tmp_path, monkeypatch, capsys
+):
+    mcp_server_module = _mcp_server_module()
+    calls = []
+
+    class Server:
+        def run(self, *, transport):
+            calls.append(transport)
+
+    memory_root = tmp_path / "memory"
+    monkeypatch.setenv("AGC_MEMORY_ROOT", str(memory_root))
+    monkeypatch.setattr(
+        mcp_server_module,
+        "create_server",
+        lambda root: calls.append(root) or Server(),
+    )
+
+    mcp_server_module.main()
+
+    captured = capsys.readouterr()
+    assert calls == [memory_root, "stdio"]
+    assert captured.out == ""
+
+
 def test_request_body_is_not_logged_to_stdout(tmp_path, capsys):
     mcp_server_module = _mcp_server_module()
     server = mcp_server_module.create_server(tmp_path / "memory")

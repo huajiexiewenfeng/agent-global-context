@@ -1,21 +1,16 @@
 # AGC Tool Contract
 
-The Host binds the memory root. The LLM supplies only a `request` mapping and
-never chooses a filesystem root.
+The Host binds the memory root once. The LLM supplies only a `request` mapping;
+no action accepts a filesystem root parameter. Only `agc.read`, `agc.write`,
+and `agc.admin` are public.
 
-Only three tools are public:
+The LLM chooses whether to recall, semantic relevance, `disposition`,
+`match_memory_id`, and whether memory applies. Runtime performs deterministic
+validation, policy, persistence, lifecycle, idempotency, backup, and recovery.
 
-| Tool | Actions | Boundary |
-| --- | --- | --- |
-| `agc.read` | `overview`, `search`, `get`, `history`, `evidence` | Deterministic, sensitivity-filtered reads |
-| `agc.write` | `observe`, `observe_batch`, `propose`, `confirm`, `update`, `supersede`, `archive`, `reject`, `forget` | Validated and policy-controlled persistence |
-| `agc.admin` | `init`, `validate`, `rebuild_catalog`, `backup`, `restore`, `migrate` | Maintenance and migration |
+## Response Envelope
 
-Every request is a mapping with an `action` field plus action-specific fields.
-Unknown actions and malformed fields produce a failure envelope rather than an
-exception crossing the tool boundary.
-
-Every response is a schema-v2 mapping:
+Every tool returns a schema-v2 mapping:
 
 ```yaml
 schema_version: 2
@@ -27,13 +22,198 @@ warnings: []
 error: null | {code: <stable-code>, message: <safe-message>}
 ```
 
-For Recall, start with `{"action": "overview"}` only when memory may materially
-help. Narrow with `search`, fetch an explicit item with `get`, and request
-`history` or `evidence` only when provenance or change over time matters.
+Malformed requests and unsupported actions return a failure envelope rather
+than raising across the tool boundary.
 
-`agc.write` receives semantic proposals chosen by the LLM. Runtime validation,
-policy, deduplication, persistence, lifecycle, idempotency, backup, and recovery
-remain deterministic. Sensitive content is never persisted in v2.
+## `agc.read`
 
-`agc.admin` is not a Recall shortcut. Use it only for explicit initialization,
-validation, catalog repair, backup/restore, or migration work.
+`overview` has no fields beyond `action`. `search` accepts optional `query`
+(non-empty string), `filters` (mapping), and `limit` (integer, 1–100; default
+20). Every filter value is a list of strings. Supported filters are `kind`,
+`scopes`, `decision_impact`, `sensitivity`, `exposure`, and `confidence`.
+`get`, `history`, and `evidence` require an exact non-empty `id`.
+
+| Action | Example request |
+| --- | --- |
+| `overview` | `{"action":"overview"}` |
+| `search` | `{"action":"search","query":"planning","filters":{"kind":["preference"],"scopes":["work"],"decision_impact":["high"],"sensitivity":["normal","personal"],"exposure":["core_card","scoped_card"],"confidence":["confirmed"]},"limit":20}` |
+| `get` | `{"action":"get","id":"memory-id"}` |
+| `history` | `{"action":"history","id":"memory-id"}` |
+| `evidence` | `{"action":"evidence","id":"memory-id"}` |
+
+Recall progressively: `overview → search → get → history/evidence`. Stop when
+the current task has enough context.
+
+## Reusable `agc.write` Schemas
+
+### Observation Envelope
+
+`observation` is a strict mapping: every path below is required, and unknown
+fields at these nested levels are rejected.
+
+| Field path | Type and contract |
+| --- | --- |
+| `observation_id` | non-empty string; stable observation/candidate id |
+| `source.ref` | non-empty source reference |
+| `source.revision` | non-empty source revision |
+| `source.content_hash` | non-empty stable content hash |
+| `source.observed_at` | non-empty observation timestamp |
+| `assertion.subject` | non-empty string; use `user` for user assertions |
+| `assertion.mode` | `direct`, `behavior_observed`, `agent_inferred`, or `quoted` |
+| `assertion.modality` | `asserted`, `hypothetical`, `question`, or `example` |
+| `proposal.disposition` | `ignore`, `new`, `reinforce`, `update`, `conflict`, or `need_more_evidence` |
+| `proposal.match_memory_id` | non-empty string or null; required semantically for reinforce/update/conflict |
+| `proposal.kind` | non-empty kind; persistent items use identity/principle/preference/interest/capability/goal/pattern/context |
+| `proposal.scopes` | list of non-empty scope strings |
+| `proposal.temporal_type` | non-empty temporal type; persistent items use durable/evolving/goal_bound/contextual/derived/episodic |
+| `proposal.sensitivity` | `normal`, `personal`, `sensitive`, or `secret`; sensitive/secret persistence is rejected |
+| `proposal.rationale` | non-empty rationale |
+| `proposal.requested_confidence` | `tentative`, `observed`, `confirmed`, or `disputed` |
+| `evidence.count` | non-negative integer |
+| `evidence.distinct_sessions` | non-negative integer |
+| `evidence.time_span_days` | non-negative integer |
+
+Example:
+
+```json
+{
+  "observation_id": "confirm-before-change-observation",
+  "source": {
+    "ref": "codex-task:example",
+    "revision": "r1",
+    "content_hash": "sha256-content-id",
+    "observed_at": "2026-07-29T00:00:00Z"
+  },
+  "assertion": {
+    "subject": "user",
+    "mode": "direct",
+    "modality": "asserted"
+  },
+  "proposal": {
+    "disposition": "new",
+    "match_memory_id": null,
+    "kind": "principle",
+    "scopes": ["work"],
+    "temporal_type": "durable",
+    "sensitivity": "normal",
+    "rationale": "May improve future high-impact decisions.",
+    "requested_confidence": "confirmed"
+  },
+  "evidence": {
+    "count": 1,
+    "distinct_sessions": 1,
+    "time_span_days": 0
+  }
+}
+```
+
+### Memory Item Markdown
+
+`memory_markdown` is a non-empty string containing a complete schema-v2 Memory
+Item. It is required for `new`/`update` persistence, `confirm`, and `update`.
+Its id, kind, scopes, temporal type, sensitivity, and confidence must agree
+with the Observation Envelope and action.
+
+```markdown
+---
+schema_version: 2
+id: confirm-before-irreversible-change
+kind: principle
+subkind: decision_standard
+lifecycle:
+  status: active
+confidence:
+  level: confirmed
+temporal:
+  type: durable
+  valid_from: "2026-07-29"
+  last_observed: "2026-07-29"
+  review_after:
+recall:
+  prior: medium
+  decision_impact: high
+  exposure: scoped_card
+  scopes: [work]
+  applies_when: [irreversible_change]
+  not_when: [trivial_task]
+  freshness_policy: event_driven
+sensitivity: normal
+provenance:
+  created_at: "2026-07-29"
+  updated_at: "2026-07-29"
+  confirmed_at: "2026-07-29"
+  evidence_refs: [codex-task:example]
+---
+## Memory Card
+
+Confirm before irreversible changes.
+
+## Full Meaning
+
+Use an explicit confirmation boundary for high-impact irreversible work.
+
+## Application Boundary
+
+Do not add friction to trivial or safely reversible work.
+
+## Rationale
+
+This can prevent unintended high-impact changes.
+```
+
+## `agc.write` Actions
+
+In the compact examples, `"<ObservationEnvelope object>"` and
+`"<v2 Memory Item Markdown>"` mean values matching the complete reusable
+schemas above.
+
+| Action | Example request |
+| --- | --- |
+| `observe` | `{"action":"observe","observation":"<ObservationEnvelope object>","memory_markdown":"<v2 Memory Item Markdown>"}` |
+| `observe_batch` | `{"action":"observe_batch","items":[{"observation":"<ObservationEnvelope object>","memory_markdown":"<v2 Memory Item Markdown>"}]}` |
+| `propose` | `{"action":"propose","observation":"<ObservationEnvelope object>"}` |
+| `confirm` | `{"action":"confirm","observation":"<ObservationEnvelope object>","memory_markdown":"<v2 Memory Item Markdown>"}` |
+| `update` | `{"action":"update","observation":"<ObservationEnvelope object>","memory_markdown":"<v2 Memory Item Markdown>"}` |
+| `supersede` | `{"action":"supersede","observation":"<ObservationEnvelope object>","memory_id":"memory-id"}` |
+| `archive` | `{"action":"archive","observation":"<ObservationEnvelope object>","memory_id":"memory-id"}` |
+| `reject` | `{"action":"reject","candidate_id":"candidate-id"}` |
+| `forget` | `{"action":"forget","memory_id":"memory-id","authorization":"explicit_user_request","suppression_scope":"precise_scope","verification_terms":["exact managed-content term"]}` |
+
+Action-specific rules:
+
+- `observe`: `memory_markdown` is required only when disposition is `new` or
+  `update`; omit it for `reinforce`, `conflict`, `need_more_evidence`, and
+  `ignore`.
+- `observe_batch`: `items` is a list of observe request mappings; Runtime sets
+  each nested action to `observe` and returns one envelope per item.
+- `propose`: records a policy-eligible candidate; it does not need
+  `memory_markdown`.
+- `confirm`: Runtime forces disposition `new` and requested confidence
+  `confirmed`; supply matching Memory Item Markdown.
+- `update`: Runtime forces disposition `update`; `proposal.match_memory_id`
+  and the Memory Item id must match.
+- `supersede`/`archive`: `observation` is required. `memory_id` may be omitted
+  only when `proposal.match_memory_id` supplies it; if both exist they must
+  match.
+- `reject`: requires the exact candidate id.
+- `forget`: requires exact `memory_id`, authorization equal to
+  `explicit_user_request`, and a precise lowercase `suppression_scope`;
+  `verification_terms` is an optional list of non-empty strings (default `[]`).
+
+## `agc.admin`
+
+The Host-bound root is never present in these requests. `restore.backup_path`
+is optional: omit it to use the latest managed backup; when supplied, it must
+be a non-empty path string. `migrate` currently returns a deterministic
+deferred envelope because the migration adapter is outside this package.
+
+| Action | Example request |
+| --- | --- |
+| `init` | `{"action":"init"}` |
+| `validate` | `{"action":"validate"}` |
+| `rebuild_catalog` | `{"action":"rebuild_catalog"}` |
+| `backup` | `{"action":"backup"}` |
+| `restore` | `{"action":"restore","backup_path":"D:/managed/agc-backup.zip"}` |
+| `migrate` | `{"action":"migrate"}` |
+
+`agc.admin` is maintenance and migration, not a Recall shortcut.
