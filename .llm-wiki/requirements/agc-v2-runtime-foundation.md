@@ -3,7 +3,8 @@
 ## Summary
 
 - title: Agent Global Context v2 Runtime Foundation
-- status: executing
+- status: done
+- flow_id: agc-v2-runtime-foundation
 - why: The current alpha Skills have no deterministic Runtime for Schema v2, sparse Recall, safe persistence, idempotency, lifecycle evolution, recovery, or hard forget.
 - changes: Add an independent Python Runtime with Markdown as source of truth and stable `read`, `write`, and `admin` JSON adapters.
 - does_not_change: The five public alpha Skills, Codex task capture, v1 memory data, Trace/Eval/Loop Runtime, and LLM Wiki Runtime remain unchanged in this delivery.
@@ -56,9 +57,9 @@
 | source | done | v2 approved design | 2026-07-29 |
 | design | done | `docs/superpowers/specs/2026-07-28-agent-global-context-v2-design.md` | 2026-07-29 |
 | plan | done | confirmed Runtime Foundation plan | 2026-07-29 |
-| development | active | Inline execution authorized on `main` | 2026-07-29 |
-| testing | pending | Task-level RED/GREEN and release gates | 2026-07-29 |
-| archive | pending | finish handoff after verification | 2026-07-29 |
+| development | done | Runtime commits `1ab7ba0` through `4a01076` on `main` | 2026-07-29 |
+| testing | done | `94 passed`; wheel/sdist built; CLI, UTF-8/BOM, and diff gates passed (`agent-local`) | 2026-07-29 |
+| archive | done | `.llm-wiki/handoff/agc-v2-runtime-foundation-handoff.md` | 2026-07-29 |
 
 ## Open Questions
 
@@ -68,3 +69,5 @@
 
 - Implementation is split into four deliverables so the current Skills are not switched to tools that do not exist yet.
 - Scope expansion requires explicit user confirmation.
+- Verification is agent-local rather than CI-backed or externally reviewed; no verification limitation was self-accepted.
+- Recall/Skill Adapter, Codex side-channel capture, and v1 migration remain separate future deliverables.

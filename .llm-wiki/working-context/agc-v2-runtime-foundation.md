@@ -32,6 +32,11 @@
 
 ## Execution Status
 
-- current_batch: Tasks 1–3
-- completed_tasks: none
-- next_checkpoint: after package contract, storage primitives, and Schema v2 pass together
+- current_batch: complete
+- completed_tasks: Tasks 1–10
+- implementation_head: `4a01076`
+- verification: `94 passed`; wheel and sdist built; CLI version contract passed; 83 tracked text files strict UTF-8 without BOM; `git diff --check` passed
+- verification_trust: agent-local
+- handoff: `.llm-wiki/handoff/agc-v2-runtime-foundation-handoff.md`
+- next_deliverable: v2 Recall and Skill Adapter
+- excluded_work_still_not_started: Codex side-channel capture, v1 migration/cutover, Trace/Eval/Loop integration
