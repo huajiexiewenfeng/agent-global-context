@@ -73,7 +73,7 @@
 | design | done | thin Skill, LLM-owned semantics, parallel migration, three tools | 2026-07-29 |
 | plan | done | confirmed local-upgrade implementation plan | 2026-07-29 |
 | development | done | Skill/MCP, migration/forget, and installer commits through `88f8ea7` | 2026-07-29 |
-| testing | passed-agent-local | 186 tests plus local CLI, MCP stdio, UTF-8, backup, and cutover gates | 2026-07-29 |
+| testing | passed-agent-local | 188 tests plus local CLI, MCP stdio, UTF-8, backup, and cutover gates | 2026-07-29 |
 | archive | done | verification and handoff artifacts recorded | 2026-07-29 |
 
 ## Risks

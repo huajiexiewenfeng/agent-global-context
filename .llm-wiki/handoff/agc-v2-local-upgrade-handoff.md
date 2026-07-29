@@ -8,8 +8,8 @@ configured for Codex on `main`.
 ## Active Local State
 
 - one public Skill: `C:\Users\admin\.agents\skills\agent-global-context`
-- Runtime venv: `C:\Users\admin\.agent-global-context-runtime\venv`
-- MCP executable: `C:\Users\admin\.agent-global-context-runtime\venv\Scripts\agc-mcp.exe`
+- Runtime venv: `C:\Users\admin\.agent-global-context-runtime\venvs\753035ae1f47ac63d11544f62a3992dccc726183fc77d88a0a3cd70041815f87`
+- MCP executable: `C:\Users\admin\.agent-global-context-runtime\venvs\753035ae1f47ac63d11544f62a3992dccc726183fc77d88a0a3cd70041815f87\Scripts\agc-mcp.exe`
 - active v2 memory root: `C:\Users\admin\.agent-global-context-v2`
 - retained v1 root: `C:\Users\admin\.agent-global-context`
 - v1 auto capture: disabled
@@ -43,11 +43,13 @@ configured for Codex on `main`.
 
 ## Rollback
 
-1. Restore the timestamped Codex config and Skill directories from
+1. Restore the pre-content-addressed Codex config and launcher from
+   `C:\Users\admin\.agent-global-context-runtime\backups\20260730-043855-668-1c788d0c5f8847a9beddac4d9810e727`.
+2. The initial alpha Skill/config backup remains at
    `C:\Users\admin\.agent-global-context-runtime\backups\20260730-033200-562-ccbe4d2edc7a4536a947db8ea82c35f7`.
-2. If v1 capture is intentionally re-enabled, restore its backed-up `config.yaml` from
+3. If v1 capture is intentionally re-enabled, restore its backed-up `config.yaml` from
    `C:\Users\admin\.agent-global-context-v1-backups\20260729T192524374Z-226c14fce34848bbaea3ced7078ba214`.
-3. Keep the v2 root and Runtime install until rollback is verified; do not delete them as
+4. Keep the v2 root and Runtime install until rollback is verified; do not delete them as
    part of the first rollback step.
 
 ## Next Action

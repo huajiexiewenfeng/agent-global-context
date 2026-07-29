@@ -15,7 +15,7 @@
 - One public Skill and the three-tool MCP adapter replaced the five alpha Skill surface.
 - Deterministic v1 migration, manifest integrity, path containment, shared-source Hard
   Forget, retry recovery, and repeatable local installation were independently reviewed.
-- Agent-local release gate passed: 186 tests, wheel/sdist build, CLI, MCP 2.0 stdio,
+- Agent-local release gate passed: 188 tests, wheel/sdist build, CLI, MCP 2.0 stdio,
   strict UTF-8/no-BOM, backup ZIP, no-op installer, and local cutover checks.
 - Local v2 contains 19 formal memories and one candidate; exposure is limited to one
   core card, with no personal core cards.

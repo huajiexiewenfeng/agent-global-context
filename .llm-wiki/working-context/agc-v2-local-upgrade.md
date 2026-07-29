@@ -33,11 +33,14 @@
 
 ## Completed Local State
 
-- Runtime: `C:\Users\admin\.agent-global-context-runtime\venv`, package `0.2.0`
+- Runtime: content-addressed venv
+  `C:\Users\admin\.agent-global-context-runtime\venvs\753035ae1f47ac63d11544f62a3992dccc726183fc77d88a0a3cd70041815f87`,
+  package `0.2.0`
 - MCP: exactly `agc.read`, `agc.write`, and `agc.admin`
 - Codex config: one marked `agent_global_context` server bound to the parallel v2 root
 - active Skill root: one `agent-global-context` directory
 - Skill/config backup: `C:\Users\admin\.agent-global-context-runtime\backups\20260730-033200-562-ccbe4d2edc7a4536a947db8ea82c35f7`
+- content-addressed Runtime switch backup: `C:\Users\admin\.agent-global-context-runtime\backups\20260730-043855-668-1c788d0c5f8847a9beddac4d9810e727`
 - v1 configuration backup: `C:\Users\admin\.agent-global-context-v1-backups\20260729T192524374Z-226c14fce34848bbaea3ced7078ba214`
 - v1: 16 files retained; frozen manifest SHA-256 `a9efe4fb81c9ff899bf2822f41af058a5b65640d99b299f12978b27090cb341f`
 - v2: 19 formal memories, one candidate, one completed v1 migration receipt, and one validated ZIP backup
@@ -59,7 +62,7 @@
 
 ## Verification Result
 
-- repository implementation gate: 186 tests passed before lifecycle-only documentation updates
+- repository implementation gate: 188 tests passed after final review fixes
 - `agc.admin validate`: accepted, zero issues
 - CLI overview/search: 19 memories; relevant scoped result returned; unrelated query returned zero
 - MCP 2.0 stdio: initialized, listed exactly three tools, and executed `agc.read overview`

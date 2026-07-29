@@ -7,17 +7,17 @@
 - authority: user-authorized direct `main` upgrade and local cutover
 - limitation_acceptor: none required
 - raw_output_ref: Codex task tool outputs and ignored `.superpowers/sdd/` review packages
-- final_test_output: `D:\tmp\agc-final-140078b457234865a3af971ecfe2c133\pytest.out`
+- final_test_output: `D:\tmp\agc-final-188-2d6f4e10\pytest.out`
 - exit_code: 0
 
 ## Repository Gate
 
 ```text
 focused installer gate
-40 passed
+41 passed
 
 full repository gate
-186 passed in 215.47s
+188 passed in 264.32s
 
 python -m build
 Successfully built agent_global_context_runtime-0.2.0.tar.gz
@@ -36,6 +36,9 @@ all changed repository text passed
 
 Task 1, Task 2, and Task 3 each used a fresh implementer and independent reviewer.
 Every Critical/Important review finding was fixed and re-reviewed before local mutation.
+The final whole-range review approved direct `main` push after evidence was made
+non-semantic and Runtime upgrades became inactive, content-addressed, final-path
+validated, and rollback-safe.
 
 ## Installed Runtime and Adapter
 
@@ -52,8 +55,8 @@ memory_count = 19
 ```
 
 The active Codex config parses as TOML and contains exactly one marked
-`mcp_servers.agent_global_context` block. Its command is the dedicated venv
-`agc-mcp.exe`, and `AGC_MEMORY_ROOT` is the parallel v2 root.
+`mcp_servers.agent_global_context` block. Its command is the final-path validated
+content-addressed `agc-mcp.exe`, and `AGC_MEMORY_ROOT` is the parallel v2 root.
 
 ## Local Cutover Gate
 
@@ -107,6 +110,7 @@ Rollback locations:
 
 - v1 config backup: `C:\Users\admin\.agent-global-context-v1-backups\20260729T192524374Z-226c14fce34848bbaea3ced7078ba214`
 - active config/Skill backup: `C:\Users\admin\.agent-global-context-runtime\backups\20260730-033200-562-ccbe4d2edc7a4536a947db8ea82c35f7`
+- content-addressed Runtime switch backup: `C:\Users\admin\.agent-global-context-runtime\backups\20260730-043855-668-1c788d0c5f8847a9beddac4d9810e727`
 - v2 Runtime backup: `C:\Users\admin\.agent-global-context-v2\.runtime\backups\agc-backup-52b89fa735c8bb4a2e0974f39b16c1d13161f4a8673f8a805ff35918c18efd46.zip`
 
 ## Residual Risk
