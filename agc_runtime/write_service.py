@@ -417,6 +417,12 @@ def _handle_reject(paths: MemoryPaths, request: dict[str, Any]) -> ToolResponse:
     )
 
 
+def _handle_forget(paths: MemoryPaths, request: dict[str, Any]) -> ToolResponse:
+    from agc_runtime.forget_service import forget
+
+    return forget(paths, request)
+
+
 Handler = Callable[[MemoryPaths, dict[str, Any]], ToolResponse]
 _HANDLERS: dict[str, Handler] = {
     "observe": _handle_observe,
@@ -427,6 +433,7 @@ _HANDLERS: dict[str, Handler] = {
     "supersede": _handle_supersede,
     "archive": _handle_archive,
     "reject": _handle_reject,
+    "forget": _handle_forget,
 }
 
 
