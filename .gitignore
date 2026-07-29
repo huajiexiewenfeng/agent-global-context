@@ -5,6 +5,7 @@ codex-conversation-context.md
 codex-windows-newbie-guide.md
 skills-lock.json
 .agents/
+.superpowers/
 
 # OS/editor noise
 .DS_Store

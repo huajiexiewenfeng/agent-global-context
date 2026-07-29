@@ -314,6 +314,7 @@ Create focused tests proving:
 - `snapshot` copies strict UTF-8 normal/personal source bytes into `.runtime/migrations/<id>/snapshot/`;
 - `excluded_sensitive` writes only opaque path/hash/disposition metadata and never reads/copies the body into target files;
 - `ignored` records metadata but no body;
+- source files with a UTF-8 BOM are accepted as legacy input, but `snapshot` text is normalized to strict UTF-8 without a BOM after the raw source hash is verified;
 - every memory is schema-v2-valid and references a declared `snapshot` source;
 - Runtime does not derive Memory Items or semantic matches;
 - exact request retry is idempotent;
@@ -350,9 +351,15 @@ Include it in managed initialization. Validation must accept migration manifests
 - resolve every relative source path under `source_root`;
 - validate lowercase SHA-256 and compare raw source bytes;
 - strict-decode only `snapshot` and `ignored` text sources;
+- accept a leading UTF-8 BOM only at this v1 boundary and normalize copied snapshots to UTF-8 without BOM;
 - avoid decoding or copying `excluded_sensitive` bodies after hash verification;
 - parse and validate every `memory_markdown` before acquiring the write lock;
 - reject target roots that already contain non-migration Memory Items unless the exact completed receipt exists.
+
+Candidate proposals are intentionally not part of the migration request. After migration,
+the LLM may submit any uncertain observation through the existing `agc.write propose`
+action. This keeps semantic promotion and candidate formation out of the deterministic
+migration Runtime while preserving source traceability.
 
 - [ ] **Step 5: Implement idempotent migration persistence**
 
