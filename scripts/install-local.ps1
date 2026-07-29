@@ -462,27 +462,152 @@ function Assert-NoUnmanagedAgcTable {
             $Text.Substring($MarkerState.EndExclusive)
         )
     }
+    $stringMode = "none"
+    $arrayDepth = 0
+    $inlineTableDepth = 0
     foreach ($line in $outside.Split([char]"`n")) {
         $candidate = $line.TrimStart()
-        if (-not $candidate.StartsWith("[")) {
+        if (
+            $stringMode -eq "none" -and
+            $arrayDepth -eq 0 -and
+            $inlineTableDepth -eq 0 -and
+            $candidate.StartsWith("[")
+        ) {
+            $segments = @(Read-TomlTableHeader -Line $candidate)
+            if (
+                $segments.Count -ge 2 -and
+                [string]::Equals(
+                    $segments[0],
+                    "mcp_servers",
+                    [System.StringComparison]::Ordinal
+                ) -and
+                [string]::Equals(
+                    $segments[1],
+                    "agent_global_context",
+                    [System.StringComparison]::Ordinal
+                )
+            ) {
+                throw "Codex config contains an unmanaged agent_global_context MCP table."
+            }
             continue
         }
-        $segments = @(Read-TomlTableHeader -Line $candidate)
-        if (
-            $segments.Count -ge 2 -and
-            [string]::Equals(
-                $segments[0],
-                "mcp_servers",
-                [System.StringComparison]::Ordinal
-            ) -and
-            [string]::Equals(
-                $segments[1],
-                "agent_global_context",
-                [System.StringComparison]::Ordinal
-            )
-        ) {
-            throw "Codex config contains an unmanaged agent_global_context MCP table."
+
+        $index = 0
+        while ($index -lt $line.Length) {
+            if ($stringMode -eq "multiline-basic") {
+                if ($line[$index] -eq "\") {
+                    $index += 2
+                    continue
+                }
+                if (
+                    $index + 3 -le $line.Length -and
+                    $line.Substring($index, 3) -eq '"""'
+                ) {
+                    $stringMode = "none"
+                    $index += 3
+                    continue
+                }
+                $index++
+                continue
+            }
+            if ($stringMode -eq "multiline-literal") {
+                if (
+                    $index + 3 -le $line.Length -and
+                    $line.Substring($index, 3) -eq "'''"
+                ) {
+                    $stringMode = "none"
+                    $index += 3
+                    continue
+                }
+                $index++
+                continue
+            }
+            if ($stringMode -eq "basic") {
+                if ($line[$index] -eq "\") {
+                    $index += 2
+                    continue
+                }
+                if ($line[$index] -eq '"') {
+                    $stringMode = "none"
+                }
+                $index++
+                continue
+            }
+            if ($stringMode -eq "literal") {
+                if ($line[$index] -eq "'") {
+                    $stringMode = "none"
+                }
+                $index++
+                continue
+            }
+
+            if ($line[$index] -eq "#") {
+                break
+            }
+            if (
+                $index + 3 -le $line.Length -and
+                $line.Substring($index, 3) -eq '"""'
+            ) {
+                $stringMode = "multiline-basic"
+                $index += 3
+                continue
+            }
+            if (
+                $index + 3 -le $line.Length -and
+                $line.Substring($index, 3) -eq "'''"
+            ) {
+                $stringMode = "multiline-literal"
+                $index += 3
+                continue
+            }
+            if ($line[$index] -eq '"') {
+                $stringMode = "basic"
+                $index++
+                continue
+            }
+            if ($line[$index] -eq "'") {
+                $stringMode = "literal"
+                $index++
+                continue
+            }
+            if ($line[$index] -eq "[") {
+                $arrayDepth++
+                $index++
+                continue
+            }
+            if ($line[$index] -eq "]") {
+                if ($arrayDepth -eq 0) {
+                    throw "Unexpected TOML array closing bracket."
+                }
+                $arrayDepth--
+                $index++
+                continue
+            }
+            if ($line[$index] -eq "{") {
+                $inlineTableDepth++
+                $index++
+                continue
+            }
+            if ($line[$index] -eq "}") {
+                if ($inlineTableDepth -eq 0) {
+                    throw "Unexpected TOML inline table closing brace."
+                }
+                $inlineTableDepth--
+                $index++
+                continue
+            }
+            $index++
         }
+        if ($stringMode -eq "basic" -or $stringMode -eq "literal") {
+            throw "Unterminated TOML quoted string."
+        }
+    }
+    if (
+        $stringMode -ne "none" -or
+        $arrayDepth -ne 0 -or
+        $inlineTableDepth -ne 0
+    ) {
+        throw "Unterminated TOML multiline string or nested value."
     }
 }
 

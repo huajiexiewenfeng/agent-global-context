@@ -605,6 +605,63 @@ def test_malformed_toml_table_header_fails_before_active_mutation(
     assert not install.exists()
 
 
+@pytest.mark.parametrize(
+    "config_text",
+    [
+        "matrix = [\n  [1, 2],\n  [3, 4],\n]\n",
+        (
+            'message = """\n'
+            "[mcp_servers.agent_global_context]\n"
+            'still = "string content"\n'
+            '"""\n'
+        ),
+        (
+            "message = '''\n"
+            "[mcp_servers.agent_global_context]\n"
+            'still = "literal string content"\n'
+            "'''\n"
+        ),
+        (
+            "nested = [\n"
+            "  [\n"
+            "    [1, 2],\n"
+            "    [3, 4],\n"
+            "  ],\n"
+            "]\n\n"
+            "[[products]]\n"
+            'name = "Hammer"\n\n'
+            "[[products]]\n"
+            'name = "Nail"\n'
+        ),
+    ],
+    ids=("matrix", "multiline-basic", "multiline-literal", "nested-and-array-table"),
+)
+def test_valid_bracket_leading_value_lines_are_not_table_headers(
+    tmp_path: Path, config_text: str
+):
+    original = tomllib.loads(config_text)
+    repository = _create_repository(tmp_path)
+    skills, config = _create_active_install(tmp_path)
+    _write_utf8(config, config_text)
+
+    _, result = _invoke(
+        repository,
+        skills,
+        config,
+        tmp_path / "memory",
+        tmp_path / "runtime",
+    )
+
+    installed = tomllib.loads(_strict_utf8_without_bom(config))
+    for key, value in original.items():
+        assert installed[key] == value
+    assert installed["mcp_servers"]["agent_global_context"]["enabled"] is True
+    assert result["restart_required"] is True
+    assert sorted(
+        path.name for path in skills.glob("agent-global-context*") if path.is_dir()
+    ) == ["agent-global-context"]
+
+
 def test_windows_powershell_native_stderr_helper_uses_exit_code(
     tmp_path: Path,
 ):
