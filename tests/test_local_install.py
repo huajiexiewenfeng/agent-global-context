@@ -541,6 +541,9 @@ def test_active_agc_skill_junction_is_rejected_before_writes(tmp_path: Path):
         "[mcp_servers.agent_global_context.env]",
         "[mcp_servers.agent_global_context.logging]",
         '["mcp_servers"."agent_global_context"]',
+        r'''['mcp_servers'."agent_global_\u0063ontext"]''',
+        r'''["mcp_\u0073ervers".agent_global_context]''',
+        r'''[mcp_servers."agent_global_\U00000063ontext"]''',
     ],
 )
 def test_unmanaged_agc_server_table_fails_before_active_mutation(
@@ -549,6 +552,39 @@ def test_unmanaged_agc_server_table_fails_before_active_mutation(
     repository = _create_repository(tmp_path)
     skills, config = _create_active_install(tmp_path)
     _write_utf8(config, f'{declaration}\nenabled = false\n')
+    before_config = config.read_bytes()
+    before_skills = _tree_snapshot(skills)
+    install = tmp_path / "runtime"
+
+    completed, result = _invoke(
+        repository,
+        skills,
+        config,
+        tmp_path / "memory",
+        install,
+        check=False,
+    )
+
+    assert completed.returncode != 0
+    assert result is None
+    assert config.read_bytes() == before_config
+    assert _tree_snapshot(skills) == before_skills
+    assert not install.exists()
+
+
+@pytest.mark.parametrize(
+    "header",
+    [
+        '[mcp_servers."agent_global_context]',
+        r"[mcp_servers.agent_global_context\q]",
+    ],
+)
+def test_malformed_toml_table_header_fails_before_active_mutation(
+    tmp_path: Path, header: str
+):
+    repository = _create_repository(tmp_path)
+    skills, config = _create_active_install(tmp_path)
+    _write_utf8(config, f"{header}\nenabled = false\n")
     before_config = config.read_bytes()
     before_skills = _tree_snapshot(skills)
     install = tmp_path / "runtime"

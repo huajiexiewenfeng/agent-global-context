@@ -248,6 +248,210 @@ function Get-MarkerState {
     }
 }
 
+function Test-IsTomlBareKeyCharacter {
+    param([char]$Character)
+
+    $code = [int]$Character
+    return (
+        ($code -ge [int][char]"A" -and $code -le [int][char]"Z") -or
+        ($code -ge [int][char]"a" -and $code -le [int][char]"z") -or
+        ($code -ge [int][char]"0" -and $code -le [int][char]"9") -or
+        $Character -eq "_" -or
+        $Character -eq "-"
+    )
+}
+
+function Read-TomlTableHeader {
+    param([string]$Line)
+
+    $length = $Line.Length
+    $index = 0
+    while (
+        $index -lt $length -and
+        ($Line[$index] -eq " " -or $Line[$index] -eq "`t")
+    ) {
+        $index++
+    }
+    if ($index -ge $length -or $Line[$index] -ne "[") {
+        throw "Malformed TOML table header."
+    }
+    $index++
+    $isArrayTable = $false
+    if ($index -lt $length -and $Line[$index] -eq "[") {
+        $isArrayTable = $true
+        $index++
+    }
+
+    $segments = New-Object System.Collections.Generic.List[string]
+    while ($true) {
+        while (
+            $index -lt $length -and
+            ($Line[$index] -eq " " -or $Line[$index] -eq "`t")
+        ) {
+            $index++
+        }
+        if ($index -ge $length) {
+            throw "Malformed TOML table header: missing key."
+        }
+
+        $builder = New-Object System.Text.StringBuilder
+        if ($Line[$index] -eq '"') {
+            $index++
+            $closed = $false
+            while ($index -lt $length) {
+                $character = $Line[$index]
+                $index++
+                if ($character -eq '"') {
+                    $closed = $true
+                    break
+                }
+                if ($character -eq "\") {
+                    if ($index -ge $length) {
+                        throw "Malformed TOML basic quoted key escape."
+                    }
+                    $escape = $Line[$index]
+                    $index++
+                    switch ($escape) {
+                        '"' { [void]$builder.Append('"') }
+                        "\" { [void]$builder.Append("\") }
+                        "b" { [void]$builder.Append([char]8) }
+                        "t" { [void]$builder.Append([char]9) }
+                        "n" { [void]$builder.Append([char]10) }
+                        "f" { [void]$builder.Append([char]12) }
+                        "r" { [void]$builder.Append([char]13) }
+                        "u" {
+                            $digits = 4
+                            if ($index + $digits -gt $length) {
+                                throw "Malformed TOML Unicode escape."
+                            }
+                            $hex = $Line.Substring($index, $digits)
+                            if ($hex -cnotmatch "^[0-9A-Fa-f]{4}$") {
+                                throw "Malformed TOML Unicode escape."
+                            }
+                            $codePoint = [Convert]::ToInt32($hex, 16)
+                            if ($codePoint -ge 0xD800 -and $codePoint -le 0xDFFF) {
+                                throw "TOML Unicode escape is not a scalar value."
+                            }
+                            [void]$builder.Append(
+                                [char]::ConvertFromUtf32($codePoint)
+                            )
+                            $index += $digits
+                        }
+                        "U" {
+                            $digits = 8
+                            if ($index + $digits -gt $length) {
+                                throw "Malformed TOML Unicode escape."
+                            }
+                            $hex = $Line.Substring($index, $digits)
+                            if ($hex -cnotmatch "^[0-9A-Fa-f]{8}$") {
+                                throw "Malformed TOML Unicode escape."
+                            }
+                            $codePoint = [Convert]::ToInt32($hex, 16)
+                            if (
+                                $codePoint -gt 0x10FFFF -or
+                                ($codePoint -ge 0xD800 -and $codePoint -le 0xDFFF)
+                            ) {
+                                throw "TOML Unicode escape is not a scalar value."
+                            }
+                            [void]$builder.Append(
+                                [char]::ConvertFromUtf32($codePoint)
+                            )
+                            $index += $digits
+                        }
+                        default {
+                            throw "Unsupported TOML basic quoted key escape."
+                        }
+                    }
+                    continue
+                }
+                $code = [int]$character
+                if ($code -le 0x1F -or $code -eq 0x7F) {
+                    throw "Control character in TOML basic quoted key."
+                }
+                [void]$builder.Append($character)
+            }
+            if (-not $closed) {
+                throw "Malformed TOML basic quoted key."
+            }
+        }
+        elseif ($Line[$index] -eq "'") {
+            $index++
+            $closed = $false
+            while ($index -lt $length) {
+                $character = $Line[$index]
+                $index++
+                if ($character -eq "'") {
+                    $closed = $true
+                    break
+                }
+                $code = [int]$character
+                if ($code -le 0x1F -or $code -eq 0x7F) {
+                    throw "Control character in TOML literal quoted key."
+                }
+                [void]$builder.Append($character)
+            }
+            if (-not $closed) {
+                throw "Malformed TOML literal quoted key."
+            }
+        }
+        else {
+            if (-not (Test-IsTomlBareKeyCharacter -Character $Line[$index])) {
+                throw "Malformed TOML bare table key."
+            }
+            while (
+                $index -lt $length -and
+                (Test-IsTomlBareKeyCharacter -Character $Line[$index])
+            ) {
+                [void]$builder.Append($Line[$index])
+                $index++
+            }
+        }
+        [void]$segments.Add($builder.ToString())
+
+        while (
+            $index -lt $length -and
+            ($Line[$index] -eq " " -or $Line[$index] -eq "`t")
+        ) {
+            $index++
+        }
+        if ($index -ge $length) {
+            throw "Malformed TOML table header: missing closing bracket."
+        }
+        if ($Line[$index] -eq ".") {
+            $index++
+            continue
+        }
+        if ($isArrayTable) {
+            if (
+                $Line[$index] -ne "]" -or
+                $index + 1 -ge $length -or
+                $Line[$index + 1] -ne "]"
+            ) {
+                throw "Malformed TOML array table closing brackets."
+            }
+            $index += 2
+        }
+        else {
+            if ($Line[$index] -ne "]") {
+                throw "Malformed TOML table closing bracket."
+            }
+            $index++
+        }
+        break
+    }
+
+    while (
+        $index -lt $length -and
+        ($Line[$index] -eq " " -or $Line[$index] -eq "`t")
+    ) {
+        $index++
+    }
+    if ($index -lt $length -and $Line[$index] -ne "#") {
+        throw "Unexpected text after TOML table header."
+    }
+    return $segments.ToArray()
+}
+
 function Assert-NoUnmanagedAgcTable {
     param([string]$Text, [object]$MarkerState)
 
@@ -258,16 +462,27 @@ function Assert-NoUnmanagedAgcTable {
             $Text.Substring($MarkerState.EndExclusive)
         )
     }
-    $mcpKey = '(?:mcp_servers|"mcp_servers"|''mcp_servers'')'
-    $serverKey = (
-        '(?:agent_global_context|"agent_global_context"|''agent_global_context'')'
-    )
-    $pattern = (
-        "(?m)^[ `t]*\[{1,2}[ `t]*$mcpKey[ `t]*\.[ `t]*" +
-        "$serverKey[ `t]*(?:\.|\])"
-    )
-    if ([regex]::IsMatch($outside, $pattern)) {
-        throw "Codex config contains an unmanaged agent_global_context MCP table."
+    foreach ($line in $outside.Split([char]"`n")) {
+        $candidate = $line.TrimStart()
+        if (-not $candidate.StartsWith("[")) {
+            continue
+        }
+        $segments = @(Read-TomlTableHeader -Line $candidate)
+        if (
+            $segments.Count -ge 2 -and
+            [string]::Equals(
+                $segments[0],
+                "mcp_servers",
+                [System.StringComparison]::Ordinal
+            ) -and
+            [string]::Equals(
+                $segments[1],
+                "agent_global_context",
+                [System.StringComparison]::Ordinal
+            )
+        ) {
+            throw "Codex config contains an unmanaged agent_global_context MCP table."
+        }
     }
 }
 
