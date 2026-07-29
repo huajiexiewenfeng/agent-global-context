@@ -842,7 +842,7 @@ $publicNeedsCopy = $false
 $configChanged = $false
 $launcherChanged = $false
 $launcherExisted = $false
-$stageContainer = $null
+$pendingRuntimePath = $null
 
 try {
     # Reject path aliases before resolving or creating any input path.
@@ -965,7 +965,6 @@ try {
     else {
         $deploymentKey = Get-RuntimeDeploymentKey -Repository $resolvedRepository
         $venvsRoot = Join-Path $resolvedInstall "venvs"
-        $stagingRoot = Join-Path $resolvedInstall "staging"
         $publishedVenv = Join-Path $venvsRoot $deploymentKey
         $venvPython = Join-Path $publishedVenv "Scripts\python.exe"
         $mcpExecutable = Join-Path $publishedVenv "Scripts\agc-mcp.exe"
@@ -989,10 +988,7 @@ try {
         }
         else {
             [System.IO.Directory]::CreateDirectory($venvsRoot) | Out-Null
-            [System.IO.Directory]::CreateDirectory($stagingRoot) | Out-Null
-            $stageContainer = Join-Path $stagingRoot ([guid]::NewGuid().ToString("N"))
-            $stagedVenv = Join-Path $stageContainer "venv"
-            [System.IO.Directory]::CreateDirectory($stageContainer) | Out-Null
+            $pendingRuntimePath = $publishedVenv
 
             if (
                 -not [string]::IsNullOrEmpty(
@@ -1012,13 +1008,12 @@ try {
                 -Arguments @(
                     "-m",
                     "venv",
-                    $stagedVenv
+                    $publishedVenv
                 )
             if ($venvExitCode -ne 0) {
                 throw "Creating the dedicated Runtime virtual environment failed."
             }
 
-            $stagedPython = Join-Path $stagedVenv "Scripts\python.exe"
             $pipArguments = @(
                 "-m",
                 "pip",
@@ -1033,36 +1028,36 @@ try {
                 $pipArguments += "--no-deps"
             }
             $installExitCode = Invoke-NativeCommand `
-                -Executable $stagedPython -Arguments $pipArguments
+                -Executable $venvPython -Arguments $pipArguments
             if ($installExitCode -ne 0) {
                 throw "Installing the AGC Runtime MCP adapter failed."
             }
 
-            $stagedMcp = Join-Path $stagedVenv "Scripts\agc-mcp.exe"
-            if (-not (Test-Path -LiteralPath $stagedMcp -PathType Leaf)) {
-                throw "The staged AGC MCP executable was not found."
+            if (-not (Test-Path -LiteralPath $mcpExecutable -PathType Leaf)) {
+                throw "The inactive AGC MCP executable was not found."
             }
             $validationImports = "import agc_runtime"
             if ([string]::IsNullOrEmpty($env:AGC_INSTALL_TEST_PIP_NO_DEPS)) {
                 $validationImports += "; import mcp"
             }
             $validationExitCode = Invoke-NativeCommand `
-                -Executable $stagedPython `
+                -Executable $venvPython `
                 -Arguments @("-c", $validationImports)
             if ($validationExitCode -ne 0) {
-                throw "The staged AGC Runtime failed import validation."
+                throw "The inactive AGC Runtime failed import validation."
+            }
+            $entryPointExitCode = Invoke-NativeCommand `
+                -Executable $mcpExecutable -Arguments @("--version")
+            if ($entryPointExitCode -ne 0) {
+                throw "The final-path AGC MCP executable failed validation."
             }
             Write-Utf8NoBom `
-                -Path (Join-Path $stagedVenv ".agc-deployment-key") `
+                -Path (Join-Path $publishedVenv ".agc-deployment-key") `
                 -Text "$deploymentKey`n"
 
             if ($env:AGC_INSTALL_TEST_FAIL_AFTER -eq "runtime-stage") {
-                throw "Injected failure after staged Runtime validation."
+                throw "Injected failure after inactive Runtime validation."
             }
-
-            Move-Item -LiteralPath $stagedVenv -Destination $publishedVenv
-            Remove-Item -LiteralPath $stageContainer -Force
-            $stageContainer = $null
         }
     }
 
@@ -1162,6 +1157,7 @@ try {
         }
     }
 
+    $pendingRuntimePath = $null
     $result = [ordered]@{
         repository_root = $resolvedRepository
         skills_root = $resolvedSkills
@@ -1176,12 +1172,7 @@ try {
     [Console]::Out.WriteLine(($result | ConvertTo-Json -Compress))
 }
 catch {
-    if (
-        $null -ne $stageContainer -and
-        (Test-Path -LiteralPath $stageContainer -PathType Container)
-    ) {
-        Remove-Item -LiteralPath $stageContainer -Recurse -Force
-    }
+    $rollbackSucceeded = $true
     if ($activeMutationStarted -and $null -ne $backupPath) {
         try {
             if ($configChanged) {
@@ -1224,8 +1215,24 @@ catch {
             }
         }
         catch {
+            $rollbackSucceeded = $false
             [Console]::Error.WriteLine(
                 "AGC installer rollback failed; inspect the retained backup at $backupPath."
+            )
+        }
+    }
+    if (
+        $rollbackSucceeded -and
+        $null -ne $pendingRuntimePath -and
+        (Test-Path -LiteralPath $pendingRuntimePath -PathType Container)
+    ) {
+        try {
+            Remove-Item -LiteralPath $pendingRuntimePath -Recurse -Force
+        }
+        catch {
+            [Console]::Error.WriteLine(
+                "AGC installer could not remove the inactive failed Runtime at " +
+                "$pendingRuntimePath."
             )
         }
     }

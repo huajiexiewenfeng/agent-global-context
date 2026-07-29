@@ -51,8 +51,8 @@ $runtimeInstall = "$env:USERPROFILE\.agent-global-context-runtime"
 The installer:
 
 1. validates paths, the source Skill encoding, and Codex block markers;
-2. installs the repository's `mcp` extra into a staged virtual environment,
-   validates it, and publishes it under
+2. installs the repository's `mcp` extra into an inactive content-addressed
+   virtual environment under
    `<InstallRoot>\venvs\<runtime-content-sha256>`;
 3. writes `<InstallRoot>\bin\agc-mcp.cmd`;
 4. backs up every active AGC Skill directory that it replaces and the Codex
@@ -66,7 +66,8 @@ Backups are retained under
 no backup. A caught failure after active mutation begins restores the active
 config, launcher, and Skills from the current backup. Runtime upgrades never
 modify or remove the previously configured venv; Codex switches to the validated
-content-addressed venv only when the backed-up config mutation succeeds.
+content-addressed venv only after its final-path Python imports and
+`agc-mcp.exe --version` probe pass.
 
 ## After Registration
 

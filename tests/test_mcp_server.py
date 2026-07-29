@@ -91,6 +91,18 @@ def test_main_refuses_to_start_without_memory_root(monkeypatch):
         mcp_server_module.main()
 
 
+def test_main_version_probe_does_not_start_stdio(monkeypatch, capsys):
+    mcp_server_module = _mcp_server_module()
+    monkeypatch.delenv("AGC_MEMORY_ROOT", raising=False)
+
+    exit_code = mcp_server_module.main(["--version"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert captured.out == "0.2.0\n"
+    assert captured.err == ""
+
+
 def test_main_starts_stdio_without_stdout_contamination(
     tmp_path, monkeypatch, capsys
 ):

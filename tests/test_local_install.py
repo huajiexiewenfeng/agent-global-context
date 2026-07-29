@@ -162,7 +162,7 @@ def _invoke(
     return completed, result
 
 
-def test_runtime_upgrade_is_staged_and_failed_upgrade_preserves_active_venv(
+def test_runtime_upgrade_is_inactive_and_failed_upgrade_preserves_active_venv(
     tmp_path: Path,
 ):
     repository = _create_runtime_repository(tmp_path)
@@ -191,6 +191,13 @@ def test_runtime_upgrade_is_staged_and_failed_upgrade_preserves_active_venv(
     first_config = config.read_bytes()
     assert first_executable.is_file()
     assert first_venv.parent == install / "venvs"
+    first_probe = subprocess.run(
+        [first_executable, "--version"],
+        capture_output=True,
+        check=False,
+    )
+    assert first_probe.returncode == 0
+    assert first_probe.stdout.decode("utf-8", errors="strict").strip() == "0.2.0"
 
     runtime_source = repository / "agc_runtime" / "__init__.py"
     runtime_source.write_bytes(runtime_source.read_bytes() + b"\n# upgrade fixture\n")
@@ -213,7 +220,7 @@ def test_runtime_upgrade_is_staged_and_failed_upgrade_preserves_active_venv(
     assert failed_result is None
     assert config.read_bytes() == first_config
     assert _tree_snapshot(first_venv) == first_snapshot
-    assert list((install / "staging").iterdir()) == []
+    assert set((install / "venvs").iterdir()) == {first_venv}
 
     _, second = _invoke(
         repository,
@@ -230,6 +237,13 @@ def test_runtime_upgrade_is_staged_and_failed_upgrade_preserves_active_venv(
     assert second_executable.is_file()
     assert second_executable != first_executable
     assert first_executable.is_file()
+    second_probe = subprocess.run(
+        [second_executable, "--version"],
+        capture_output=True,
+        check=False,
+    )
+    assert second_probe.returncode == 0
+    assert second_probe.stdout.decode("utf-8", errors="strict").strip() == "0.2.0"
     assert _tree_snapshot(first_venv) == first_snapshot
     _assert_toml_paths(
         config,

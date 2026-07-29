@@ -440,7 +440,7 @@ param(
 ```
 
 - Installer results:
-  - staged, validated, content-addressed venv under
+  - inactive, validated, content-addressed venv under
     `<InstallRoot>\venvs\<runtime-content-sha256>`;
   - exact MCP executable path in Codex config;
   - one installed public AGC Skill;
@@ -475,8 +475,9 @@ The script must:
 
 1. resolve all paths and reject missing repository/Skill/config inputs;
 2. create a timestamped backup before modifying active Skills or config;
-3. unless skipped, create a staged venv, install `"<RepositoryRoot>[mcp]"`,
-   validate it, and publish it under
+3. unless skipped, create an inactive venv under its final content-addressed path,
+   install `"<RepositoryRoot>[mcp]"`, validate final-path imports and
+   `agc-mcp.exe --version`, and keep it under
    `<InstallRoot>\venvs\<runtime-content-sha256>` without mutating the previous venv;
 4. copy only `skills\agent-global-context` to the active Skills root;
 5. move the four retired alpha Skill directories into the timestamped backup;
