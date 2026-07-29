@@ -4,7 +4,7 @@
 
 **Goal:** Replace the locally active alpha AGC with one thin v2 Skill, three Codex-visible Runtime tools, a deterministic parallel v1 migration, and a verified local cutover.
 
-**Architecture:** The existing deterministic Runtime remains the only data engine. A tiny FastMCP stdio adapter binds one configured memory root and forwards exactly three tools; one public Skill tells the LLM when to use them without injecting personal facts. Migration accepts an LLM-authored semantic plan, builds a separate v2 root, snapshots only approved normal/personal v1 sources, records content-free exclusions, validates the result, and leaves v1 untouched for rollback until the tool root is switched.
+**Architecture:** The existing deterministic Runtime remains the only data engine. A tiny MCP SDK v2 stdio adapter binds one configured memory root and forwards exactly three tools; one public Skill tells the LLM when to use them without injecting personal facts. Migration accepts an LLM-authored semantic plan, builds a separate v2 root, snapshots only approved normal/personal v1 sources, records content-free exclusions, validates the result, and leaves v1 untouched for rollback until the tool root is switched.
 
 **Tech Stack:** Python 3.10+, PyYAML 6.x, official MCP Python SDK 2.0.0, pytest 9.1.1, PowerShell 7/Windows, Markdown, TOML.
 
@@ -49,7 +49,7 @@
 - Consumes: `dispatch_read(paths, request)`, `dispatch_write(paths, request)`, `dispatch_admin(paths, request)`, `MemoryPaths.from_root(path)`.
 - Produces:
   - MCP tools named exactly `agc.read`, `agc.write`, and `agc.admin`.
-  - `create_server(memory_root: Path) -> FastMCP`.
+  - `create_server(memory_root: Path) -> MCPServer`.
   - console entry point `agc-mcp = agc_runtime.mcp_server:main`.
   - Runtime package version `0.2.0`.
 
@@ -151,7 +151,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 from agc_runtime.admin_service import dispatch_admin
 from agc_runtime.paths import MemoryPaths
@@ -159,9 +159,9 @@ from agc_runtime.read_service import dispatch_read
 from agc_runtime.write_service import dispatch_write
 
 
-def create_server(memory_root: Path) -> FastMCP:
+def create_server(memory_root: Path) -> MCPServer:
     paths = MemoryPaths.from_root(memory_root)
-    server = FastMCP(
+    server = MCPServer(
         name="Agent Global Context",
         instructions=(
             "Personal memory is optional. The LLM decides whether it is relevant. "
@@ -617,4 +617,3 @@ Run a whole-change review against the pre-upgrade base. Fix every Critical/Impor
 - Placeholder scan: no TBD/TODO/implement-later instructions remain.
 - Type consistency: `create_server(Path)`, `migrate_v1(MemoryPaths, request)`, tool names, migration fields, and local paths are consistent across tasks.
 - Scope check: Codex side-channel capture and seven-day backfill remain a separate independently testable delivery and are not activated here.
-

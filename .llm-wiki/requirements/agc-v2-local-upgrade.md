@@ -58,11 +58,11 @@
 
 ## External Dependencies
 
-- dependency: official MCP Python SDK
-- required_contract: FastMCP stdio server and tool decorators
+- dependency: official MCP Python SDK 2.0.0
+- required_contract: v2 `MCPServer` stdio server and tool decorators
 - verification_status: primary-source-checked
 - evidence: official `modelcontextprotocol/python-sdk` documentation
-- impact_on_change: optional `mcp` package extra and local stdio server entry point
+- impact_on_change: optional `mcp==2.0.0` package extra and local stdio server entry point
 - fallback_or_handoff: the deterministic CLI remains available if Codex MCP startup fails
 
 ## Flow Record
