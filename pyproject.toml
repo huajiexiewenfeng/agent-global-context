@@ -4,16 +4,17 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agent-global-context-runtime"
-version = "0.1.0"
+version = "0.2.0"
 description = "Deterministic local runtime for Agent Global Context."
 requires-python = ">=3.10"
-dependencies = ["PyYAML>=6.0.2,<7"]
+dependencies = ["PyYAML>=6.0.2,<7", "mcp==2.0.0"]
 
 [project.optional-dependencies]
 test = ["pytest==9.1.1", "build>=1.2,<2"]
 
 [project.scripts]
 agc = "agc_runtime.cli:main"
+agc-mcp = "agc_runtime.mcp_server:main"
 
 [tool.setuptools.packages.find]
 include = ["agc_runtime*"]

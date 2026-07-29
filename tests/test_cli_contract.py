@@ -1,4 +1,9 @@
 import json
+import tomllib
+from pathlib import Path
+
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_version_is_a_stable_json_envelope(run_cli):
@@ -10,7 +15,7 @@ def test_version_is_a_stable_json_envelope(run_cli):
         "tool": "agc.admin",
         "action": "version",
         "status": "accepted",
-        "data": {"runtime_version": "0.1.0"},
+        "data": {"runtime_version": "0.2.0"},
         "warnings": [],
         "error": None,
     }
@@ -23,3 +28,12 @@ def test_unknown_tool_is_machine_readable(run_cli):
     payload = json.loads(result.stdout)
     assert payload["status"] == "failed"
     assert payload["error"]["code"] == "invalid_tool"
+
+
+def test_package_exposes_the_pinned_mcp_stdio_entry_point():
+    with (REPOSITORY_ROOT / "pyproject.toml").open("rb") as stream:
+        project = tomllib.load(stream)["project"]
+
+    assert project["version"] == "0.2.0"
+    assert "mcp==2.0.0" in project["dependencies"]
+    assert project["scripts"]["agc-mcp"] == "agc_runtime.mcp_server:main"
