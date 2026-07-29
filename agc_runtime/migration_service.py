@@ -44,6 +44,8 @@ class _ValidatedSource:
     relative_path: str
     absolute_path: Path
     sha256: str
+    canonical_path: str
+    file_identity: dict[str, int]
     disposition: str
     snapshot_text: str | None
     source_had_bom: bool
@@ -134,7 +136,19 @@ def _validate_sources(
         )
         if disposition not in _DISPOSITIONS:
             raise ValueError(f"invalid source disposition: {disposition}")
+        before_stat = absolute.stat()
         raw = absolute.read_bytes()
+        after_stat = absolute.stat()
+        before_identity = (before_stat.st_dev, before_stat.st_ino)
+        after_identity = (after_stat.st_dev, after_stat.st_ino)
+        if (
+            before_identity != after_identity
+            or before_stat.st_size != after_stat.st_size
+            or before_stat.st_mtime_ns != after_stat.st_mtime_ns
+        ):
+            raise RuntimeError(
+                f"source changed during validation: {relative}"
+            )
         actual_hash = hashlib.sha256(raw).hexdigest()
         if actual_hash != expected_hash:
             raise RuntimeError(f"source hash mismatch: {relative}")
@@ -149,6 +163,11 @@ def _validate_sources(
                 relative_path=relative,
                 absolute_path=absolute,
                 sha256=expected_hash,
+                canonical_path=str(absolute.resolve()),
+                file_identity={
+                    "device": after_stat.st_dev,
+                    "inode": after_stat.st_ino,
+                },
                 disposition=disposition,
                 snapshot_text=snapshot_text,
                 source_had_bom=had_bom,
@@ -322,6 +341,9 @@ def _manifest_value(
             {
                 "path": source.relative_path,
                 "sha256": source.sha256,
+                "current_sha256": source.sha256,
+                "canonical_path": source.canonical_path,
+                "file_identity": source.file_identity,
                 "disposition": source.disposition,
                 "source_had_bom": source.source_had_bom,
             }
@@ -336,6 +358,7 @@ def _manifest_value(
             key=lambda value: value.encode("utf-8"),
         ),
         "counts": _counts(sources, memories),
+        "forget_operations": [],
     }
     manifest["integrity_sha256"] = migration_manifest_integrity(manifest)
     return validate_migration_manifest(

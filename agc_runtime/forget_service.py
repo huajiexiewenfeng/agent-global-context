@@ -166,7 +166,11 @@ def forget(paths: MemoryPaths, request: Any) -> ToolResponse:
             originals: list[
                 tuple[ForgetOperation, bool, bytes | None]
             ] = []
-            for operation in (*plan.operations, plan.tombstone):
+            for operation in (
+                *plan.marker_operations,
+                *plan.operations,
+                plan.tombstone,
+            ):
                 existed = operation.path.exists()
                 originals.append(
                     (

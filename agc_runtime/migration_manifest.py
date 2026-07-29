@@ -23,14 +23,24 @@ _FIELDS = {
     "memories",
     "migrated_ids",
     "counts",
+    "forget_operations",
 }
 _SOURCE_FIELDS = {
     "path",
     "sha256",
+    "current_sha256",
+    "canonical_path",
+    "file_identity",
     "disposition",
     "source_had_bom",
 }
 _MEMORY_FIELDS = {"id", "source_path"}
+_FILE_IDENTITY_FIELDS = {"device", "inode"}
+_FORGET_OPERATION_FIELDS = {
+    "operation_id",
+    "memory_id",
+    "status",
+}
 _COUNT_FIELDS = {
     "sources",
     "snapshots",
@@ -152,9 +162,36 @@ def validate_migration_manifest(
         sha256 = _string(
             source["sha256"], "manifest source.sha256"
         )
-        if not SHA256_PATTERN.fullmatch(sha256):
+        current_sha256 = _string(
+            source["current_sha256"],
+            "manifest source.current_sha256",
+        )
+        if not SHA256_PATTERN.fullmatch(sha256) or not SHA256_PATTERN.fullmatch(
+            current_sha256
+        ):
             raise MigrationManifestError(
-                "manifest source.sha256 must be lowercase SHA-256"
+                "manifest source hashes must be lowercase SHA-256"
+            )
+        canonical_path = _string(
+            source["canonical_path"], "manifest source.canonical_path"
+        )
+        if not Path(canonical_path).is_absolute():
+            raise MigrationManifestError(
+                "manifest source.canonical_path must be absolute"
+            )
+        identity = _mapping(
+            source["file_identity"],
+            "manifest source.file_identity",
+            _FILE_IDENTITY_FIELDS,
+        )
+        if any(
+            not isinstance(identity[name], int)
+            or isinstance(identity[name], bool)
+            or identity[name] < 0
+            for name in _FILE_IDENTITY_FIELDS
+        ):
+            raise MigrationManifestError(
+                "manifest source.file_identity values must be non-negative integers"
             )
         if source["disposition"] not in DISPOSITIONS:
             raise MigrationManifestError(
@@ -230,6 +267,44 @@ def validate_migration_manifest(
         raise MigrationManifestError(
             "manifest counts do not match its entries"
         )
+
+    raw_forget_operations = manifest["forget_operations"]
+    if not isinstance(raw_forget_operations, list):
+        raise MigrationManifestError(
+            "manifest forget_operations must be a list"
+        )
+    operation_ids: set[str] = set()
+    for raw_operation in raw_forget_operations:
+        operation = _mapping(
+            raw_operation,
+            "manifest forget operation",
+            _FORGET_OPERATION_FIELDS,
+        )
+        operation_id = _string(
+            operation["operation_id"],
+            "manifest forget operation.operation_id",
+        )
+        if not SHA256_PATTERN.fullmatch(operation_id):
+            raise MigrationManifestError(
+                "invalid manifest forget operation_id"
+            )
+        if operation_id in operation_ids:
+            raise MigrationManifestError(
+                "duplicate manifest forget operation_id"
+            )
+        operation_ids.add(operation_id)
+        memory_id = _string(
+            operation["memory_id"],
+            "manifest forget operation.memory_id",
+        )
+        if not SAFE_ID_PATTERN.fullmatch(memory_id):
+            raise MigrationManifestError(
+                "invalid manifest forget memory_id"
+            )
+        if operation["status"] not in {"in_progress", "completed"}:
+            raise MigrationManifestError(
+                "invalid manifest forget operation status"
+            )
     return manifest
 
 

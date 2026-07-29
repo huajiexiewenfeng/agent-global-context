@@ -11,6 +11,7 @@ import pytest
 from agc_runtime.catalog import rebuild_catalog
 from agc_runtime.contracts import SourceKey
 from agc_runtime.forget_service import forget
+from agc_runtime.migration_manifest import migration_manifest_integrity
 from agc_runtime.migration_service import migrate_v1
 from agc_runtime.models import MemoryItem
 from agc_runtime.paths import MemoryPaths
@@ -43,6 +44,19 @@ def family_memory() -> MemoryItem:
         full_meaning="用户明确表达过自己有妻子和儿子；仅在家庭结构实质相关时使用。",
         application_boundary="普通工作任务中不主动提及。",
         rationale="这是带边界的个人背景。",
+    )
+
+
+def parent_memory() -> MemoryItem:
+    item = family_memory()
+    return replace(
+        item,
+        id="parent-history",
+        subkind="parent_history",
+        memory_card="用户提到父母",
+        full_meaning="用户明确表达过与父母有关的背景；仅在相关语境中使用。",
+        application_boundary="普通任务中不主动提及父母。",
+        rationale="这是另一条有边界的个人背景。",
     )
 
 
@@ -274,11 +288,11 @@ def test_forget_migrated_memory_surgically_rewrites_legacy_and_snapshot(
     response = forget(paths, authorized_request())
 
     assert response.status == "accepted"
-    for path in (source_file, snapshot):
-        text = path.read_text(encoding="utf-8")
-        assert "妻子和儿子" not in text
-        assert "保留：无关内容" in text
-        assert "保留：其他内容" in text
+    text = source_file.read_text(encoding="utf-8")
+    assert "妻子和儿子" not in text
+    assert "保留：无关内容" in text
+    assert "保留：其他内容" in text
+    assert not snapshot.exists()
     manifest_text = (
         paths.migrations / "v1-family" / "manifest.json"
     ).read_text(encoding="utf-8")
@@ -307,17 +321,186 @@ def test_forget_exact_term_surgery_preserves_same_line_and_multiline_text(
     response = forget(paths, authorized_request())
 
     assert response.status == "accepted"
-    for relative, original in source_texts.items():
+    first_source = source_root / "user" / "first.md"
+    first_snapshot = (
+        paths.migrations / "v1-family" / "snapshot" / "user" / "first.md"
+    )
+    second_source = source_root / "user" / "second.md"
+    second_snapshot = (
+        paths.migrations / "v1-family" / "snapshot" / "user" / "second.md"
+    )
+    assert first_source.read_text(encoding="utf-8") == source_texts[
+        "user/first.md"
+    ].replace(term, "")
+    assert not first_snapshot.exists()
+    assert second_source.read_text(encoding="utf-8") == source_texts[
+        "user/second.md"
+    ]
+    assert second_snapshot.read_text(encoding="utf-8") == source_texts[
+        "user/second.md"
+    ]
+
+
+def test_two_memories_sharing_source_can_be_forgotten_sequentially(
+    tmp_path: Path,
+):
+    paths = MemoryPaths.from_root(tmp_path / "memory")
+    source_root = tmp_path / "v1"
+    relative = "user/shared.md"
+    source = source_root / "user" / "shared.md"
+    source.parent.mkdir(parents=True)
+    original = "keep\n妻子和儿子\n父母\n"
+    source.write_text(original, encoding="utf-8")
+    original_hash = hashlib.sha256(source.read_bytes()).hexdigest()
+    request = {
+        "action": "migrate",
+        "migration_id": "v1-shared",
+        "source_root": str(source_root.resolve()),
+        "sources": [
+            {
+                "path": relative,
+                "sha256": original_hash,
+                "disposition": "snapshot",
+            }
+        ],
+        "memories": [
+            {
+                "source_path": relative,
+                "memory_markdown": family_memory().to_markdown(),
+            },
+            {
+                "source_path": relative,
+                "memory_markdown": parent_memory().to_markdown(),
+            },
+        ],
+    }
+    assert migrate_v1(paths, request).status == "accepted"
+    snapshot = (
+        paths.migrations / "v1-shared" / "snapshot" / "user" / "shared.md"
+    )
+
+    first = forget(paths, authorized_request())
+
+    assert first.status == "accepted", first
+    for path in (source, snapshot):
+        text = path.read_text(encoding="utf-8")
+        assert "妻子和儿子" not in text
+        assert "父母" in text
+        assert "keep" in text
+    manifest_path = paths.migrations / "v1-shared" / "manifest.json"
+    after_first = json.loads(manifest_path.read_text(encoding="utf-8"))
+    retained_source = after_first["sources"][0]
+    assert retained_source["sha256"] == original_hash
+    assert retained_source["current_sha256"] == hashlib.sha256(
+        source.read_bytes()
+    ).hexdigest()
+    assert retained_source["current_sha256"] != original_hash
+    assert {entry["id"] for entry in after_first["memories"]} == {
+        "parent-history"
+    }
+    assert after_first["forget_operations"][-1]["status"] == "completed"
+
+    second_request = {
+        "memory_id": "parent-history",
+        "suppression_scope": "parent_history",
+        "authorization": "explicit_user_request",
+        "verification_terms": ["父母"],
+    }
+    second = forget(paths, second_request)
+
+    assert second.status == "accepted", second
+    assert source.read_text(encoding="utf-8") == "keep\n\n\n"
+    assert not snapshot.exists()
+    after_second = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert after_second["sources"] == []
+    assert after_second["memories"] == []
+    assert [marker["status"] for marker in after_second["forget_operations"]] == [
+        "completed",
+        "completed",
+    ]
+
+
+def test_forget_rejects_same_content_registered_source_replacement(
+    tmp_path: Path,
+):
+    paths = MemoryPaths.from_root(tmp_path / "memory")
+    source_root = tmp_path / "v1"
+    migrate_family(paths, source_root)
+    source = source_root / "user" / "family.md"
+    before = source.read_bytes()
+    old_identity = (source.stat().st_dev, source.stat().st_ino)
+    replacement = source.with_suffix(".replacement")
+    replacement.write_bytes(before)
+    os.replace(replacement, source)
+    assert (source.stat().st_dev, source.stat().st_ino) != old_identity
+
+    response = forget(paths, authorized_request())
+
+    assert response.status == "failed"
+    assert response.error["code"] == "legacy_source_replaced"
+    assert source.read_bytes() == before
+    assert MemoryStore(paths).get_memory("family-structure") == family_memory()
+
+
+def test_forget_preserves_unrelated_migration_source_metadata(
+    tmp_path: Path,
+):
+    paths = MemoryPaths.from_root(tmp_path / "memory")
+    source_root = tmp_path / "v1"
+    source_texts = {
+        "user/primary.md": "keep\n妻子和儿子\n",
+        "user/unrelated.md": "unrelated snapshot\n",
+        "user/ignored.md": "ignored metadata\n",
+        "user/secret.bin": "excluded metadata\n",
+    }
+    sources = []
+    for relative, text in source_texts.items():
         source = source_root / Path(*relative.split("/"))
-        snapshot = (
-            paths.migrations
-            / "v1-family"
-            / "snapshot"
-            / Path(*relative.split("/"))
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_text(text, encoding="utf-8")
+        disposition = {
+            "user/primary.md": "snapshot",
+            "user/unrelated.md": "snapshot",
+            "user/ignored.md": "ignored",
+            "user/secret.bin": "excluded_sensitive",
+        }[relative]
+        sources.append(
+            {
+                "path": relative,
+                "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+                "disposition": disposition,
+            }
         )
-        expected = original.replace(term, "")
-        assert source.read_text(encoding="utf-8") == expected
-        assert snapshot.read_text(encoding="utf-8") == expected
+    migration = {
+        "action": "migrate",
+        "migration_id": "v1-metadata",
+        "source_root": str(source_root.resolve()),
+        "sources": sources,
+        "memories": [
+            {
+                "source_path": "user/primary.md",
+                "memory_markdown": family_memory().to_markdown(),
+            }
+        ],
+    }
+    assert migrate_v1(paths, migration).status == "accepted"
+    migration_root = paths.migrations / "v1-metadata"
+
+    response = forget(paths, authorized_request())
+
+    assert response.status == "accepted", response
+    manifest = json.loads(
+        (migration_root / "manifest.json").read_text(encoding="utf-8")
+    )
+    assert {source["path"] for source in manifest["sources"]} == {
+        "user/unrelated.md",
+        "user/ignored.md",
+        "user/secret.bin",
+    }
+    assert not (migration_root / "snapshot" / "user" / "primary.md").exists()
+    assert (
+        migration_root / "snapshot" / "user" / "unrelated.md"
+    ).read_text(encoding="utf-8") == "unrelated snapshot\n"
 
 
 def test_forget_rejects_tampered_manifest_before_external_writes(tmp_path: Path):
@@ -468,7 +651,7 @@ def test_forget_rolls_back_injected_write_failures_and_exact_retry_converges(
     assert retry.status == "accepted", retry
     assert not _forget_journals(paths)
     assert "妻子和儿子" not in source.read_text(encoding="utf-8")
-    assert "妻子和儿子" not in snapshot.read_text(encoding="utf-8")
+    assert not snapshot.exists()
 
 
 def test_forget_rolls_back_verification_failure_and_retry_converges(
@@ -551,3 +734,133 @@ def test_forget_journal_rejects_changed_request_and_resumes_partial_state(
 
     assert retry.status == "accepted"
     assert not _forget_journals(paths)
+
+
+def test_forget_journal_is_content_free_integrity_bound_and_not_scope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from agc_runtime import forget_service
+
+    paths = MemoryPaths.from_root(tmp_path / "memory")
+    source_root = tmp_path / "v1"
+    migrate_family(paths, source_root)
+
+    unrelated_root = tmp_path / "unrelated-v1"
+    unrelated_source = unrelated_root / "user" / "unrelated.md"
+    unrelated_source.parent.mkdir(parents=True)
+    unrelated_source.write_text("unrelated\n", encoding="utf-8")
+    unrelated_snapshot = (
+        paths.migrations
+        / "v1-unrelated"
+        / "snapshot"
+        / "user"
+        / "unrelated.md"
+    )
+    unrelated_snapshot.parent.mkdir(parents=True)
+    unrelated_snapshot.write_text("unrelated\n", encoding="utf-8")
+    source_stat = unrelated_source.stat()
+    unrelated_hash = hashlib.sha256(unrelated_source.read_bytes()).hexdigest()
+    original_manifest = json.loads(
+        (
+            paths.migrations / "v1-family" / "manifest.json"
+        ).read_text(encoding="utf-8")
+    )
+    unrelated_manifest = json.loads(json.dumps(original_manifest))
+    unrelated_manifest.update(
+        {
+            "migration_id": "v1-unrelated",
+            "request_digest": "b" * 64,
+            "source_root": str(unrelated_root.resolve()),
+            "memories": [],
+            "migrated_ids": [],
+            "forget_operations": [],
+        }
+    )
+    unrelated_manifest["sources"] = [
+        {
+            **unrelated_manifest["sources"][0],
+            "path": "user/unrelated.md",
+            "sha256": unrelated_hash,
+            "current_sha256": unrelated_hash,
+            "canonical_path": str(unrelated_source.resolve()),
+            "file_identity": {
+                "device": source_stat.st_dev,
+                "inode": source_stat.st_ino,
+            },
+        }
+    ]
+    unrelated_manifest["counts"] = {
+        "sources": 1,
+        "snapshots": 1,
+        "ignored": 0,
+        "excluded_sensitive": 0,
+        "memories": 0,
+    }
+    unrelated_manifest["integrity_sha256"] = migration_manifest_integrity(
+        unrelated_manifest
+    )
+    unrelated_manifest_path = (
+        paths.migrations / "v1-unrelated" / "manifest.json"
+    )
+    unrelated_manifest_path.write_text(
+        json.dumps(
+            unrelated_manifest,
+            ensure_ascii=False,
+            sort_keys=True,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    original_apply = forget_service._apply_forget_operation
+    failed = False
+
+    def fail_legacy(operation):
+        nonlocal failed
+        if operation.category == "legacy" and not failed:
+            failed = True
+            raise OSError("simulated interruption")
+        return original_apply(operation)
+
+    monkeypatch.setattr(
+        forget_service, "_apply_forget_operation", fail_legacy
+    )
+    interrupted = forget(paths, authorized_request())
+    assert interrupted.status == "failed"
+    journal_path = _forget_journals(paths)[0]
+    original_journal = json.loads(journal_path.read_text(encoding="utf-8"))
+    assert "migration_ids" not in original_journal
+    assert set(original_journal) == {
+        "schema_version",
+        "operation",
+        "memory_id",
+        "request_digest",
+        "operation_id",
+        "status",
+        "integrity_sha256",
+    }
+
+    tampered = {**original_journal, "operation_id": "f" * 64}
+    journal_path.write_text(
+        json.dumps(tampered, sort_keys=True, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    rejected = forget(paths, authorized_request())
+    assert rejected.status == "failed"
+    assert rejected.error["code"] == "invalid_forget_journal"
+    assert unrelated_source.read_text(encoding="utf-8") == "unrelated\n"
+    assert unrelated_snapshot.read_text(encoding="utf-8") == "unrelated\n"
+
+    journal_path.write_text(
+        json.dumps(original_journal, sort_keys=True, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        forget_service, "_apply_forget_operation", original_apply
+    )
+    retry = forget(paths, authorized_request())
+
+    assert retry.status == "accepted", retry
+    assert unrelated_source.read_text(encoding="utf-8") == "unrelated\n"
+    assert unrelated_snapshot.read_text(encoding="utf-8") == "unrelated\n"

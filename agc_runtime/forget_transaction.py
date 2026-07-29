@@ -5,19 +5,18 @@ import os
 import tempfile
 import zipfile
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any
 
-from agc_runtime.catalog import build_catalog, render_catalog_markdown
-from agc_runtime.migration_manifest import (
-    SAFE_ID_PATTERN,
-    MigrationManifestError,
-    load_migration_manifest,
-    migration_manifest_integrity,
-    resolve_migration_path,
-    validate_completed_manifest_evidence,
-    validate_migration_manifest,
+from agc_runtime._forget_migration import (
+    manifest_with_marker,
+    manifest_without_memory,
+    matched_manifests,
+    source_operations,
 )
+from agc_runtime._forget_types import ForgetOperation, ForgetPlanError
+from agc_runtime.catalog import build_catalog, render_catalog_markdown
+from agc_runtime.migration_manifest import SHA256_PATTERN
 from agc_runtime.paths import MemoryPaths
 from agc_runtime.utf8_io import strict_read_text
 
@@ -36,26 +35,15 @@ _JOURNAL_FIELDS = {
     "operation",
     "memory_id",
     "request_digest",
+    "operation_id",
     "status",
-    "migration_ids",
+    "integrity_sha256",
 }
-
-
-class ForgetPlanError(ValueError):
-    def __init__(self, code: str, message: str):
-        super().__init__(message)
-        self.code = code
-
-
-@dataclass(frozen=True)
-class ForgetOperation:
-    path: Path
-    content: bytes | None
-    category: str
 
 
 @dataclass(frozen=True)
 class ForgetPlan:
+    marker_operations: tuple[ForgetOperation, ...]
     operations: tuple[ForgetOperation, ...]
     tombstone: ForgetOperation
     verification_paths: tuple[Path, ...]
@@ -80,6 +68,27 @@ def _contains_term(text: str, terms: tuple[str, ...]) -> bool:
 def _request_digest(request: dict[str, Any]) -> str:
     canonical = json.dumps(
         request, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
+def _operation_id(request_digest: str) -> str:
+    return hashlib.sha256(
+        f"forget:{request_digest}".encode("utf-8")
+    ).hexdigest()
+
+
+def _canonical_mapping_hash(
+    value: dict[str, Any], integrity_field: str
+) -> str:
+    content = {
+        key: item for key, item in value.items() if key != integrity_field
+    }
+    canonical = json.dumps(
+        content,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
     ).encode("utf-8")
     return hashlib.sha256(canonical).hexdigest()
 
@@ -164,206 +173,6 @@ def _rewritten_backup_bytes(
             archive.writestr(_zip_info(name), data)
         archive.writestr(_zip_info("manifest.json"), manifest)
     return output.getvalue()
-
-
-def _resolved_managed(paths: MemoryPaths, path: Path) -> Path:
-    try:
-        relative = path.relative_to(paths.root)
-        resolved = resolve_migration_path(paths, relative)
-    except ValueError as error:
-        raise ForgetPlanError(
-            "migration_path_escape",
-            f"managed migration path escaped root: {path}",
-        ) from error
-    if resolved != path.resolve():
-        raise ForgetPlanError(
-            "migration_path_escape",
-            f"managed migration path was redirected: {path}",
-        )
-    return resolved
-
-
-def _manifest_paths(paths: MemoryPaths) -> list[Path]:
-    migrations = _resolved_managed(paths, paths.migrations)
-    if not migrations.exists():
-        return []
-    return sorted(migrations.glob("*/manifest.json"))
-
-
-def _load_manifest_for_forget(paths: MemoryPaths, path: Path) -> dict[str, Any]:
-    resolved = _resolved_managed(paths, path)
-    migration_id = resolved.parent.name
-    try:
-        manifest = load_migration_manifest(
-            paths,
-            resolved,
-            expected_migration_id=migration_id,
-        )
-    except MigrationManifestError as error:
-        code = (
-            "migration_path_escape"
-            if "path escapes managed root" in str(error)
-            else "invalid_migration_manifest"
-        )
-        raise ForgetPlanError(code, str(error)) from error
-    if manifest is None:
-        raise ForgetPlanError(
-            "invalid_migration_manifest",
-            f"migration manifest disappeared: {resolved}",
-        )
-    return manifest
-
-
-def _matched_manifests(
-    paths: MemoryPaths,
-    memory_id: str,
-    journal: dict[str, Any] | None,
-) -> list[tuple[Path, dict[str, Any]]]:
-    if journal is None:
-        candidates = _manifest_paths(paths)
-    else:
-        candidates = [
-            paths.migrations / migration_id / "manifest.json"
-            for migration_id in journal["migration_ids"]
-        ]
-    matched = []
-    for path in candidates:
-        manifest = _load_manifest_for_forget(paths, path)
-        has_memory = any(
-            entry.get("id") == memory_id
-            for entry in manifest["memories"]
-        )
-        if journal is None and not has_memory:
-            continue
-        if journal is None:
-            try:
-                validate_completed_manifest_evidence(paths, manifest)
-            except MigrationManifestError as error:
-                message = str(error)
-                code = (
-                    "migration_evidence_mismatch"
-                    if "receipt mismatch" in message
-                    or "persisted migration memory" in message
-                    else "invalid_migration_manifest"
-                )
-                raise ForgetPlanError(code, message) from error
-        matched.append((path.resolve(), manifest))
-    return matched
-
-
-def _validated_source_targets(
-    paths: MemoryPaths,
-    manifests: list[tuple[Path, dict[str, Any]]],
-    terms: tuple[str, ...],
-    *,
-    retry: bool,
-) -> tuple[
-    list[ForgetOperation],
-    tuple[Path, ...],
-    tuple[Path, ...],
-]:
-    operations = []
-    legacy_paths = []
-    snapshot_paths = []
-    for manifest_path, manifest in manifests:
-        source_root = Path(manifest["source_root"]).resolve()
-        for source in manifest["sources"]:
-            if source["disposition"] != "snapshot":
-                continue
-            pure = Path(*PurePosixPath(source["path"]).parts)
-            original = (source_root / pure).resolve()
-            if original == source_root or source_root not in original.parents:
-                raise ForgetPlanError(
-                    "migration_path_escape",
-                    f"legacy source escaped source_root: {source['path']}",
-                )
-            snapshot = _resolved_managed(
-                paths, manifest_path.parent / "snapshot" / pure
-            )
-            for target, category in (
-                (original, "legacy"),
-                (snapshot, "snapshot"),
-            ):
-                if not target.is_file():
-                    raise ForgetPlanError(
-                        "legacy_source_missing"
-                        if category == "legacy"
-                        else "migration_snapshot_missing",
-                        f"registered migration file is missing: {target}",
-                    )
-                raw = target.read_bytes()
-                already_rewritten = False
-                if category == "legacy":
-                    current_hash = hashlib.sha256(raw).hexdigest()
-                    if current_hash != source["sha256"]:
-                        try:
-                            current_text = raw.decode("utf-8", errors="strict")
-                        except UnicodeDecodeError as error:
-                            raise ForgetPlanError(
-                                "legacy_source_changed",
-                                f"registered legacy source changed: {target}",
-                            ) from error
-                        if not retry or _contains_term(current_text, terms):
-                            raise ForgetPlanError(
-                                "legacy_source_changed",
-                                f"registered legacy source changed: {target}",
-                            )
-                        already_rewritten = True
-                try:
-                    text = raw.decode("utf-8", errors="strict")
-                except UnicodeDecodeError as error:
-                    raise ForgetPlanError(
-                        "invalid_migration_source",
-                        f"migration text is not UTF-8: {target}",
-                    ) from error
-                updated = _exact_term_rewrite(text, terms).encode("utf-8")
-                if not already_rewritten:
-                    operations.append(
-                        ForgetOperation(target, updated, category)
-                    )
-            legacy_paths.append(original)
-            snapshot_paths.append(snapshot)
-    return operations, tuple(legacy_paths), tuple(snapshot_paths)
-
-
-def _manifest_without_memory(
-    manifest: dict[str, Any], memory_id: str
-) -> dict[str, Any]:
-    updated = json.loads(json.dumps(manifest))
-    updated["memories"] = [
-        entry
-        for entry in updated["memories"]
-        if entry["id"] != memory_id
-    ]
-    retained_source_paths = {
-        entry["source_path"] for entry in updated["memories"]
-    }
-    updated["sources"] = [
-        source
-        for source in updated["sources"]
-        if source["path"] in retained_source_paths
-    ]
-    updated["migrated_ids"] = [
-        value for value in updated["migrated_ids"] if value != memory_id
-    ]
-    updated["counts"]["sources"] = len(updated["sources"])
-    updated["counts"]["snapshots"] = sum(
-        source["disposition"] == "snapshot"
-        for source in updated["sources"]
-    )
-    updated["counts"]["ignored"] = sum(
-        source["disposition"] == "ignored"
-        for source in updated["sources"]
-    )
-    updated["counts"]["excluded_sensitive"] = sum(
-        source["disposition"] == "excluded_sensitive"
-        for source in updated["sources"]
-    )
-    updated["counts"]["memories"] = len(updated["memories"])
-    updated["integrity_sha256"] = migration_manifest_integrity(updated)
-    return validate_migration_manifest(
-        updated, expected_migration_id=updated["migration_id"]
-    )
 
 
 def _events_operation(
@@ -475,35 +284,19 @@ def _generic_managed_operations(
 def _journal_value(
     memory_id: str,
     request_digest: str,
-    manifest_paths: tuple[Path, ...],
 ) -> dict[str, Any]:
-    return {
+    journal = {
         "schema_version": 2,
         "operation": "forget",
         "memory_id": memory_id,
         "request_digest": request_digest,
+        "operation_id": _operation_id(request_digest),
         "status": "in_progress",
-        "migration_ids": sorted(
-            path.parent.name for path in manifest_paths
-        ),
     }
-
-
-def _migration_id_list(value: Any) -> list[str]:
-    if (
-        not isinstance(value, list)
-        or any(
-            not isinstance(item, str)
-            or not SAFE_ID_PATTERN.fullmatch(item)
-            for item in value
-        )
-        or len(value) != len(set(value))
-    ):
-        raise ForgetPlanError(
-            "invalid_forget_journal",
-            "migration_ids must be a unique list of safe IDs",
-        )
-    return value
+    journal["integrity_sha256"] = _canonical_mapping_hash(
+        journal, "integrity_sha256"
+    )
+    return journal
 
 
 def _load_journal(
@@ -514,7 +307,12 @@ def _load_journal(
 ) -> dict[str, Any] | None:
     if not journal_path.exists():
         return None
-    value = json.loads(strict_read_text(journal_path))
+    try:
+        value = json.loads(strict_read_text(journal_path))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ForgetPlanError(
+            "invalid_forget_journal", "invalid forget journal encoding"
+        ) from error
     if not isinstance(value, dict) or set(value) != _JOURNAL_FIELDS:
         raise ForgetPlanError(
             "invalid_forget_journal", "invalid forget journal schema"
@@ -533,7 +331,21 @@ def _load_journal(
             "forget_request_conflict",
             "in-progress forget belongs to a different request",
         )
-    _migration_id_list(value["migration_ids"])
+    if (
+        not isinstance(value["request_digest"], str)
+        or not SHA256_PATTERN.fullmatch(value["request_digest"])
+        or not isinstance(value["operation_id"], str)
+        or not SHA256_PATTERN.fullmatch(value["operation_id"])
+        or not isinstance(value["integrity_sha256"], str)
+        or not SHA256_PATTERN.fullmatch(value["integrity_sha256"])
+        or value["operation_id"] != _operation_id(request_digest)
+        or value["integrity_sha256"]
+        != _canonical_mapping_hash(value, "integrity_sha256")
+    ):
+        raise ForgetPlanError(
+            "invalid_forget_journal",
+            "forget journal integrity mismatch",
+        )
     return value
 
 
@@ -547,11 +359,23 @@ def _prepare_forget_plan(
     journal: dict[str, Any] | None,
 ) -> ForgetPlan:
     retry = journal is not None
-    manifests = _matched_manifests(paths, memory_id, journal)
-    migration_operations, legacy_paths, snapshot_paths = (
-        _validated_source_targets(
-            paths, manifests, terms, retry=retry
-        )
+    operation_id = (
+        journal["operation_id"]
+        if journal is not None
+        else _operation_id(request_digest)
+    )
+    manifests = matched_manifests(
+        paths,
+        memory_id,
+        retry=retry,
+        operation_id=operation_id,
+    )
+    migration_operations, verification_paths = source_operations(
+        paths,
+        manifests,
+        memory_id,
+        terms,
+        retry=retry,
     )
     tombstone_text = (
         json.dumps(tombstone, ensure_ascii=False, sort_keys=True, indent=2)
@@ -565,13 +389,37 @@ def _prepare_forget_plan(
     operations: dict[Path, ForgetOperation] = {
         operation.path: operation for operation in migration_operations
     }
-    manifest_paths = []
+    marker_operations = []
     for manifest_path, manifest in manifests:
-        manifest_paths.append(manifest_path)
-        updated = _manifest_without_memory(manifest, memory_id)
-        operations[manifest_path] = ForgetOperation(
-            manifest_path,
-            (
+        marked = manifest_with_marker(
+            manifest, memory_id, operation_id, "in_progress"
+        )
+        marker_operations.append(
+            ForgetOperation(
+                manifest_path,
+                (
+                    json.dumps(
+                        marked,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        indent=2,
+                    )
+                    + "\n"
+                ).encode("utf-8"),
+                "migration_marker",
+            )
+        )
+
+        def final_manifest_bytes(
+            *,
+            base_manifest: dict[str, Any] = marked,
+        ) -> bytes:
+            updated = manifest_without_memory(
+                base_manifest,
+                memory_id,
+                operation_id,
+            )
+            return (
                 json.dumps(
                     updated,
                     ensure_ascii=False,
@@ -579,7 +427,11 @@ def _prepare_forget_plan(
                     indent=2,
                 )
                 + "\n"
-            ).encode("utf-8"),
+            ).encode("utf-8")
+
+        operations[manifest_path] = ForgetOperation(
+            manifest_path,
+            final_manifest_bytes,
             "migration_manifest",
         )
 
@@ -627,19 +479,16 @@ def _prepare_forget_plan(
         )
     )
     if journal is None:
-        journal = _journal_value(
-            memory_id,
-            request_digest,
-            tuple(manifest_paths),
-        )
+        journal = _journal_value(memory_id, request_digest)
     return ForgetPlan(
+        marker_operations=tuple(marker_operations),
         operations=ordered,
         tombstone=ForgetOperation(
             tombstone_file, tombstone_bytes, "tombstone"
         ),
         verification_paths=tuple(
             sorted(
-                {*legacy_paths, *snapshot_paths},
+                set(verification_paths),
                 key=lambda path: str(path).encode("utf-8"),
             )
         ),
@@ -652,7 +501,12 @@ def _apply_forget_operation(operation: ForgetOperation) -> None:
     if operation.content is None:
         operation.path.unlink(missing_ok=True)
     else:
-        _atomic_write_bytes(operation.path, operation.content)
+        content = (
+            operation.content()
+            if callable(operation.content)
+            else operation.content
+        )
+        _atomic_write_bytes(operation.path, content)
 
 
 def _rollback_forget_operations(
@@ -691,6 +545,9 @@ def _verify_forget_plan(
             or path == plan.journal_path
             or path == paths.locks / "write.lock"
         ):
+            continue
+        relative = str(path.relative_to(paths.root)).replace("\\", "/")
+        if relative.startswith(".runtime/migrations/"):
             continue
         if path.suffix.lower() == ".zip":
             with zipfile.ZipFile(path, "r") as archive:
