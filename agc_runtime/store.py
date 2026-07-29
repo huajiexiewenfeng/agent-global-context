@@ -18,6 +18,7 @@ from agc_runtime.events import (
 from agc_runtime.locking import root_write_lock
 from agc_runtime.models import MemoryItem
 from agc_runtime.paths import MemoryPaths
+from agc_runtime.policy import validate_transition
 from agc_runtime.schema import KINDS, validate_memory_item
 from agc_runtime.utf8_io import atomic_write_text, strict_read_text
 
@@ -401,6 +402,110 @@ class MemoryStore:
             return MutationResult(
                 status="accepted",
                 code="evidence_added",
+                created=True,
+                object_id=memory_id,
+                independent_evidence_count=count + 1,
+            )
+
+    def replace_memory(
+        self,
+        memory_id: str,
+        updated: MemoryItem,
+        source: SourceKey,
+        observed_at: str,
+        *,
+        action: str = "memory_updated",
+    ) -> MutationResult:
+        _validate_source_key(source)
+        validate_memory_item(updated)
+        if updated.id != memory_id:
+            raise ValueError("updated memory id must match target memory id")
+        with root_write_lock(self.paths):
+            self._recover_pending_transactions()
+            receipts = self._read_receipts()
+            count = self._evidence_count(receipts, memory_id)
+            if self._source_was_recorded_in(receipts, source):
+                return MutationResult(
+                    status="accepted",
+                    code="duplicate_source",
+                    created=False,
+                    object_id=memory_id,
+                    independent_evidence_count=count,
+                )
+            target = self._find_memory_path(memory_id)
+            current = MemoryItem.from_markdown(strict_read_text(target))
+            if current.kind != updated.kind:
+                raise ValueError("updated memory kind cannot change")
+            validate_transition(current.lifecycle.status, updated.lifecycle.status)
+            self._apply_mutation(
+                target=target,
+                text=updated.to_markdown(),
+                source=source,
+                object_id=memory_id,
+                action=action,
+                old_lifecycle=current.lifecycle.status,
+                new_lifecycle=updated.lifecycle.status,
+                timestamp=observed_at,
+                receipts=receipts,
+            )
+            return MutationResult(
+                status="accepted",
+                code=action,
+                created=True,
+                object_id=memory_id,
+                independent_evidence_count=count + 1,
+            )
+
+    def transition_memory(
+        self,
+        memory_id: str,
+        new_status: str,
+        source: SourceKey,
+        observed_at: str,
+        *,
+        action: str,
+    ) -> MutationResult:
+        _validate_source_key(source)
+        with root_write_lock(self.paths):
+            self._recover_pending_transactions()
+            receipts = self._read_receipts()
+            count = self._evidence_count(receipts, memory_id)
+            if self._source_was_recorded_in(receipts, source):
+                return MutationResult(
+                    status="accepted",
+                    code="duplicate_source",
+                    created=False,
+                    object_id=memory_id,
+                    independent_evidence_count=count,
+                )
+            target = self._find_memory_path(memory_id)
+            current = MemoryItem.from_markdown(strict_read_text(target))
+            validate_transition(current.lifecycle.status, new_status)
+            updated = replace(
+                current,
+                lifecycle=replace(current.lifecycle, status=new_status),
+                temporal=replace(
+                    current.temporal, last_observed=observed_at[:10]
+                ),
+                provenance=replace(
+                    current.provenance, updated_at=observed_at[:10]
+                ),
+            )
+            validate_memory_item(updated)
+            self._apply_mutation(
+                target=target,
+                text=updated.to_markdown(),
+                source=source,
+                object_id=memory_id,
+                action=action,
+                old_lifecycle=current.lifecycle.status,
+                new_lifecycle=new_status,
+                timestamp=observed_at,
+                receipts=receipts,
+            )
+            return MutationResult(
+                status="accepted",
+                code=action,
                 created=True,
                 object_id=memory_id,
                 independent_evidence_count=count + 1,
