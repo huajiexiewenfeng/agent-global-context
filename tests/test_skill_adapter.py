@@ -1,6 +1,14 @@
+import copy
 import json
 import re
 from pathlib import Path
+
+from agc_runtime.contracts import SourceKey
+from agc_runtime.models import MemoryItem
+from agc_runtime.paths import MemoryPaths
+from agc_runtime.schema import validate_memory_item
+from agc_runtime.store import MemoryStore
+from agc_runtime.write_service import dispatch_write
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -48,6 +56,17 @@ def _request_examples() -> dict[str, dict]:
     ):
         examples[action] = json.loads(payload)
     return examples
+
+
+def _fenced_example(title: str, language: str) -> str:
+    text = TOOL_CONTRACT.read_text(encoding="utf-8")
+    match = re.search(
+        rf"^#### {re.escape(title)}\s*\n+```{language}\n(.*?)\n```",
+        text,
+        flags=re.MULTILINE | re.DOTALL,
+    )
+    assert match is not None, f"missing documented example: {title}"
+    return match.group(1)
 
 
 def test_only_one_public_agent_global_context_skill_remains():
@@ -169,3 +188,75 @@ def test_tool_contract_defines_the_reusable_write_schemas():
     assert all(f"`{path}`" in text for path in required_paths)
     assert "Host binds the memory root" in text
     assert "LLM chooses" in text
+
+
+def test_complete_documented_memory_items_pass_runtime_validation():
+    expected = {
+        "Complete principle Memory Item": "principle",
+        "Complete interest Memory Item": "interest",
+        "Complete capability Memory Item": "capability",
+    }
+
+    items = {}
+    for title, kind in expected.items():
+        item = MemoryItem.from_markdown(_fenced_example(title, "markdown"))
+        validate_memory_item(item)
+        assert item.kind == kind
+        items[kind] = item
+
+    assert (
+        items["interest"].topic,
+        items["interest"].intensity,
+        items["interest"].trend,
+        items["interest"].motivation,
+    ) == (
+        "reliable AI systems",
+        "high",
+        "rising",
+        "Improve correctness in agent workflows.",
+    )
+    assert (
+        items["capability"].domain,
+        items["capability"].polarity,
+        items["capability"].current_level,
+    ) == (
+        "distributed systems debugging",
+        "growth_area",
+        "developing",
+    )
+    assert items["capability"].recall.exposure in {
+        "core_card",
+        "scoped_card",
+    }
+    assert items["capability"].goal_refs
+
+
+def test_documented_transition_requests_enforce_equal_match_id(tmp_path):
+    item = MemoryItem.from_markdown(
+        _fenced_example("Complete principle Memory Item", "markdown")
+    )
+    paths = MemoryPaths.from_root(tmp_path / "memory")
+    MemoryStore(paths).create_memory(
+        item,
+        SourceKey("doc-example:seed", "r1", "a" * 64),
+    )
+    supersede = json.loads(
+        _fenced_example("Complete supersede request", "json")
+    )
+    archive = json.loads(_fenced_example("Complete archive request", "json"))
+
+    missing_match = copy.deepcopy(supersede)
+    missing_match["observation"]["proposal"]["match_memory_id"] = None
+    rejected = dispatch_write(paths, missing_match)
+    assert rejected.status == "failed"
+    assert rejected.error["message"] == (
+        "memory_id must match proposal.match_memory_id"
+    )
+
+    superseded = dispatch_write(paths, supersede)
+    archived = dispatch_write(paths, archive)
+
+    assert superseded.status == "accepted"
+    assert superseded.data["lifecycle"] == "superseded"
+    assert archived.status == "accepted"
+    assert archived.data["lifecycle"] == "historical"

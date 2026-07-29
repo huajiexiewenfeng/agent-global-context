@@ -56,7 +56,7 @@ fields at these nested levels are rejected.
 | `observation_id` | non-empty string; stable observation/candidate id |
 | `source.ref` | non-empty source reference |
 | `source.revision` | non-empty source revision |
-| `source.content_hash` | non-empty stable content hash |
+| `source.content_hash` | lowercase 64-character SHA-256 hex string |
 | `source.observed_at` | non-empty observation timestamp |
 | `assertion.subject` | non-empty string; use `user` for user assertions |
 | `assertion.mode` | `direct`, `behavior_observed`, `agent_inferred`, or `quoted` |
@@ -81,7 +81,7 @@ Example:
   "source": {
     "ref": "codex-task:example",
     "revision": "r1",
-    "content_hash": "sha256-content-id",
+    "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "observed_at": "2026-07-29T00:00:00Z"
   },
   "assertion": {
@@ -113,6 +113,19 @@ Example:
 Item. It is required for `new`/`update` persistence, `confirm`, and `update`.
 Its id, kind, scopes, temporal type, sensitivity, and confidence must agree
 with the Observation Envelope and action.
+
+Every item uses the common lifecycle, confidence, temporal, recall,
+sensitivity, provenance, and four body-section fields shown in the complete
+examples below. Add these top-level fields when the condition applies:
+
+| Condition | Required fields and enums |
+| --- | --- |
+| `kind: interest` | `topic`; `intensity` = `emerging`, `low`, `medium`, or `high`; `trend` = `rising`, `stable`, `declining`, or `dormant`; `motivation` |
+| `kind: capability` | `domain`; `polarity` = `strength` or `growth_area`; `current_level` |
+| capability `polarity: growth_area` with `recall.exposure: core_card` or `scoped_card` | non-empty `goal_refs` identifying active goals |
+| `kind: identity`, `sensitivity: personal`, and `recall.exposure: core_card` | non-empty `policy_reason` |
+
+#### Complete principle Memory Item
 
 ```markdown
 ---
@@ -161,6 +174,112 @@ Do not add friction to trivial or safely reversible work.
 This can prevent unintended high-impact changes.
 ```
 
+#### Complete interest Memory Item
+
+```markdown
+---
+schema_version: 2
+id: reliable-ai-systems-interest
+kind: interest
+subkind: research_topic
+topic: reliable AI systems
+intensity: high
+trend: rising
+motivation: Improve correctness in agent workflows.
+lifecycle:
+  status: active
+confidence:
+  level: observed
+temporal:
+  type: evolving
+  valid_from: "2026-07-01"
+  last_observed: "2026-07-29"
+  review_after: "2026-10-29"
+recall:
+  prior: medium
+  decision_impact: medium
+  exposure: scoped_card
+  scopes: [learning, research]
+  applies_when: [research_planning]
+  not_when: [unrelated_task]
+  freshness_policy: periodic
+sensitivity: normal
+provenance:
+  created_at: "2026-07-01"
+  updated_at: "2026-07-29"
+  confirmed_at:
+  evidence_refs: [codex-task:example-interest]
+---
+## Memory Card
+
+Interest in reliable AI systems.
+
+## Full Meaning
+
+Research interest currently emphasizes correctness and reliability in agent workflows.
+
+## Application Boundary
+
+Apply to relevant learning or research planning, not unrelated tasks.
+
+## Rationale
+
+This can improve topic and example selection.
+```
+
+#### Complete capability Memory Item
+
+```markdown
+---
+schema_version: 2
+id: distributed-debugging-growth
+kind: capability
+subkind: engineering_skill
+domain: distributed systems debugging
+polarity: growth_area
+current_level: developing
+goal_refs: [goal-improve-distributed-debugging]
+lifecycle:
+  status: active
+confidence:
+  level: observed
+temporal:
+  type: goal_bound
+  valid_from: "2026-07-01"
+  last_observed: "2026-07-29"
+  review_after: "2026-09-29"
+recall:
+  prior: medium
+  decision_impact: medium
+  exposure: scoped_card
+  scopes: [work, learning]
+  applies_when: [debugging_plan]
+  not_when: [unrelated_task]
+  freshness_policy: goal_bound
+sensitivity: normal
+provenance:
+  created_at: "2026-07-01"
+  updated_at: "2026-07-29"
+  confirmed_at:
+  evidence_refs: [codex-task:example-capability]
+---
+## Memory Card
+
+Developing distributed-systems debugging.
+
+## Full Meaning
+
+Current growth work focuses on diagnosing failures across distributed components.
+
+## Application Boundary
+
+Offer support only when it advances the linked active goal.
+
+## Rationale
+
+The linked goal guards proactive growth suggestions.
+```
+
 ## `agc.write` Actions
 
 In the compact examples, `"<ObservationEnvelope object>"` and
@@ -192,13 +311,90 @@ Action-specific rules:
   `confirmed`; supply matching Memory Item Markdown.
 - `update`: Runtime forces disposition `update`; `proposal.match_memory_id`
   and the Memory Item id must match.
-- `supersede`/`archive`: `observation` is required. `memory_id` may be omitted
-  only when `proposal.match_memory_id` supplies it; if both exist they must
-  match.
+- `supersede`/`archive`: `observation.proposal.match_memory_id` is always
+  required. The optional request-level `memory_id` is only a locator alias; if
+  present it must equal the proposal match and never substitutes for a missing
+  proposal match.
 - `reject`: requires the exact candidate id.
 - `forget`: requires exact `memory_id`, authorization equal to
   `explicit_user_request`, and a precise lowercase `suppression_scope`;
   `verification_terms` is an optional list of non-empty strings (default `[]`).
+
+#### Complete supersede request
+
+```json
+{
+  "action": "supersede",
+  "memory_id": "confirm-before-irreversible-change",
+  "observation": {
+    "observation_id": "supersede-confirm-before-change",
+    "source": {
+      "ref": "doc-example:supersede",
+      "revision": "r1",
+      "content_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "observed_at": "2026-07-30T00:00:00Z"
+    },
+    "assertion": {
+      "subject": "user",
+      "mode": "direct",
+      "modality": "asserted"
+    },
+    "proposal": {
+      "disposition": "update",
+      "match_memory_id": "confirm-before-irreversible-change",
+      "kind": "principle",
+      "scopes": ["work"],
+      "temporal_type": "durable",
+      "sensitivity": "normal",
+      "rationale": "A newer confirmed standard replaces this item.",
+      "requested_confidence": "confirmed"
+    },
+    "evidence": {
+      "count": 1,
+      "distinct_sessions": 1,
+      "time_span_days": 0
+    }
+  }
+}
+```
+
+#### Complete archive request
+
+```json
+{
+  "action": "archive",
+  "memory_id": "confirm-before-irreversible-change",
+  "observation": {
+    "observation_id": "archive-confirm-before-change",
+    "source": {
+      "ref": "doc-example:archive",
+      "revision": "r1",
+      "content_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "observed_at": "2026-07-31T00:00:00Z"
+    },
+    "assertion": {
+      "subject": "user",
+      "mode": "direct",
+      "modality": "asserted"
+    },
+    "proposal": {
+      "disposition": "update",
+      "match_memory_id": "confirm-before-irreversible-change",
+      "kind": "principle",
+      "scopes": ["work"],
+      "temporal_type": "durable",
+      "sensitivity": "normal",
+      "rationale": "The superseded item is retained only as history.",
+      "requested_confidence": "confirmed"
+    },
+    "evidence": {
+      "count": 1,
+      "distinct_sessions": 1,
+      "time_span_days": 0
+    }
+  }
+}
+```
 
 ## `agc.admin`
 
