@@ -21,3 +21,4 @@
   principle is a core card.
 - v1 remains rollback material with auto capture disabled.
 - Capture/backfill, Trace/Eval/Loop, and LLM Wiki Runtime remain deferred.
+- No dashboard was updated because this repository has no enabled or registered progress dashboard.
