@@ -148,6 +148,7 @@ C:\Users\<user>\.agent-global-context\
 
 - [Architecture](docs/architecture.md)
 - [Design](docs/design.md)
+- [Agent Global Context v2 approved design (Chinese)](docs/superpowers/specs/2026-07-28-agent-global-context-v2-design.md)
 - [Install](docs/install.md)
 - [Examples](docs/examples.md)
 - [Full Flow Example](docs/full-flow-example.md)

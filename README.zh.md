@@ -148,6 +148,7 @@ C:\Users\<user>\.agent-global-context\
 
 - [架构](docs/architecture.md)
 - [设计](docs/design.md)
+- [Agent Global Context v2 已确认设计](docs/superpowers/specs/2026-07-28-agent-global-context-v2-design.md)
 - [安装](docs/install.md)
 - [示例](docs/examples.md)
 - [完整流程示例](docs/full-flow-example.md)

@@ -17,6 +17,15 @@ This skill does not bypass commit. Promotion means applying commit rules to writ
 ~/.agent-global-context/
 ```
 
+## Windows Encoding Safety
+
+Memory Markdown is UTF-8. On Windows PowerShell 5.1, never inspect these files
+with a bare `Get-Content`, because UTF-8 without a BOM may be decoded as the
+legacy system code page and valid Chinese will appear as mojibake. Read with
+`Get-Content -Raw -Encoding UTF8` or strict .NET UTF-8 decoding. Before
+repairing apparently garbled text, verify the raw bytes; preserve valid UTF-8
+and the existing BOM state when writing, then validate with explicit UTF-8.
+
 ## Workflow
 
 1. Read `config.yaml`, `index.md`, `staging/inbox.md`, and `staging/pending-review.md`.
