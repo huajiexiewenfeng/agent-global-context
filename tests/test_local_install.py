@@ -662,6 +662,38 @@ def test_valid_bracket_leading_value_lines_are_not_table_headers(
     ) == ["agent-global-context"]
 
 
+@pytest.mark.parametrize(
+    ("config_text", "expected"),
+    [
+        ('message = """abc""""\n', 'abc"'),
+        ('message = """abc"""""\n', 'abc""'),
+        ("message = '''abc''''\n", "abc'"),
+        ("message = '''abc'''''\n", "abc''"),
+    ],
+    ids=("basic-four", "basic-five", "literal-four", "literal-five"),
+)
+def test_valid_multiline_string_closing_quote_runs_are_preserved(
+    tmp_path: Path, config_text: str, expected: str
+):
+    original = tomllib.loads(config_text)
+    assert original["message"] == expected
+    repository = _create_repository(tmp_path)
+    skills, config = _create_active_install(tmp_path)
+    _write_utf8(config, config_text)
+
+    _, result = _invoke(
+        repository,
+        skills,
+        config,
+        tmp_path / "memory",
+        tmp_path / "runtime",
+    )
+
+    installed = tomllib.loads(_strict_utf8_without_bom(config))
+    assert installed["message"] == expected
+    assert result["restart_required"] is True
+
+
 def test_windows_powershell_native_stderr_helper_uses_exit_code(
     tmp_path: Path,
 ):

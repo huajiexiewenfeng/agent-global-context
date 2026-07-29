@@ -499,10 +499,24 @@ function Assert-NoUnmanagedAgcTable {
                     $index += 2
                     continue
                 }
-                if (
-                    $index + 3 -le $line.Length -and
-                    $line.Substring($index, 3) -eq '"""'
-                ) {
+                if ($line[$index] -eq '"') {
+                    $quoteRun = 0
+                    while (
+                        $index + $quoteRun -lt $line.Length -and
+                        $line[$index + $quoteRun] -eq '"'
+                    ) {
+                        $quoteRun++
+                    }
+                }
+                else {
+                    $quoteRun = 0
+                }
+                if ($quoteRun -ge 3 -and $quoteRun -le 5) {
+                    $stringMode = "none"
+                    $index += $quoteRun
+                    continue
+                }
+                if ($quoteRun -gt 5) {
                     $stringMode = "none"
                     $index += 3
                     continue
@@ -511,10 +525,24 @@ function Assert-NoUnmanagedAgcTable {
                 continue
             }
             if ($stringMode -eq "multiline-literal") {
-                if (
-                    $index + 3 -le $line.Length -and
-                    $line.Substring($index, 3) -eq "'''"
-                ) {
+                if ($line[$index] -eq "'") {
+                    $quoteRun = 0
+                    while (
+                        $index + $quoteRun -lt $line.Length -and
+                        $line[$index + $quoteRun] -eq "'"
+                    ) {
+                        $quoteRun++
+                    }
+                }
+                else {
+                    $quoteRun = 0
+                }
+                if ($quoteRun -ge 3 -and $quoteRun -le 5) {
+                    $stringMode = "none"
+                    $index += $quoteRun
+                    continue
+                }
+                if ($quoteRun -gt 5) {
                     $stringMode = "none"
                     $index += 3
                     continue
