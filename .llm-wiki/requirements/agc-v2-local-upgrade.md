@@ -3,7 +3,7 @@
 ## Summary
 
 - title: Agent Global Context v2 Local Upgrade
-- status: active
+- status: complete
 - flow_id: agc-v2-local-upgrade
 - parent_flow_id: agc-v2-runtime-foundation
 - why: The v2 Runtime source is complete, but Codex still loads five alpha P0–P4 Skills, no AGC MCP tools are registered, the Runtime is not installed, and the active personal memory root is still v1.
@@ -72,9 +72,9 @@
 | source | done | approved v2 design and Runtime handoff | 2026-07-29 |
 | design | done | thin Skill, LLM-owned semantics, parallel migration, three tools | 2026-07-29 |
 | plan | done | confirmed local-upgrade implementation plan | 2026-07-29 |
-| development | pending |  | 2026-07-29 |
-| testing | pending |  | 2026-07-29 |
-| archive | pending |  | 2026-07-29 |
+| development | done | Skill/MCP, migration/forget, and installer commits through `88f8ea7` | 2026-07-29 |
+| testing | done | 186 tests plus local CLI, MCP stdio, UTF-8, backup, and cutover gates | 2026-07-29 |
+| archive | done | verification and handoff artifacts recorded | 2026-07-29 |
 
 ## Risks
 
@@ -82,3 +82,12 @@
 - The v1 store may contain mixed-sensitivity prose; migration must exclude uncertain content rather than copy it.
 - A rollback copy remains AGC-managed and must be included in later hard-forget scope.
 - Editing the active Codex configuration requires a timestamped backup and exact-scope patch.
+
+## Completion
+
+- one active `agent-global-context` Skill; four alpha companions retired to a timestamped backup
+- Runtime `0.2.0` and MCP SDK `2.0.0` installed in a dedicated venv
+- Codex registered to `C:\Users\admin\.agent-global-context-v2`
+- 19 formal Memory Items and one candidate validated
+- v1 retained as rollback material with capture disabled
+- capture/backfill, Trace/Eval/Loop, and LLM Wiki Runtime remain excluded

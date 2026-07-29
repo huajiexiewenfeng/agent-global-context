@@ -1,5 +1,16 @@
 # Agent Global Context v2 Local Upgrade Implementation Plan
 
+## Final Execution Record
+
+- status: complete
+- repository head at local cutover: `88f8ea7`
+- active Skill: one `agent-global-context`
+- Runtime/MCP: `0.2.0` / `2.0.0`, exactly three public tools
+- v2 root: 19 formal memories, one candidate, zero validation issues
+- v1: retained with auto capture disabled and timestamped config backup
+- restart/new task required for the newly registered MCP server
+- deferred: Codex capture/backfill, Trace/Eval/Loop, and LLM Wiki Runtime
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Replace the locally active alpha AGC with one thin v2 Skill, three Codex-visible Runtime tools, a deterministic parallel v1 migration, and a verified local cutover.
