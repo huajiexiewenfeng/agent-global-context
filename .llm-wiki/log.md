@@ -17,8 +17,8 @@
   Forget, retry recovery, and repeatable local installation were independently reviewed.
 - Agent-local release gate passed: 186 tests, wheel/sdist build, CLI, MCP 2.0 stdio,
   strict UTF-8/no-BOM, backup ZIP, no-op installer, and local cutover checks.
-- Local v2 contains 19 formal memories and one candidate; only the difficult-but-correct
-  principle is a core card.
+- Local v2 contains 19 formal memories and one candidate; exposure is limited to one
+  core card, with no personal core cards.
 - v1 remains rollback material with auto capture disabled.
 - Capture/backfill, Trace/Eval/Loop, and LLM Wiki Runtime remain deferred.
 - No dashboard was updated because this repository has no enabled or registered progress dashboard.

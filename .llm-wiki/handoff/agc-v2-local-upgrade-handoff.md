@@ -18,10 +18,11 @@ configured for Codex on `main`.
 
 - 19 formal schema-v2 memories
 - one candidate
-- one core card: the explicit difficult-but-correct decision standard
-- personal facts remain scoped or discoverable rather than automatically exposed
-- current AI/Skill/Agent/LLM interest is evolving with a review date
-- memory-system North Star and Codex coverage are explicit goal-bound memories
+- exposure distribution: one core card, 14 scoped cards, three discoverable-only,
+  and one history-only
+- four personal items, with zero personal core cards
+- zero sensitive or secret persistent items
+- no Memory IDs, bodies, or personal semantics are recorded in repository evidence
 
 ## Boundaries Preserved
 

@@ -788,12 +788,61 @@ function Invoke-NativeCommand {
     return $exitCode
 }
 
+function Get-RuntimeDeploymentKey {
+    param([string]$Repository)
+
+    $runtimeRoot = Join-Path $Repository "agc_runtime"
+    $manifestFiles = @(
+        (Join-Path $Repository "pyproject.toml"),
+        (Join-Path $Repository "README.md")
+    )
+    if (-not (Test-Path -LiteralPath $runtimeRoot -PathType Container)) {
+        throw "Runtime package directory was not found: $runtimeRoot"
+    }
+    Assert-NoReparsePointTree -Root $runtimeRoot -Label "Runtime package"
+    $manifestFiles += @(
+        Get-ChildItem -LiteralPath $runtimeRoot -File -Recurse |
+            Sort-Object -Property FullName |
+            Select-Object -ExpandProperty FullName
+    )
+
+    $records = New-Object System.Collections.Generic.List[string]
+    foreach ($file in $manifestFiles) {
+        if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
+            throw "Runtime deployment input was not found: $file"
+        }
+        $item = Get-Item -LiteralPath $file -Force
+        if (
+            ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0
+        ) {
+            throw "Runtime deployment input must not be a reparse point: $file"
+        }
+        $relative = $item.FullName.Substring($Repository.Length)
+        $relative = $relative.TrimStart([char[]]"\/").Replace("\", "/")
+        $fileHash = (Get-FileHash -LiteralPath $item.FullName -Algorithm SHA256).Hash
+        $records.Add("$relative`0$($fileHash.ToLowerInvariant())")
+    }
+
+    $payload = $WriteUtf8.GetBytes(($records -join "`n"))
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $digest = $sha256.ComputeHash($payload)
+    }
+    finally {
+        $sha256.Dispose()
+    }
+    return (($digest | ForEach-Object { $_.ToString("x2") }) -join "")
+}
+
 $activeMutationStarted = $false
 $backupPath = $null
 $skillsToMove = @()
 $mutatedSkillNames = @()
 $publicNeedsCopy = $false
 $configChanged = $false
+$launcherChanged = $false
+$launcherExisted = $false
+$stageContainer = $null
 
 try {
     # Reject path aliases before resolving or creating any input path.
@@ -881,19 +930,8 @@ try {
     Assert-NoUnmanagedAgcTable `
         -Text $normalizedConfig -MarkerState $markerState
 
-    $mcpExecutable = [System.IO.Path]::GetFullPath(
-        (Join-Path $resolvedInstall "venv\Scripts\agc-mcp.exe")
-    )
     $launcher = [System.IO.Path]::GetFullPath(
         (Join-Path $resolvedInstall "bin\agc-mcp.cmd")
-    )
-    $codexBlock = New-CodexBlock `
-        -Executable $mcpExecutable -Memory $resolvedMemory
-    $updatedConfig = Update-CodexConfig `
-        -Text $normalizedConfig -MarkerState $markerState -Block $codexBlock
-    $updatedConfigBytes = $WriteUtf8.GetBytes($updatedConfig)
-    $configChanged = -not (
-        Test-BytesEqual -First $originalConfigBytes -Second $updatedConfigBytes
     )
 
     foreach ($name in $RetiredSkillNames) {
@@ -916,44 +954,142 @@ try {
         }
     }
 
-    # Runtime writes are isolated under InstallRoot and finish before active mutation.
+    # Runtime installation is published into a content-addressed directory. The
+    # previously configured venv is never mutated or removed.
     [System.IO.Directory]::CreateDirectory($resolvedInstall) | Out-Null
-    if (-not $SkipRuntimeInstall) {
-        $venvPython = Join-Path $resolvedInstall "venv\Scripts\python.exe"
-        if (-not (Test-Path -LiteralPath $venvPython -PathType Leaf)) {
-            $pythonCommand = Get-Command python -ErrorAction Stop
+    if ($SkipRuntimeInstall) {
+        $mcpExecutable = [System.IO.Path]::GetFullPath(
+            (Join-Path $resolvedInstall "venv\Scripts\agc-mcp.exe")
+        )
+    }
+    else {
+        $deploymentKey = Get-RuntimeDeploymentKey -Repository $resolvedRepository
+        $venvsRoot = Join-Path $resolvedInstall "venvs"
+        $stagingRoot = Join-Path $resolvedInstall "staging"
+        $publishedVenv = Join-Path $venvsRoot $deploymentKey
+        $venvPython = Join-Path $publishedVenv "Scripts\python.exe"
+        $mcpExecutable = Join-Path $publishedVenv "Scripts\agc-mcp.exe"
+        $deploymentMarker = Join-Path $publishedVenv ".agc-deployment-key"
+
+        if (Test-Path -LiteralPath $publishedVenv) {
+            if (-not (Test-Path -LiteralPath $publishedVenv -PathType Container)) {
+                throw "Runtime deployment path is not a directory: $publishedVenv"
+            }
+            Assert-NoReparsePointTree `
+                -Root $publishedVenv -Label "Published Runtime deployment"
+            if (
+                -not (Test-Path -LiteralPath $venvPython -PathType Leaf) -or
+                -not (Test-Path -LiteralPath $mcpExecutable -PathType Leaf) -or
+                -not (Test-Path -LiteralPath $deploymentMarker -PathType Leaf) -or
+                (Read-StrictUtf8 -Path $deploymentMarker -Label "Runtime marker").Trim() `
+                    -ne $deploymentKey
+            ) {
+                throw "Existing Runtime deployment is incomplete: $publishedVenv"
+            }
+        }
+        else {
+            [System.IO.Directory]::CreateDirectory($venvsRoot) | Out-Null
+            [System.IO.Directory]::CreateDirectory($stagingRoot) | Out-Null
+            $stageContainer = Join-Path $stagingRoot ([guid]::NewGuid().ToString("N"))
+            $stagedVenv = Join-Path $stageContainer "venv"
+            [System.IO.Directory]::CreateDirectory($stageContainer) | Out-Null
+
+            if (
+                -not [string]::IsNullOrEmpty(
+                    $env:AGC_INSTALL_TEST_PYTHON
+                )
+            ) {
+                $pythonExecutable = Get-ExistingFilePath `
+                    -Path $env:AGC_INSTALL_TEST_PYTHON `
+                    -Label "Test Python executable"
+            }
+            else {
+                $pythonCommand = Get-Command python -ErrorAction Stop
+                $pythonExecutable = $pythonCommand.Source
+            }
             $venvExitCode = Invoke-NativeCommand `
-                -Executable $pythonCommand.Source `
+                -Executable $pythonExecutable `
                 -Arguments @(
                     "-m",
                     "venv",
-                    (Join-Path $resolvedInstall "venv")
+                    $stagedVenv
                 )
             if ($venvExitCode -ne 0) {
                 throw "Creating the dedicated Runtime virtual environment failed."
             }
-        }
-        $installExitCode = Invoke-NativeCommand `
-            -Executable $venvPython `
-            -Arguments @(
+
+            $stagedPython = Join-Path $stagedVenv "Scripts\python.exe"
+            $pipArguments = @(
                 "-m",
                 "pip",
                 "install",
                 "$resolvedRepository[mcp]"
             )
-        if ($installExitCode -ne 0) {
-            throw "Installing the AGC Runtime MCP adapter failed."
-        }
-        if (-not (Test-Path -LiteralPath $mcpExecutable -PathType Leaf)) {
-            throw "The installed AGC MCP executable was not found."
+            if (
+                -not [string]::IsNullOrEmpty(
+                    $env:AGC_INSTALL_TEST_PIP_NO_DEPS
+                )
+            ) {
+                $pipArguments += "--no-deps"
+            }
+            $installExitCode = Invoke-NativeCommand `
+                -Executable $stagedPython -Arguments $pipArguments
+            if ($installExitCode -ne 0) {
+                throw "Installing the AGC Runtime MCP adapter failed."
+            }
+
+            $stagedMcp = Join-Path $stagedVenv "Scripts\agc-mcp.exe"
+            if (-not (Test-Path -LiteralPath $stagedMcp -PathType Leaf)) {
+                throw "The staged AGC MCP executable was not found."
+            }
+            $validationImports = "import agc_runtime"
+            if ([string]::IsNullOrEmpty($env:AGC_INSTALL_TEST_PIP_NO_DEPS)) {
+                $validationImports += "; import mcp"
+            }
+            $validationExitCode = Invoke-NativeCommand `
+                -Executable $stagedPython `
+                -Arguments @("-c", $validationImports)
+            if ($validationExitCode -ne 0) {
+                throw "The staged AGC Runtime failed import validation."
+            }
+            Write-Utf8NoBom `
+                -Path (Join-Path $stagedVenv ".agc-deployment-key") `
+                -Text "$deploymentKey`n"
+
+            if ($env:AGC_INSTALL_TEST_FAIL_AFTER -eq "runtime-stage") {
+                throw "Injected failure after staged Runtime validation."
+            }
+
+            Move-Item -LiteralPath $stagedVenv -Destination $publishedVenv
+            Remove-Item -LiteralPath $stageContainer -Force
+            $stageContainer = $null
         }
     }
+
+    $mcpExecutable = [System.IO.Path]::GetFullPath($mcpExecutable)
+    $codexBlock = New-CodexBlock `
+        -Executable $mcpExecutable -Memory $resolvedMemory
+    $updatedConfig = Update-CodexConfig `
+        -Text $normalizedConfig -MarkerState $markerState -Block $codexBlock
+    $updatedConfigBytes = $WriteUtf8.GetBytes($updatedConfig)
+    $configChanged = -not (
+        Test-BytesEqual -First $originalConfigBytes -Second $updatedConfigBytes
+    )
+
     $batchExecutable = $mcpExecutable.Replace("%", "%%")
-    Write-Utf8NoBomIfChanged `
-        -Path $launcher -Text "@`"$batchExecutable`" %*`n"
+    $launcherText = "@`"$batchExecutable`" %*`n"
+    $launcherBytes = $WriteUtf8.GetBytes((Get-NormalizedLf -Text $launcherText))
+    $launcherExisted = Test-Path -LiteralPath $launcher -PathType Leaf
+    $launcherChanged = -not (
+        $launcherExisted -and
+        (Test-BytesEqual `
+            -First ([System.IO.File]::ReadAllBytes($launcher)) `
+            -Second $launcherBytes)
+    )
 
     $activeMutationNeeded = (
         $configChanged -or
+        $launcherChanged -or
         $publicNeedsCopy -or
         $skillsToMove.Count -gt 0
     )
@@ -975,6 +1111,16 @@ try {
             )),
             $false
         )
+        if ($launcherExisted) {
+            $launcherBackupDirectory = Join-Path $backupPath "bin"
+            [System.IO.Directory]::CreateDirectory($launcherBackupDirectory) |
+                Out-Null
+            [System.IO.File]::Copy(
+                $launcher,
+                (Join-Path $launcherBackupDirectory "agc-mcp.cmd"),
+                $false
+            )
+        }
         if ($skillsToMove.Count -gt 0) {
             [System.IO.Directory]::CreateDirectory(
                 (Join-Path $backupPath "skills")
@@ -1006,6 +1152,9 @@ try {
         if ($configChanged) {
             Write-Utf8NoBom -Path $resolvedConfig -Text $updatedConfig
         }
+        if ($launcherChanged) {
+            Write-Utf8NoBom -Path $launcher -Text $launcherText
+        }
 
         # Test-only boundary exercises the same caught-failure rollback path.
         if ($env:AGC_INSTALL_TEST_FAIL_AFTER -eq "config") {
@@ -1027,6 +1176,12 @@ try {
     [Console]::Out.WriteLine(($result | ConvertTo-Json -Compress))
 }
 catch {
+    if (
+        $null -ne $stageContainer -and
+        (Test-Path -LiteralPath $stageContainer -PathType Container)
+    ) {
+        Remove-Item -LiteralPath $stageContainer -Recurse -Force
+    }
     if ($activeMutationStarted -and $null -ne $backupPath) {
         try {
             if ($configChanged) {
@@ -1053,6 +1208,18 @@ catch {
                         -LiteralPath $skillBackup `
                         -Destination $activeSkill `
                         -Recurse
+                }
+            }
+
+            if ($launcherChanged) {
+                $launcherBackup = Join-Path $backupPath "bin\agc-mcp.cmd"
+                if ($launcherExisted) {
+                    if (Test-Path -LiteralPath $launcherBackup -PathType Leaf) {
+                        [System.IO.File]::Copy($launcherBackup, $launcher, $true)
+                    }
+                }
+                elseif (Test-Path -LiteralPath $launcher -PathType Leaf) {
+                    Remove-Item -LiteralPath $launcher -Force
                 }
             }
         }

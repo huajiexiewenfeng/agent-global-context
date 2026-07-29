@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tomllib
 from pathlib import Path
 
@@ -81,6 +82,14 @@ def _create_repository(root: Path) -> Path:
     return repository
 
 
+def _create_runtime_repository(root: Path) -> Path:
+    repository = _create_repository(root)
+    shutil.copy2(ROOT / "pyproject.toml", repository / "pyproject.toml")
+    shutil.copy2(ROOT / "README.md", repository / "README.md")
+    shutil.copytree(ROOT / "agc_runtime", repository / "agc_runtime")
+    return repository
+
+
 def _create_active_install(root: Path) -> tuple[Path, Path]:
     skills = root / "active-skills"
     skills.mkdir()
@@ -110,6 +119,7 @@ def _invoke(
     env: dict[str, str] | None = None,
     powershell: str | None = None,
     check: bool = True,
+    skip_runtime_install: bool = True,
 ) -> tuple[subprocess.CompletedProcess[bytes], dict[str, object] | None]:
     command = [
         powershell or _powershell(),
@@ -128,8 +138,9 @@ def _invoke(
         str(memory),
         "-InstallRoot",
         str(install),
-        "-SkipRuntimeInstall",
     ]
+    if skip_runtime_install:
+        command.append("-SkipRuntimeInstall")
     process_env = os.environ.copy()
     if env:
         process_env.update(env)
@@ -149,6 +160,82 @@ def _invoke(
     if completed.stdout.strip():
         result = json.loads(completed.stdout.decode("utf-8", errors="strict"))
     return completed, result
+
+
+def test_runtime_upgrade_is_staged_and_failed_upgrade_preserves_active_venv(
+    tmp_path: Path,
+):
+    repository = _create_runtime_repository(tmp_path)
+    skills, config = _create_active_install(tmp_path)
+    memory = tmp_path / "memory"
+    install = tmp_path / "runtime"
+    install_env = {
+        "AGC_INSTALL_TEST_PIP_NO_DEPS": "1",
+        "AGC_INSTALL_TEST_PYTHON": sys.executable,
+    }
+
+    _, first = _invoke(
+        repository,
+        skills,
+        config,
+        memory,
+        install,
+        env=install_env,
+        skip_runtime_install=False,
+    )
+
+    assert first is not None
+    first_executable = Path(str(first["mcp_executable"]))
+    first_venv = first_executable.parents[1]
+    first_snapshot = _tree_snapshot(first_venv)
+    first_config = config.read_bytes()
+    assert first_executable.is_file()
+    assert first_venv.parent == install / "venvs"
+
+    runtime_source = repository / "agc_runtime" / "__init__.py"
+    runtime_source.write_bytes(runtime_source.read_bytes() + b"\n# upgrade fixture\n")
+    failed_env = {
+        **install_env,
+        "AGC_INSTALL_TEST_FAIL_AFTER": "runtime-stage",
+    }
+    failed, failed_result = _invoke(
+        repository,
+        skills,
+        config,
+        memory,
+        install,
+        env=failed_env,
+        check=False,
+        skip_runtime_install=False,
+    )
+
+    assert failed.returncode != 0
+    assert failed_result is None
+    assert config.read_bytes() == first_config
+    assert _tree_snapshot(first_venv) == first_snapshot
+    assert list((install / "staging").iterdir()) == []
+
+    _, second = _invoke(
+        repository,
+        skills,
+        config,
+        memory,
+        install,
+        env=install_env,
+        skip_runtime_install=False,
+    )
+
+    assert second is not None
+    second_executable = Path(str(second["mcp_executable"]))
+    assert second_executable.is_file()
+    assert second_executable != first_executable
+    assert first_executable.is_file()
+    assert _tree_snapshot(first_venv) == first_snapshot
+    _assert_toml_paths(
+        config,
+        expected_executable=second_executable,
+        expected_memory=memory,
+    )
 
 
 def _strict_utf8_without_bom(path: Path) -> str:

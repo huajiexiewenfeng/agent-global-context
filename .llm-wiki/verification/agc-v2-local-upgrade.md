@@ -82,7 +82,7 @@ Migration receipt:
 
 Recall/noise distribution:
 
-- core card: 1 (`durable-correctness-over-shortcuts`)
+- core card: 1
 - scoped cards: 14
 - discoverable-only: 3
 - history-only: 1
@@ -92,7 +92,7 @@ Recall/noise distribution:
 Progressive-read smoke:
 
 - overview returned counts but no automatically injected cards
-- scoped `architecture` search returned the relevant current-role card
+- one scoped search returned one eligible card
 - unrelated `sourdough weather forecast` search returned zero items
 
 ## Encoding and Rollback
