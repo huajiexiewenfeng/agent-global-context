@@ -11,3 +11,11 @@ skills-lock.json
 Thumbs.db
 .vscode/
 .idea/
+
+# Python runtime and build artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+build/
+dist/
+*.egg-info/
