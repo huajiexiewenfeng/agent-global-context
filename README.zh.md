@@ -58,77 +58,35 @@ agc write --root <path> --input <json-file|->
 agc admin --root <path> --input <json-file|->
 ```
 
-Codex 旁路采集和 v1 迁移属于独立 rollout 计划，本次 Runtime Foundation 不会自动启用它们。
+Runtime Core 可以独立运行，MCP 是可选的 Host Adapter。安装 Adapter 不会启用
+Codex 任务采集或 backfill。
 
 ## 快速开始
 
-1. 使用 `npx` 安装 skills。
+1. 为仓库、当前 Skills、Codex 配置、Runtime 安装目录和 Memory Root 选择互不
+   重叠的路径。升级 v1 时，建议使用
+   `~/.agent-global-context-v2` 这样的并行 v2 Root。
 
-```bash
-npx skills add huajiexiewenfeng/agent-global-context
+2. 使用显式路径运行可重复执行的本地安装器。
+
+```powershell
+$repository = (Resolve-Path "D:\src\agent-global-context").Path
+& "$repository\scripts\install-local.ps1" `
+  -RepositoryRoot $repository `
+  -SkillsRoot "$env:USERPROFILE\.agents\skills" `
+  -CodexConfig "$env:USERPROFILE\.codex\config.toml" `
+  -MemoryRoot "$env:USERPROFILE\.agent-global-context-v2" `
+  -InstallRoot "$env:USERPROFILE\.agent-global-context-runtime"
 ```
 
-这会安装全部五个 skills：
+3. 重启 Codex，并新建一个 task。
 
-```text
-skills/agent-global-context/
-skills/agent-global-context-recall/
-skills/agent-global-context-commit/
-skills/agent-global-context-capture/
-skills/agent-global-context-review/
-```
+安装器最终只保留一个公开 `agent-global-context` Skill，并通过一个 MCP Server
+注册且仅注册三个工具：`agc.read`、`agc.write` 和 `agc.admin`。被替换的当前
+文件会进入唯一备份；安装器可安全重复执行。
 
-2. 创建 memory root。
-
-```text
-~/.agent-global-context/
-```
-
-3. 复制 memory 模板。
-
-```text
-templates/memory/* -> ~/.agent-global-context/
-```
-
-4. 添加 agent instruction。
-
-```text
-At the start of substantial work, use agent-global-context-recall.
-Use agent-global-context-capture for strong durable context signals.
-Use agent-global-context-review when candidate review is suggested.
-Use agent-global-context-commit when the user asks to remember something or compress a session.
-```
-
-5. 试一下基本流程。
-
-```text
-Load my global context.
-Remember that I prefer design discussion before implementation.
-Review my pending global context candidates.
-Compress this session into global context.
-```
-
-## Runtime 过渡期的 Alpha Skills
-
-- `agent-global-context`：共享 schema、目录结构和策略。
-- `agent-global-context-recall`：在工作前或工作中读取相关全局上下文。
-- `agent-global-context-capture`：观察强信号，只把候选写入 staging。
-- `agent-global-context-review`：审查、提升、拒绝、过期和清理候选。
-- `agent-global-context-commit`：写入已确认长期上下文和 session 摘要。
-
-在 v2 Recall/Skill Adapter 完成前，这五个 Skills 继续作为当前兼容层工作。本阶段保持既有候选流程，不会因为 Runtime 代码存在就静默启用 Codex 采集或迁移 v1 数据。
-
-## 候选流程
-
-```text
-auto capture
-  -> staging/inbox.md 或 staging/pending-review.md
-  -> review
-  -> commit
-  -> long-term memory
-```
-
-候选不是事实。除非用户要求 review，或候选与当前任务直接相关，否则候选不进入默认 recall。
+安装器不会迁移 Memory，也不会启用 Codex 任务采集或 backfill。在后续显式、
+经过验证的退役操作前，应把 v1 保持为只读回滚材料。
 
 ## 仓库结构
 
@@ -136,10 +94,6 @@ auto capture
 skills/
   agent-global-context/
     references/
-  agent-global-context-recall/
-  agent-global-context-commit/
-  agent-global-context-capture/
-  agent-global-context-review/
 
 templates/
   memory/
@@ -162,17 +116,20 @@ docs/
   full-flow-example.md
 ```
 
-## 默认 Memory Root
+## Memory Root
 
 ```text
-~/.agent-global-context/
+~/.agent-global-context-v2/
 ```
 
 Windows：
 
 ```text
-C:\Users\<user>\.agent-global-context\
+C:\Users\<user>\.agent-global-context-v2\
 ```
+
+已有的 v1 `~/.agent-global-context` Root 应保持只读，作为回滚材料，直到后续
+显式退役。
 
 ## 文档
 
@@ -185,4 +142,5 @@ C:\Users\<user>\.agent-global-context\
 
 ## 状态
 
-v2 Runtime Foundation 已在仓库中实现。五个 alpha Skills 在 Adapter 阶段继续生效；Codex 旁路采集和 v1 迁移已经完成设计，但尚未激活。
+v2 Runtime、单一公开 Skill、三工具 MCP Adapter、确定性并行迁移支持和可重复
+执行的本地安装器均已实现。安装器不会启用 Codex 旁路采集或 backfill。

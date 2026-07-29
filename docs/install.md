@@ -1,55 +1,86 @@
 # Install
 
-## 1. Copy Skills
-
-Copy the skills you want into your agent skill directory.
-
-For Codex-style local skills, one common location is:
+AGC Runtime Core is an independent deterministic Python runtime. MCP is an
+optional Host Adapter that lets Codex expose the Runtime through one server and
+exactly three tools:
 
 ```text
-~/.agents/skills/
+agc.read
+agc.write
+agc.admin
 ```
 
-Install the MVP skills:
+The local installer creates a dedicated Runtime virtual environment, installs
+one public `agent-global-context` Skill, retires the four alpha companion Skill
+directories, and inserts or replaces one marked Codex MCP registration block.
+It is safe to rerun.
 
-```text
-skills/agent-global-context/
-skills/agent-global-context-recall/
-skills/agent-global-context-commit/
-skills/agent-global-context-capture/
-skills/agent-global-context-review/
+## Prerequisites
+
+- Windows PowerShell 5.1 or PowerShell 7
+- Python 3.10 or newer
+- an existing repository checkout
+- an existing active Skills directory
+- an existing Codex `config.toml`
+- distinct repository, Skills, config, Runtime install, and memory paths
+
+`MemoryRoot` and `InstallRoot` may be new directories. Other inputs must
+already exist. The installer rejects dangerous overlapping paths before it
+changes active files.
+
+## Install for Codex
+
+Use explicit paths so the intended active installation and parallel v2 memory
+root are reviewable before execution:
+
+```powershell
+$repository = (Resolve-Path "D:\src\agent-global-context").Path
+$skills = "$env:USERPROFILE\.agents\skills"
+$codexConfig = "$env:USERPROFILE\.codex\config.toml"
+$memoryV2 = "$env:USERPROFILE\.agent-global-context-v2"
+$runtimeInstall = "$env:USERPROFILE\.agent-global-context-runtime"
+
+& "$repository\scripts\install-local.ps1" `
+  -RepositoryRoot $repository `
+  -SkillsRoot $skills `
+  -CodexConfig $codexConfig `
+  -MemoryRoot $memoryV2 `
+  -InstallRoot $runtimeInstall
 ```
 
-## 2. Create Memory Root
+The installer:
 
-Create the default global context directory:
+1. validates paths, the source Skill encoding, and Codex block markers;
+2. creates `<InstallRoot>\venv` and installs the repository's `mcp` extra;
+3. writes `<InstallRoot>\bin\agc-mcp.cmd`;
+4. backs up every active AGC Skill directory that it replaces and the Codex
+   config when it changes;
+5. leaves only the public `agent-global-context` Skill active; and
+6. registers the absolute MCP executable and `AGC_MEMORY_ROOT` in exactly one
+   marked Codex block.
 
-```text
-~/.agent-global-context/
-```
+Backups are retained under
+`<InstallRoot>\backups\<timestamp-and-unique-suffix>\`. A no-op rerun creates
+no backup. A caught failure after active mutation begins restores the active
+config and Skills from the current backup.
 
-Copy the template files from:
+## After Registration
 
-```text
-templates/memory/
-```
+Restart Codex and start a new task so the new Skill and MCP server are loaded.
+The server exposes exactly `agc.read`, `agc.write`, and `agc.admin`.
 
-## 3. Add Agent Instruction
+The installer only installs and registers the adapter. It does not initialize
+or migrate memory, and it does not enable Codex task capture or backfill.
 
-Add an instruction to your agent profile or project instructions:
+For a v1-to-v2 rollout, keep the existing v1 root read-only as rollback
+material and use a parallel root such as
+`~/.agent-global-context-v2`. Retire v1 only through a later explicit,
+verified action.
 
-```text
-At the start of substantial work, use agent-global-context-recall to load relevant global context. When the user asks to remember something or compress a session, use agent-global-context-commit.
-When auto capture is enabled, use agent-global-context-capture to write strong candidate memories to staging only. Use agent-global-context-review to promote, reject, or expire staged candidates.
-```
+## Test-Only Runtime Skip
 
-## 4. Customize
-
-Edit:
-
-```text
-~/.agent-global-context/config.yaml
-~/.agent-global-context/index.md
-```
-
-Add project mappings for your local workspaces.
+`-SkipRuntimeInstall` skips virtual-environment creation and package
+installation. It exists for isolated installer integration tests; the
+installer still writes the launcher and registration paths. Do not use it for
+a normal local deployment unless the expected MCP executable was installed
+separately.
