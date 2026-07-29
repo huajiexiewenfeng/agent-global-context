@@ -1,5 +1,7 @@
-import json
 import hashlib
+import json
+import os
+import subprocess
 import zipfile
 from dataclasses import replace
 from pathlib import Path
@@ -92,6 +94,63 @@ def authorized_request() -> dict:
         "authorization": "explicit_user_request",
         "verification_terms": ["妻子和儿子"],
     }
+
+
+def migrate_family(
+    paths: MemoryPaths,
+    source_root: Path,
+    source_texts: dict[str, str] | None = None,
+):
+    source_texts = source_texts or {
+        "user/family.md": "保留：无关内容\n忘记：妻子和儿子\n保留：其他内容\n"
+    }
+    sources = []
+    for relative, text in source_texts.items():
+        source = source_root / Path(*relative.split("/"))
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_text(text, encoding="utf-8")
+        sources.append(
+            {
+                "path": relative,
+                "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+                "disposition": "snapshot",
+            }
+        )
+    request = {
+        "action": "migrate",
+        "migration_id": "v1-family",
+        "source_root": str(source_root.resolve()),
+        "sources": sources,
+        "memories": [
+            {
+                "source_path": next(iter(source_texts)),
+                "memory_markdown": family_memory().to_markdown(),
+            }
+        ],
+    }
+    assert migrate_v1(paths, request).status == "accepted"
+    return request
+
+
+def _link_directory(link: Path, target: Path) -> None:
+    try:
+        os.symlink(target, link, target_is_directory=True)
+        return
+    except (OSError, NotImplementedError):
+        if os.name != "nt":
+            raise
+    result = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(link), str(target)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        pytest.skip(f"directory links unavailable: {result.stderr}")
+
+
+def _forget_journals(paths: MemoryPaths) -> list[Path]:
+    return list((paths.tombstones / "in-progress").glob("*.json"))
 
 
 def test_forget_requires_authorization(populated):
@@ -198,29 +257,12 @@ def test_forget_migrated_memory_surgically_rewrites_legacy_and_snapshot(
     paths = MemoryPaths.from_root(tmp_path / "memory")
     source_root = tmp_path / "v1"
     source_file = source_root / "user" / "family-structure.md"
-    source_file.parent.mkdir(parents=True)
     source_text = "保留：无关内容\n忘记：妻子和儿子\n保留：其他内容\n"
-    source_file.write_text(source_text, encoding="utf-8")
-    item = family_memory()
-    request = {
-        "action": "migrate",
-        "migration_id": "v1-family",
-        "source_root": str(source_root.resolve()),
-        "sources": [
-            {
-                "path": "user/family-structure.md",
-                "sha256": hashlib.sha256(source_file.read_bytes()).hexdigest(),
-                "disposition": "snapshot",
-            }
-        ],
-        "memories": [
-            {
-                "source_path": "user/family-structure.md",
-                "memory_markdown": item.to_markdown(),
-            }
-        ],
-    }
-    assert migrate_v1(paths, request).status == "accepted"
+    request = migrate_family(
+        paths,
+        source_root,
+        {"user/family-structure.md": source_text},
+    )
     snapshot = (
         paths.migrations
         / "v1-family"
@@ -248,3 +290,264 @@ def test_forget_migrated_memory_surgically_rewrites_legacy_and_snapshot(
     )
     assert "妻子和儿子" not in tombstone_text
     assert request["sources"][0]["sha256"] not in tombstone_text
+
+
+def test_forget_exact_term_surgery_preserves_same_line_and_multiline_text(
+    tmp_path: Path,
+):
+    paths = MemoryPaths.from_root(tmp_path / "memory")
+    source_root = tmp_path / "v1"
+    term = "妻子和儿子"
+    source_texts = {
+        "user/first.md": f"left {term} right\nrelated line without literal\n",
+        "user/second.md": f"alpha {term} omega\nuntouched multiline\n",
+    }
+    migrate_family(paths, source_root, source_texts)
+
+    response = forget(paths, authorized_request())
+
+    assert response.status == "accepted"
+    for relative, original in source_texts.items():
+        source = source_root / Path(*relative.split("/"))
+        snapshot = (
+            paths.migrations
+            / "v1-family"
+            / "snapshot"
+            / Path(*relative.split("/"))
+        )
+        expected = original.replace(term, "")
+        assert source.read_text(encoding="utf-8") == expected
+        assert snapshot.read_text(encoding="utf-8") == expected
+
+
+def test_forget_rejects_tampered_manifest_before_external_writes(tmp_path: Path):
+    paths = MemoryPaths.from_root(tmp_path / "memory")
+    source_root = tmp_path / "v1"
+    migrate_family(paths, source_root)
+    source = source_root / "user" / "family.md"
+    before = source.read_bytes()
+    manifest_path = paths.migrations / "v1-family" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["source_root"] = str((tmp_path / "redirected").resolve())
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    response = forget(paths, authorized_request())
+
+    assert response.status == "failed"
+    assert response.error["code"] == "invalid_migration_manifest"
+    assert source.read_bytes() == before
+    assert MemoryStore(paths).get_memory("family-structure") == family_memory()
+
+
+def test_forget_rejects_missing_source_receipt_evidence(tmp_path: Path):
+    paths = MemoryPaths.from_root(tmp_path / "memory")
+    source_root = tmp_path / "v1"
+    migrate_family(paths, source_root)
+    receipt_path = paths.receipts / "source-keys.json"
+    registry = json.loads(receipt_path.read_text(encoding="utf-8"))
+    registry["sources"] = []
+    receipt_path.write_text(
+        json.dumps(registry, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    source = source_root / "user" / "family.md"
+    before = source.read_bytes()
+
+    response = forget(paths, authorized_request())
+
+    assert response.status == "failed"
+    assert response.error["code"] == "migration_evidence_mismatch"
+    assert source.read_bytes() == before
+
+
+def test_forget_rejects_changed_registered_legacy_source(tmp_path: Path):
+    paths = MemoryPaths.from_root(tmp_path / "memory")
+    source_root = tmp_path / "v1"
+    migrate_family(paths, source_root)
+    source = source_root / "user" / "family.md"
+    source.write_text(
+        source.read_text(encoding="utf-8") + "later legitimate change\n",
+        encoding="utf-8",
+    )
+    before = source.read_bytes()
+
+    response = forget(paths, authorized_request())
+
+    assert response.status == "failed"
+    assert response.error["code"] == "legacy_source_changed"
+    assert source.read_bytes() == before
+
+
+def test_forget_rejects_snapshot_symlink_escape(tmp_path: Path):
+    paths = MemoryPaths.from_root(tmp_path / "memory")
+    source_root = tmp_path / "v1"
+    migrate_family(paths, source_root)
+    snapshot = (
+        paths.migrations / "v1-family" / "snapshot" / "user" / "family.md"
+    )
+    snapshot.unlink()
+    snapshot.parent.rmdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    outside_file = outside / "family.md"
+    outside_file.write_text("妻子和儿子\n", encoding="utf-8")
+    _link_directory(snapshot.parent, outside)
+
+    response = forget(paths, authorized_request())
+
+    assert response.status == "failed"
+    assert response.error["code"] == "migration_path_escape"
+    assert outside_file.read_text(encoding="utf-8") == "妻子和儿子\n"
+
+
+@pytest.mark.parametrize("boundary", ["legacy", "managed_purge", "tombstone"])
+def test_forget_rolls_back_injected_write_failures_and_exact_retry_converges(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    boundary: str,
+):
+    from agc_runtime import forget_service
+
+    paths = MemoryPaths.from_root(tmp_path / "memory")
+    source_root = tmp_path / "v1"
+    relative_source = "user/妻子和儿子.md"
+    migrate_family(
+        paths,
+        source_root,
+        {
+            relative_source: (
+                "保留：无关内容\n忘记：妻子和儿子\n保留：其他内容\n"
+            )
+        },
+    )
+    source = source_root / Path(*relative_source.split("/"))
+    snapshot = (
+        paths.migrations
+        / "v1-family"
+        / "snapshot"
+        / Path(*relative_source.split("/"))
+    )
+    original_source = source.read_bytes()
+    original_snapshot = snapshot.read_bytes()
+    original_apply = forget_service._apply_forget_operation
+    failed = False
+
+    def fail_boundary(operation):
+        nonlocal failed
+        if operation.category == boundary and not failed:
+            failed = True
+            raise OSError(f"injected {boundary} failure")
+        return original_apply(operation)
+
+    monkeypatch.setattr(
+        forget_service, "_apply_forget_operation", fail_boundary
+    )
+    response = forget(paths, authorized_request())
+
+    assert response.status == "failed"
+    assert response.error["code"] == "forget_failed"
+    assert source.read_bytes() == original_source
+    assert snapshot.read_bytes() == original_snapshot
+    assert MemoryStore(paths).get_memory("family-structure") == family_memory()
+    assert not list(paths.tombstones.glob("*.json"))
+    journals = _forget_journals(paths)
+    assert len(journals) == 1
+    journal_text = journals[0].read_text(encoding="utf-8")
+    assert "妻子和儿子" not in journal_text
+    assert hashlib.sha256(original_source).hexdigest() not in journal_text
+    assert family_memory().full_meaning not in journal_text
+
+    monkeypatch.setattr(
+        forget_service, "_apply_forget_operation", original_apply
+    )
+    retry = forget(paths, authorized_request())
+
+    assert retry.status == "accepted", retry
+    assert not _forget_journals(paths)
+    assert "妻子和儿子" not in source.read_text(encoding="utf-8")
+    assert "妻子和儿子" not in snapshot.read_text(encoding="utf-8")
+
+
+def test_forget_rolls_back_verification_failure_and_retry_converges(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from agc_runtime import forget_service
+
+    paths = MemoryPaths.from_root(tmp_path / "memory")
+    source_root = tmp_path / "v1"
+    migrate_family(paths, source_root)
+    source = source_root / "user" / "family.md"
+    before = source.read_bytes()
+    original_verify = forget_service._verify_forget_plan
+
+    def fail_verification(*_args, **_kwargs):
+        raise RuntimeError("injected verification failure")
+
+    monkeypatch.setattr(
+        forget_service, "_verify_forget_plan", fail_verification
+    )
+    response = forget(paths, authorized_request())
+
+    assert response.status == "failed"
+    assert response.error["code"] == "forget_failed"
+    assert source.read_bytes() == before
+    assert MemoryStore(paths).get_memory("family-structure") == family_memory()
+    assert _forget_journals(paths)
+
+    monkeypatch.setattr(
+        forget_service, "_verify_forget_plan", original_verify
+    )
+    retry = forget(paths, authorized_request())
+
+    assert retry.status == "accepted"
+    assert not _forget_journals(paths)
+
+
+def test_forget_journal_rejects_changed_request_and_resumes_partial_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from agc_runtime import forget_service
+
+    paths = MemoryPaths.from_root(tmp_path / "memory")
+    source_root = tmp_path / "v1"
+    migrate_family(paths, source_root)
+    original_apply = forget_service._apply_forget_operation
+    original_rollback = forget_service._rollback_forget_operations
+
+    def fail_tombstone(operation):
+        if operation.category == "tombstone":
+            raise OSError("simulated interruption after managed mutations")
+        return original_apply(operation)
+
+    monkeypatch.setattr(
+        forget_service, "_apply_forget_operation", fail_tombstone
+    )
+    monkeypatch.setattr(
+        forget_service, "_rollback_forget_operations", lambda *_args: None
+    )
+    interrupted = forget(paths, authorized_request())
+
+    assert interrupted.status == "failed"
+    assert _forget_journals(paths)
+    with pytest.raises(FileNotFoundError):
+        MemoryStore(paths).get_memory("family-structure")
+
+    changed = authorized_request()
+    changed["suppression_scope"] = "different_scope"
+    conflict = forget(paths, changed)
+    assert conflict.status == "failed"
+    assert conflict.error["code"] == "forget_request_conflict"
+
+    monkeypatch.setattr(
+        forget_service, "_apply_forget_operation", original_apply
+    )
+    monkeypatch.setattr(
+        forget_service, "_rollback_forget_operations", original_rollback
+    )
+    retry = forget(paths, authorized_request())
+
+    assert retry.status == "accepted"
+    assert not _forget_journals(paths)

@@ -1,6 +1,8 @@
 import codecs
 import hashlib
 import json
+import os
+import subprocess
 from dataclasses import replace
 from pathlib import Path
 
@@ -25,6 +27,23 @@ def _write_source(root: Path, relative: str, data: bytes) -> str:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(data)
     return hashlib.sha256(data).hexdigest()
+
+
+def _link_directory(link: Path, target: Path) -> None:
+    try:
+        os.symlink(target, link, target_is_directory=True)
+        return
+    except (OSError, NotImplementedError):
+        if os.name != "nt":
+            raise
+    result = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(link), str(target)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        pytest.skip(f"directory links unavailable: {result.stderr}")
 
 
 def _request(
@@ -195,6 +214,23 @@ def test_snapshot_bom_normalization_and_content_free_metadata(tmp_path: Path):
     assert all(value not in manifest_text for value in forbidden)
 
 
+def test_multiple_leading_boms_are_rejected_without_target_writes(
+    tmp_path: Path,
+):
+    paths = MemoryPaths.from_root(tmp_path / "target")
+    request = _request(
+        tmp_path / "v1",
+        source_bytes=codecs.BOM_UTF8 * 2 + b"legacy\n",
+    )
+
+    response = migrate_v1(paths, request)
+
+    assert response.status == "failed"
+    assert response.error["code"] == "invalid_request"
+    assert not (paths.root / "schema-version").exists()
+    assert not paths.migrations.exists()
+
+
 @pytest.mark.parametrize(
     ("mutate", "message"),
     [
@@ -296,24 +332,63 @@ def test_exact_retry_is_idempotent_and_same_id_different_request_fails(
     assert len(list(paths.memories.rglob("*.md"))) == 1
 
 
-def test_partial_retry_converges_and_rebuilds_catalog(tmp_path: Path):
+def test_manifest_loss_fails_closed_without_replacement(tmp_path: Path):
     paths = MemoryPaths.from_root(tmp_path / "target")
     request = _request(tmp_path / "v1")
     first = migrate_v1(paths, request)
     manifest = paths.migrations / "v1-20260729" / "manifest.json"
     manifest.unlink()
-    paths.catalog_json.unlink()
-    paths.catalog_md.unlink()
+    memory_path = next(paths.memories.rglob("*.md"))
+    original_memory = memory_path.read_bytes()
+    changed = json.loads(json.dumps(request))
+    item = MemoryItem.from_markdown(changed["memories"][0]["memory_markdown"])
+    changed["memories"][0]["memory_markdown"] = replace(
+        item, memory_card="不同但仍有效的卡片"
+    ).to_markdown()
 
-    retry = migrate_v1(paths, request)
+    retry = migrate_v1(paths, changed)
 
     assert first.status == "accepted"
-    assert retry.status == "accepted"
-    assert retry.data["memory_count"] == 1
-    assert manifest.is_file()
-    catalog = json.loads(paths.catalog_json.read_text(encoding="utf-8"))
-    assert catalog["memory_count"] == 1
+    assert retry.status == "failed"
+    assert retry.error["code"] == "migration_receipt_missing"
+    assert not manifest.exists()
+    assert memory_path.read_bytes() == original_memory
     assert len(list(paths.memories.rglob("*.md"))) == 1
+
+
+def test_tampered_manifest_is_rejected_before_retry_writes(tmp_path: Path):
+    paths = MemoryPaths.from_root(tmp_path / "target")
+    request = _request(tmp_path / "v1")
+    assert migrate_v1(paths, request).status == "accepted"
+    manifest_path = paths.migrations / "v1-20260729" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["counts"]["memories"] = 99
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    before = manifest_path.read_bytes()
+
+    response = migrate_v1(paths, request)
+
+    assert response.status == "failed"
+    assert response.error["code"] == "invalid_migration_manifest"
+    assert manifest_path.read_bytes() == before
+
+
+def test_migration_rejects_snapshot_parent_symlink_escape(tmp_path: Path):
+    paths = MemoryPaths.from_root(tmp_path / "target")
+    request = _request(tmp_path / "v1")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    paths.migrations.parent.mkdir(parents=True)
+    _link_directory(paths.migrations, outside)
+
+    response = migrate_v1(paths, request)
+
+    assert response.status == "failed"
+    assert response.error["code"] == "invalid_request"
+    assert not list(outside.rglob("*"))
 
 
 def test_partial_receipt_rejects_changed_request_and_exact_retry_converges(

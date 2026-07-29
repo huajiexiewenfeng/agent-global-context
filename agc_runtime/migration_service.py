@@ -1,7 +1,6 @@
 import codecs
 import hashlib
 import json
-import re
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -9,6 +8,17 @@ from typing import Any
 from agc_runtime.catalog import rebuild_catalog
 from agc_runtime.contracts import SourceKey, ToolResponse
 from agc_runtime.locking import root_write_lock
+from agc_runtime.migration_manifest import (
+    DISPOSITIONS as _DISPOSITIONS,
+    SAFE_ID_PATTERN as _ID_PATTERN,
+    SHA256_PATTERN as _SHA256_PATTERN,
+    MigrationManifestError,
+    load_migration_manifest,
+    migration_manifest_integrity,
+    migration_receipts as _migration_receipts,
+    resolve_migration_path as _resolved_managed_path,
+    validate_migration_manifest,
+)
 from agc_runtime.models import MemoryItem
 from agc_runtime.paths import MemoryPaths
 from agc_runtime.schema import validate_memory_item
@@ -16,8 +26,6 @@ from agc_runtime.store import MemoryStore
 from agc_runtime.utf8_io import atomic_write_text, strict_read_text
 
 
-_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{0,79}$")
-_SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _TOP_LEVEL_FIELDS = {
     "action",
     "migration_id",
@@ -27,7 +35,8 @@ _TOP_LEVEL_FIELDS = {
 }
 _SOURCE_FIELDS = {"path", "sha256", "disposition"}
 _MEMORY_FIELDS = {"source_path", "memory_markdown"}
-_DISPOSITIONS = {"snapshot", "ignored", "excluded_sensitive"}
+class MigrationReceiptMissingError(ValueError):
+    pass
 
 
 @dataclass(frozen=True)
@@ -91,6 +100,10 @@ def _source_path(source_root: Path, raw_path: Any) -> tuple[str, Path]:
 
 def _decode_legacy_text(raw: bytes, source_path: str) -> tuple[str, bool]:
     had_bom = raw.startswith(codecs.BOM_UTF8)
+    if raw.startswith(codecs.BOM_UTF8 * 2):
+        raise ValueError(
+            f"legacy text source has multiple UTF-8 BOMs: {source_path}"
+        )
     payload = raw[len(codecs.BOM_UTF8) :] if had_bom else raw
     try:
         return payload.decode("utf-8", errors="strict"), had_bom
@@ -237,28 +250,21 @@ def _response_data(
     }
 
 
-def _read_manifest(path: Path) -> dict[str, Any] | None:
+def _read_manifest(
+    paths: MemoryPaths, path: Path, migration_id: str
+) -> dict[str, Any] | None:
     if not path.exists():
         return None
-    value = json.loads(strict_read_text(path))
-    if not isinstance(value, dict):
-        raise ValueError("migration manifest must be a mapping")
-    return value
+    return load_migration_manifest(
+        paths, path, expected_migration_id=migration_id
+    )
 
 
 def _migration_receipt_ids(paths: MemoryPaths, migration_id: str) -> set[str]:
-    receipt_file = paths.receipts / "source-keys.json"
-    if not receipt_file.exists():
-        return set()
-    registry = json.loads(strict_read_text(receipt_file))
     return {
         entry["object_id"]
-        for entry in registry.get("sources", [])
-        if isinstance(entry, dict)
-        and entry.get("revision") == migration_id
-        and isinstance(entry.get("ref"), str)
-        and entry["ref"].startswith("migration:v1:")
-        and isinstance(entry.get("object_id"), str)
+        for entry in _migration_receipts(paths, migration_id)
+        if isinstance(entry.get("object_id"), str)
     }
 
 
@@ -306,7 +312,7 @@ def _manifest_value(
     *,
     status: str,
 ) -> dict[str, Any]:
-    return {
+    manifest = {
         "schema_version": 2,
         "migration_id": migration_id,
         "request_digest": request_digest,
@@ -331,6 +337,18 @@ def _manifest_value(
         ),
         "counts": _counts(sources, memories),
     }
+    manifest["integrity_sha256"] = migration_manifest_integrity(manifest)
+    return validate_migration_manifest(
+        manifest, expected_migration_id=migration_id
+    )
+
+
+def _migration_artifacts_exist(
+    paths: MemoryPaths, migration_root: Path, migration_id: str
+) -> bool:
+    if migration_root.exists() and any(migration_root.rglob("*")):
+        return True
+    return bool(_migration_receipts(paths, migration_id))
 
 
 def _migrate_validated(
@@ -341,9 +359,20 @@ def _migrate_validated(
     memories: tuple[_ValidatedMemory, ...],
     request_digest: str,
 ) -> ToolResponse:
-    migration_root = paths.migrations / migration_id
-    manifest_path = migration_root / "manifest.json"
-    existing_manifest = _read_manifest(manifest_path)
+    migration_relative = Path(".runtime") / "migrations" / migration_id
+    migration_root = _resolved_managed_path(paths, migration_relative)
+    manifest_path = _resolved_managed_path(
+        paths, migration_relative / "manifest.json"
+    )
+    existing_manifest = _read_manifest(
+        paths, manifest_path, migration_id
+    )
+    if existing_manifest is None and _migration_artifacts_exist(
+        paths, migration_root, migration_id
+    ):
+        raise MigrationReceiptMissingError(
+            "migration artifacts exist without a valid manifest"
+        )
     if existing_manifest is not None:
         if existing_manifest.get("request_digest") != request_digest:
             return _failed(
@@ -375,7 +404,15 @@ def _migrate_validated(
     with root_write_lock(paths):
         # MemoryStore's public default still locks. Migration already owns the
         # single root write lock, so this internal call explicitly reuses it.
-        current_manifest = _read_manifest(manifest_path)
+        current_manifest = _read_manifest(
+            paths, manifest_path, migration_id
+        )
+        if current_manifest is None and _migration_artifacts_exist(
+            paths, migration_root, migration_id
+        ):
+            raise MigrationReceiptMissingError(
+                "migration artifacts exist without a valid manifest"
+            )
         if current_manifest is not None:
             if current_manifest.get("request_digest") != request_digest:
                 return _failed(
@@ -422,10 +459,11 @@ def _migrate_validated(
         for source in sources:
             if source.disposition != "snapshot":
                 continue
-            snapshot = (
-                migration_root
+            snapshot = _resolved_managed_path(
+                paths,
+                migration_relative
                 / "snapshot"
-                / Path(*PurePosixPath(source.relative_path).parts)
+                / Path(*PurePosixPath(source.relative_path).parts),
             )
             atomic_write_text(snapshot, source.snapshot_text or "")
 
@@ -517,6 +555,12 @@ def migrate_v1(
             memories,
             request_digest,
         )
+    except MigrationReceiptMissingError as error:
+        return _failed("migration_receipt_missing", str(error))
+    except MigrationManifestError as error:
+        if "migration path escapes managed root" in str(error):
+            return _failed("invalid_request", str(error))
+        return _failed("invalid_migration_manifest", str(error))
     except RuntimeError as error:
         if str(error).startswith("source hash mismatch:"):
             return _failed("source_hash_mismatch", str(error))
