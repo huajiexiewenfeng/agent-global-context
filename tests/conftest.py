@@ -1,5 +1,7 @@
+import json
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -14,5 +16,22 @@ def run_cli():
             capture_output=True,
             check=False,
         )
+
+    return invoke
+
+
+@pytest.fixture
+def cli(run_cli):
+    def invoke(tool: str, root: Path, payload: dict) -> dict:
+        result = run_cli(
+            tool,
+            "--root",
+            str(root),
+            "--input",
+            "-",
+            stdin=json.dumps(payload, ensure_ascii=False),
+        )
+        assert result.returncode == 0, result.stderr or result.stdout
+        return json.loads(result.stdout)
 
     return invoke

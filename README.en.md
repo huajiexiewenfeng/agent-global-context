@@ -1,8 +1,8 @@
 # Agent Global Context
 
-Markdown-first global context skills for AI agents.
+Markdown-first personal memory for AI agents.
 
-Agent Global Context helps coding agents preserve key user identity, technical preferences, coding habits, work environment, and project knowledge across sessions. It is not a full conversation archive. It is a selective, auditable context layer for information that should influence future agent behavior.
+Agent Global Context helps agents remember a real, changing person and support their work, life, learning, and research without turning memory into prompt noise. It is not a full conversation archive. It is a selective, auditable context layer for information that can materially improve future help.
 
 ## Why
 
@@ -16,17 +16,29 @@ This project takes a different approach:
 - Keep auto capture safe: candidates go to staging first, not long-term memory.
 - Stay agent-neutral: the pattern can be used by Codex, Claude Code, Cursor, OpenCode, and other coding agents that support skills or instruction files.
 
-## Core Model
+## North Star
 
-Agent Global Context uses five priority levels:
+- Remember the person, not just the current project.
+- Help the person grow across work, life, learning, and research.
+- Use the minimum relevant memory and stay quiet when memory would add noise.
 
-- `P0`: user background and identity-level context
-- `P1`: technical and collaboration preferences
-- `P2`: coding habits and engineering style
-- `P3`: project and work-environment knowledge
-- `P4`: temporary session state
+## v2 Runtime Foundation
 
-The goal is not perfect memory. The goal is better continuity.
+The repository includes an independent deterministic Python runtime for schemas, strict UTF-8 I/O, lifecycle gates, exact source-key idempotency, Markdown storage, sanitized events, progressive reads, hard forget, validation, backup, and restore.
+
+Memory is discovered progressively:
+
+```text
+overview -> search -> get -> history/evidence
+```
+
+No personal card is injected by default. The LLM decides relevance, semantic similarity, `disposition`, and `match_memory_id`; the Runtime only provides deterministic data and policy enforcement.
+
+Sensitive persistence is fixed to `disabled` in v2, and secrets are never stored.
+
+The Runtime exposes `agc.read`, `agc.write`, and `agc.admin`. Its CLI is a host adapter rather than a required human workflow.
+
+Codex side-channel capture and v1 migration are separate rollout plans and are not activated by this foundation.
 
 ## Quick Start
 
@@ -76,7 +88,7 @@ Review my pending global context candidates.
 Compress this session into global context.
 ```
 
-## Alpha MVP Skills
+## Alpha Skills During the Runtime Phase
 
 - `agent-global-context`: shared schema, directory layout, and policy.
 - `agent-global-context-recall`: loads relevant global context before or during work.
@@ -84,7 +96,7 @@ Compress this session into global context.
 - `agent-global-context-review`: reviews, promotes, rejects, expires, and cleans candidates.
 - `agent-global-context-commit`: writes confirmed long-term context and session summaries.
 
-Auto capture is enabled by default, but it only writes candidates to staging. Long-term memory still requires review and commit.
+These five skills remain the active compatibility layer while the v2 Recall/Skill Adapter is implemented. The Runtime does not silently activate Codex capture or migrate v1 data.
 
 ## Candidate Flow
 
@@ -152,4 +164,4 @@ C:\Users\<user>\.agent-global-context\
 
 ## Status
 
-This project is in alpha MVP stage.
+The v2 Runtime Foundation is implemented in the repository. The five alpha skills remain active during the adapter phase. Codex side-channel capture and v1 migration are designed but not activated.
