@@ -120,10 +120,16 @@ def source_operations(
     terms: tuple[str, ...],
     *,
     retry: bool,
-) -> tuple[list[ForgetOperation], tuple[Path, ...]]:
+) -> tuple[
+    list[ForgetOperation],
+    tuple[Path, ...],
+    dict[Path, dict[str, str]],
+]:
     operations = []
     verification_paths = []
+    pending_by_manifest: dict[Path, dict[str, str]] = {}
     for manifest_path, manifest in manifests:
+        pending_rewrites: dict[str, str] = {}
         source_root = Path(manifest["source_root"]).resolve()
         forgotten_source_paths = {
             entry["source_path"]
@@ -172,8 +178,38 @@ def source_operations(
                 and current_stat.st_ino == identity["inode"]
             )
             current_hash = hashlib.sha256(raw).hexdigest()
-            already_rewritten = False
-            if current_hash != source["current_sha256"]:
+            pending_hash = source["pending_rewrite_sha256"]
+            if current_hash == source["current_sha256"]:
+                if not identity_matches:
+                    raise ForgetPlanError(
+                        "legacy_source_replaced",
+                        f"registered legacy source identity changed: {original}",
+                    )
+                try:
+                    text = raw.decode("utf-8", errors="strict")
+                except UnicodeDecodeError as error:
+                    raise ForgetPlanError(
+                        "invalid_migration_source",
+                        f"migration text is not UTF-8: {original}",
+                    ) from error
+                updated = _exact_term_rewrite(text, terms).encode("utf-8")
+                if updated != raw:
+                    pending_rewrites[source["path"]] = hashlib.sha256(
+                        updated
+                    ).hexdigest()
+                    operations.append(
+                        ForgetOperation(original, updated, "legacy")
+                    )
+            else:
+                if (
+                    not retry
+                    or pending_hash is None
+                    or current_hash != pending_hash
+                ):
+                    raise ForgetPlanError(
+                        "legacy_source_changed",
+                        f"registered legacy source changed: {original}",
+                    )
                 try:
                     current_text = raw.decode("utf-8", errors="strict")
                 except UnicodeDecodeError as error:
@@ -181,32 +217,12 @@ def source_operations(
                         "legacy_source_changed",
                         f"registered legacy source changed: {original}",
                     ) from error
-                if not retry or _contains_term(current_text, terms):
+                if _contains_term(current_text, terms):
                     raise ForgetPlanError(
                         "legacy_source_changed",
                         f"registered legacy source changed: {original}",
                     )
-                already_rewritten = True
-            elif not identity_matches and not retry:
-                raise ForgetPlanError(
-                    "legacy_source_replaced",
-                    f"registered legacy source identity changed: {original}",
-                )
-            try:
-                text = raw.decode("utf-8", errors="strict")
-            except UnicodeDecodeError as error:
-                raise ForgetPlanError(
-                    "invalid_migration_source",
-                    f"migration text is not UTF-8: {original}",
-                ) from error
-            if not already_rewritten:
-                operations.append(
-                    ForgetOperation(
-                        original,
-                        _exact_term_rewrite(text, terms).encode("utf-8"),
-                        "legacy",
-                    )
-                )
+                pending_rewrites[source["path"]] = pending_hash
             verification_paths.append(original)
 
             snapshot_is_retained = source["path"] in retained_source_paths
@@ -241,7 +257,9 @@ def source_operations(
                 operations.append(
                     ForgetOperation(snapshot, None, "snapshot")
                 )
-    return operations, tuple(verification_paths)
+        if pending_rewrites:
+            pending_by_manifest[manifest_path] = pending_rewrites
+    return operations, tuple(verification_paths), pending_by_manifest
 
 
 def manifest_with_marker(
@@ -249,8 +267,14 @@ def manifest_with_marker(
     memory_id: str,
     operation_id: str,
     status: str,
+    pending_rewrites: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     updated = json.loads(json.dumps(manifest))
+    pending_rewrites = pending_rewrites or {}
+    for source in updated["sources"]:
+        pending_hash = pending_rewrites.get(source["path"])
+        if pending_hash is not None:
+            source["pending_rewrite_sha256"] = pending_hash
     retained_markers = [
         marker
         for marker in updated["forget_operations"]
@@ -301,6 +325,7 @@ def _refresh_source_state(
         "device": stat.st_dev,
         "inode": stat.st_ino,
     }
+    source["pending_rewrite_sha256"] = None
 
 
 def manifest_without_memory(
@@ -362,3 +387,52 @@ def manifest_without_memory(
     return validate_migration_manifest(
         updated, expected_migration_id=updated["migration_id"]
     )
+
+
+def rollback_reconciled_manifest(
+    manifest_path: Path, marked_manifest_bytes: bytes
+) -> bytes | None:
+    marked = validate_migration_manifest(
+        json.loads(marked_manifest_bytes.decode("utf-8")),
+        expected_migration_id=manifest_path.parent.name,
+    )
+    pending_paths = {
+        source["path"]
+        for source in marked["sources"]
+        if source["pending_rewrite_sha256"] is not None
+    }
+    if not pending_paths or not manifest_path.is_file():
+        return None
+    current = validate_migration_manifest(
+        json.loads(manifest_path.read_text(encoding="utf-8")),
+        expected_migration_id=manifest_path.parent.name,
+    )
+    source_root = Path(current["source_root"]).resolve()
+    changed = False
+    for source in current["sources"]:
+        if source["path"] not in pending_paths:
+            continue
+        pure = Path(*PurePosixPath(source["path"]).parts)
+        resolved = (source_root / pure).resolve()
+        if resolved != Path(source["canonical_path"]) or not resolved.is_file():
+            continue
+        raw = resolved.read_bytes()
+        if hashlib.sha256(raw).hexdigest() != source["current_sha256"]:
+            continue
+        _refresh_source_state(source_root, source)
+        changed = True
+    if not changed:
+        return None
+    current["integrity_sha256"] = migration_manifest_integrity(current)
+    validate_migration_manifest(
+        current, expected_migration_id=current["migration_id"]
+    )
+    return (
+        json.dumps(
+            current,
+            ensure_ascii=False,
+            sort_keys=True,
+            indent=2,
+        )
+        + "\n"
+    ).encode("utf-8")

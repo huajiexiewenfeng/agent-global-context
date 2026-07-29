@@ -13,6 +13,7 @@ from agc_runtime.forget_transaction import (
     _load_journal,
     _prepare_forget_plan,
     _request_digest,
+    _reconcile_rollback_manifests,
     _rollback_forget_operations,
     _tombstone_path,
     _verify_forget_plan,
@@ -192,7 +193,8 @@ def forget(paths: MemoryPaths, request: Any) -> ToolResponse:
                 _apply_forget_operation(originals[-1][0])
                 applied.append(originals[-1])
             except Exception as error:
-                _rollback_forget_operations(applied)
+                if _rollback_forget_operations(applied):
+                    _reconcile_rollback_manifests(plan)
                 return _failed("forget_failed", str(error))
 
             journal_path.unlink(missing_ok=True)

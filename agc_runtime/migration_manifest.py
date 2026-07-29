@@ -29,6 +29,7 @@ _SOURCE_FIELDS = {
     "path",
     "sha256",
     "current_sha256",
+    "pending_rewrite_sha256",
     "canonical_path",
     "file_identity",
     "disposition",
@@ -171,6 +172,14 @@ def validate_migration_manifest(
         ):
             raise MigrationManifestError(
                 "manifest source hashes must be lowercase SHA-256"
+            )
+        pending_sha256 = source["pending_rewrite_sha256"]
+        if pending_sha256 is not None and (
+            not isinstance(pending_sha256, str)
+            or not SHA256_PATTERN.fullmatch(pending_sha256)
+        ):
+            raise MigrationManifestError(
+                "manifest source.pending_rewrite_sha256 must be null or lowercase SHA-256"
             )
         canonical_path = _string(
             source["canonical_path"], "manifest source.canonical_path"

@@ -342,6 +342,7 @@ def _manifest_value(
                 "path": source.relative_path,
                 "sha256": source.sha256,
                 "current_sha256": source.sha256,
+                "pending_rewrite_sha256": None,
                 "canonical_path": source.canonical_path,
                 "file_identity": source.file_identity,
                 "disposition": source.disposition,

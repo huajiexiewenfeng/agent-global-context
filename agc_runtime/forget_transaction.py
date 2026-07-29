@@ -12,6 +12,7 @@ from agc_runtime._forget_migration import (
     manifest_with_marker,
     manifest_without_memory,
     matched_manifests,
+    rollback_reconciled_manifest,
     source_operations,
 )
 from agc_runtime._forget_types import ForgetOperation, ForgetPlanError
@@ -370,7 +371,11 @@ def _prepare_forget_plan(
         retry=retry,
         operation_id=operation_id,
     )
-    migration_operations, verification_paths = source_operations(
+    (
+        migration_operations,
+        verification_paths,
+        pending_by_manifest,
+    ) = source_operations(
         paths,
         manifests,
         memory_id,
@@ -392,7 +397,11 @@ def _prepare_forget_plan(
     marker_operations = []
     for manifest_path, manifest in manifests:
         marked = manifest_with_marker(
-            manifest, memory_id, operation_id, "in_progress"
+            manifest,
+            memory_id,
+            operation_id,
+            "in_progress",
+            pending_by_manifest.get(manifest_path),
         )
         marker_operations.append(
             ForgetOperation(
@@ -511,13 +520,29 @@ def _apply_forget_operation(operation: ForgetOperation) -> None:
 
 def _rollback_forget_operations(
     applied: list[tuple[ForgetOperation, bool, bytes | None]]
-) -> None:
+) -> bool:
+    succeeded = True
     for operation, existed, original in reversed(applied):
         try:
             if existed and original is not None:
                 _atomic_write_bytes(operation.path, original)
             elif not existed:
                 operation.path.unlink(missing_ok=True)
+        except Exception:
+            succeeded = False
+    return succeeded
+
+
+def _reconcile_rollback_manifests(plan: ForgetPlan) -> None:
+    for marker in plan.marker_operations:
+        if not isinstance(marker.content, bytes):
+            continue
+        try:
+            content = rollback_reconciled_manifest(
+                marker.path, marker.content
+            )
+            if content is not None:
+                _atomic_write_bytes(marker.path, content)
         except Exception:
             continue
 

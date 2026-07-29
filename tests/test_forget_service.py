@@ -395,6 +395,7 @@ def test_two_memories_sharing_source_can_be_forgotten_sequentially(
         source.read_bytes()
     ).hexdigest()
     assert retained_source["current_sha256"] != original_hash
+    assert retained_source["pending_rewrite_sha256"] is None
     assert {entry["id"] for entry in after_first["memories"]} == {
         "parent-history"
     }
@@ -864,3 +865,112 @@ def test_forget_journal_is_content_free_integrity_bound_and_not_scope(
     assert retry.status == "accepted", retry
     assert unrelated_source.read_text(encoding="utf-8") == "unrelated\n"
     assert unrelated_snapshot.read_text(encoding="utf-8") == "unrelated\n"
+
+
+def test_retry_rejects_identical_pre_forget_source_replacement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from agc_runtime import forget_service
+
+    paths = MemoryPaths.from_root(tmp_path / "memory")
+    source_root = tmp_path / "v1"
+    migrate_family(paths, source_root)
+    source = source_root / "user" / "family.md"
+    original = source.read_bytes()
+    original_apply = forget_service._apply_forget_operation
+    failed = False
+
+    def interrupt_before_legacy(operation):
+        nonlocal failed
+        if operation.category == "legacy" and not failed:
+            failed = True
+            raise OSError("simulated interruption before legacy rewrite")
+        return original_apply(operation)
+
+    monkeypatch.setattr(
+        forget_service, "_apply_forget_operation", interrupt_before_legacy
+    )
+    monkeypatch.setattr(
+        forget_service, "_rollback_forget_operations", lambda *_args: None
+    )
+    interrupted = forget(paths, authorized_request())
+
+    assert interrupted.status == "failed"
+    assert _forget_journals(paths)
+    manifest_path = paths.migrations / "v1-family" / "manifest.json"
+    interrupted_manifest = json.loads(
+        manifest_path.read_text(encoding="utf-8")
+    )
+    pending_hash = interrupted_manifest["sources"][0][
+        "pending_rewrite_sha256"
+    ]
+    assert pending_hash is not None
+    assert pending_hash != interrupted_manifest["sources"][0]["current_sha256"]
+
+    replacement = source.with_suffix(".replacement")
+    replacement.write_bytes(original)
+    old_identity = (source.stat().st_dev, source.stat().st_ino)
+    os.replace(replacement, source)
+    assert (source.stat().st_dev, source.stat().st_ino) != old_identity
+    monkeypatch.setattr(
+        forget_service, "_apply_forget_operation", original_apply
+    )
+
+    retry = forget(paths, authorized_request())
+
+    assert retry.status == "failed"
+    assert retry.error["code"] == "legacy_source_replaced"
+    assert source.read_bytes() == original
+    assert MemoryStore(paths).get_memory("family-structure") == family_memory()
+    assert _forget_journals(paths)
+
+
+def test_retry_accepts_only_manifest_bound_interrupted_rewrite(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from agc_runtime import forget_service
+
+    paths = MemoryPaths.from_root(tmp_path / "memory")
+    source_root = tmp_path / "v1"
+    migrate_family(paths, source_root)
+    source = source_root / "user" / "family.md"
+    original_apply = forget_service._apply_forget_operation
+    original_rollback = forget_service._rollback_forget_operations
+    failed = False
+
+    def interrupt_before_snapshot(operation):
+        nonlocal failed
+        if operation.category == "snapshot" and not failed:
+            failed = True
+            raise OSError("simulated interruption after legacy rewrite")
+        return original_apply(operation)
+
+    monkeypatch.setattr(
+        forget_service, "_apply_forget_operation", interrupt_before_snapshot
+    )
+    monkeypatch.setattr(
+        forget_service, "_rollback_forget_operations", lambda *_args: None
+    )
+    interrupted = forget(paths, authorized_request())
+
+    assert interrupted.status == "failed"
+    assert "妻子和儿子" not in source.read_text(encoding="utf-8")
+    manifest = json.loads(
+        (
+            paths.migrations / "v1-family" / "manifest.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert manifest["sources"][0]["pending_rewrite_sha256"] == hashlib.sha256(
+        source.read_bytes()
+    ).hexdigest()
+
+    monkeypatch.setattr(
+        forget_service, "_apply_forget_operation", original_apply
+    )
+    monkeypatch.setattr(
+        forget_service, "_rollback_forget_operations", original_rollback
+    )
+    retry = forget(paths, authorized_request())
+
+    assert retry.status == "accepted", retry
+    assert not _forget_journals(paths)
