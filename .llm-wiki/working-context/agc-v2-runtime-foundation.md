@@ -35,7 +35,7 @@
 - current_batch: complete
 - completed_tasks: Tasks 1–10
 - implementation_head: `4a01076`
-- verification: `94 passed`; wheel and sdist built; CLI version contract passed; 83 tracked text files strict UTF-8 without BOM; `git diff --check` passed
+- verification: `94 passed`; wheel and sdist built; CLI version contract passed; all 89 tracked text files strict UTF-8 without BOM; `git diff --check` passed
 - verification_trust: agent-local
 - handoff: `.llm-wiki/handoff/agc-v2-runtime-foundation-handoff.md`
 - next_deliverable: v2 Recall and Skill Adapter

@@ -27,7 +27,7 @@ git diff --check
 exit 0
 
 strict UTF-8 and no-BOM scan
-83 files passed
+all 89 tracked text files passed
 ```
 
 ## Scope
