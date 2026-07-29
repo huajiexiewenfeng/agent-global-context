@@ -82,6 +82,75 @@ def _rewrite_receipts(paths: MemoryPaths, memory_id: str) -> None:
     )
 
 
+def _surgical_remove_terms(text: str, terms: tuple[str, ...]) -> str:
+    return "".join(
+        line
+        for line in text.splitlines(keepends=True)
+        if not _contains_term(line, terms)
+    )
+
+
+def _rewrite_migrated_sources(
+    paths: MemoryPaths,
+    memory_id: str,
+    verification_terms: tuple[str, ...],
+) -> tuple[Path, ...]:
+    rewritten = []
+    if not paths.migrations.exists():
+        return ()
+    for manifest_path in sorted(paths.migrations.glob("*/manifest.json")):
+        manifest = json.loads(strict_read_text(manifest_path))
+        if manifest.get("status") != "completed":
+            continue
+        memories = manifest.get("memories", [])
+        matches = [
+            entry
+            for entry in memories
+            if isinstance(entry, dict) and entry.get("id") == memory_id
+        ]
+        if not matches:
+            continue
+        source_root = Path(manifest["source_root"]).resolve()
+        for entry in matches:
+            source_path = entry.get("source_path")
+            if not isinstance(source_path, str):
+                raise ValueError("invalid migration memory source_path")
+            pure = Path(*source_path.split("/"))
+            original = (source_root / pure).resolve()
+            if source_root not in original.parents:
+                raise ValueError("migration source path escaped source_root")
+            snapshot = manifest_path.parent / "snapshot" / pure
+            for target in (original, snapshot):
+                if not target.exists():
+                    continue
+                current = strict_read_text(target)
+                updated = _surgical_remove_terms(current, verification_terms)
+                atomic_write_text(target, updated)
+                rewritten.append(target)
+
+        retained = [
+            entry
+            for entry in memories
+            if not (isinstance(entry, dict) and entry.get("id") == memory_id)
+        ]
+        manifest["memories"] = retained
+        manifest["migrated_ids"] = [
+            value
+            for value in manifest.get("migrated_ids", [])
+            if value != memory_id
+        ]
+        counts = manifest.get("counts")
+        if isinstance(counts, dict):
+            counts["memories"] = len(retained)
+        atomic_write_text(
+            manifest_path,
+            json.dumps(manifest, ensure_ascii=False, sort_keys=True, indent=2)
+            + "\n",
+        )
+        rewritten.append(manifest_path)
+    return tuple(rewritten)
+
+
 def _zip_info(name: str) -> zipfile.ZipInfo:
     info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
     info.compress_type = zipfile.ZIP_DEFLATED
@@ -208,10 +277,10 @@ def forget(paths: MemoryPaths, request: Any) -> ToolResponse:
     raw_terms = request.get("verification_terms", [])
     if not isinstance(raw_terms, list) or any(
         not isinstance(term, str) or not term for term in raw_terms
-    ):
+    ) or not raw_terms:
         return _failed(
             "invalid_verification_terms",
-            "verification_terms must be a list of non-empty strings",
+            "verification_terms must be a non-empty list of non-empty strings",
         )
     verification_terms = tuple(raw_terms)
     forgotten_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -255,12 +324,20 @@ def forget(paths: MemoryPaths, request: Any) -> ToolResponse:
 
         _rewrite_events(paths, memory_id)
         _rewrite_receipts(paths, memory_id)
+        rewritten_legacy = _rewrite_migrated_sources(
+            paths, memory_id, verification_terms
+        )
         excluded = {
             paths.locks / "write.lock",
             paths.catalog_json,
             paths.catalog_md,
             tombstone_file,
         }
+        excluded.update(
+            path
+            for path in rewritten_legacy
+            if path == paths.root or paths.root in path.parents
+        )
         _purge_matching_files(
             paths.root,
             memory_id,
@@ -272,6 +349,15 @@ def forget(paths: MemoryPaths, request: Any) -> ToolResponse:
         atomic_write_text(tombstone_file, tombstone_text)
         rebuild_catalog(paths, acquire_lock=False)
 
+        for path in rewritten_legacy:
+            if not path.exists():
+                raise RuntimeError(
+                    f"forget removed a shared registered source: {path}"
+                )
+            if _contains_term(strict_read_text(path), verification_terms):
+                raise RuntimeError(
+                    f"forget verification failed for registered source: {path}"
+                )
         for path in paths.root.rglob("*"):
             if (
                 path.is_file()

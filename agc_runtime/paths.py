@@ -18,6 +18,7 @@ class MemoryPaths:
     cache: Path
     backups: Path
     tombstones: Path
+    migrations: Path
 
     @classmethod
     def from_root(cls, root: Path) -> "MemoryPaths":
@@ -38,6 +39,7 @@ class MemoryPaths:
             cache=runtime / "cache",
             backups=runtime / "backups",
             tombstones=runtime / "tombstones",
+            migrations=runtime / "migrations",
         )
 
     def resolve_managed(self, relative_path: str | Path) -> Path:

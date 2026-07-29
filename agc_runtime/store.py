@@ -2,6 +2,7 @@ import hashlib
 import json
 import re
 import uuid
+from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -311,12 +312,17 @@ class MemoryStore:
         self._cleanup_transaction(journal, backup)
 
     def create_memory(
-        self, item: MemoryItem, source: SourceKey
+        self,
+        item: MemoryItem,
+        source: SourceKey,
+        *,
+        acquire_lock: bool = True,
     ) -> MutationResult:
         validate_memory_item(item)
         _validate_source_key(source)
         target = self._memory_path(item)
-        with root_write_lock(self.paths):
+        lock = root_write_lock(self.paths) if acquire_lock else nullcontext()
+        with lock:
             self._recover_pending_transactions()
             receipts = self._read_receipts()
             count = self._evidence_count(receipts, item.id)

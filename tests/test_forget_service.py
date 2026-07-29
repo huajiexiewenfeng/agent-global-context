@@ -1,4 +1,5 @@
 import json
+import hashlib
 import zipfile
 from dataclasses import replace
 from pathlib import Path
@@ -8,6 +9,7 @@ import pytest
 from agc_runtime.catalog import rebuild_catalog
 from agc_runtime.contracts import SourceKey
 from agc_runtime.forget_service import forget
+from agc_runtime.migration_service import migrate_v1
 from agc_runtime.models import MemoryItem
 from agc_runtime.paths import MemoryPaths
 from agc_runtime.read_service import dispatch_read
@@ -188,3 +190,61 @@ def test_write_dispatch_exposes_authorized_forget(populated):
 
     assert response.status == "accepted"
     assert response.action == "forget"
+
+
+def test_forget_migrated_memory_surgically_rewrites_legacy_and_snapshot(
+    tmp_path: Path,
+):
+    paths = MemoryPaths.from_root(tmp_path / "memory")
+    source_root = tmp_path / "v1"
+    source_file = source_root / "user" / "family-structure.md"
+    source_file.parent.mkdir(parents=True)
+    source_text = "保留：无关内容\n忘记：妻子和儿子\n保留：其他内容\n"
+    source_file.write_text(source_text, encoding="utf-8")
+    item = family_memory()
+    request = {
+        "action": "migrate",
+        "migration_id": "v1-family",
+        "source_root": str(source_root.resolve()),
+        "sources": [
+            {
+                "path": "user/family-structure.md",
+                "sha256": hashlib.sha256(source_file.read_bytes()).hexdigest(),
+                "disposition": "snapshot",
+            }
+        ],
+        "memories": [
+            {
+                "source_path": "user/family-structure.md",
+                "memory_markdown": item.to_markdown(),
+            }
+        ],
+    }
+    assert migrate_v1(paths, request).status == "accepted"
+    snapshot = (
+        paths.migrations
+        / "v1-family"
+        / "snapshot"
+        / "user"
+        / "family-structure.md"
+    )
+
+    response = forget(paths, authorized_request())
+
+    assert response.status == "accepted"
+    for path in (source_file, snapshot):
+        text = path.read_text(encoding="utf-8")
+        assert "妻子和儿子" not in text
+        assert "保留：无关内容" in text
+        assert "保留：其他内容" in text
+    manifest_text = (
+        paths.migrations / "v1-family" / "manifest.json"
+    ).read_text(encoding="utf-8")
+    manifest = json.loads(manifest_text)
+    assert manifest["migrated_ids"] == []
+    assert manifest["memories"] == []
+    tombstone_text = next(paths.tombstones.glob("*.json")).read_text(
+        encoding="utf-8"
+    )
+    assert "妻子和儿子" not in tombstone_text
+    assert request["sources"][0]["sha256"] not in tombstone_text

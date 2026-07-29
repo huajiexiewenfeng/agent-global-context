@@ -60,6 +60,7 @@ def test_init_creates_v2_layout_and_fixed_policy(tmp_path: Path):
     assert "minimum_evidence: 3" in config
     assert "minimum_distinct_sessions: 2" in config
     assert "minimum_time_span_days: 7" in config
+    assert paths.migrations.is_dir()
 
 
 def test_validate_reports_invalid_memory_without_cataloging_it(tmp_path: Path):
@@ -243,11 +244,32 @@ def test_restore_cannot_resurrect_forgotten_memory(tmp_path: Path):
     ).status == "failed"
 
 
-def test_migrate_is_explicitly_deferred(tmp_path: Path):
+def test_migrate_routes_to_migration_service(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from agc_runtime import admin_service
+    from agc_runtime.contracts import ToolResponse
+
+    called = {}
+
+    def fake_migrate(paths, request):
+        called["paths"] = paths
+        called["request"] = request
+        return ToolResponse(
+            tool="agc.admin",
+            action="migrate",
+            status="accepted",
+            data={"code": "migration_completed"},
+        )
+
+    monkeypatch.setattr(admin_service, "migrate_v1", fake_migrate, raising=False)
+    paths = MemoryPaths.from_root(tmp_path / "memory")
+    request = {"action": "migrate"}
     response = dispatch_admin(
-        MemoryPaths.from_root(tmp_path / "memory"),
-        {"action": "migrate"},
+        paths,
+        request,
     )
 
-    assert response.status == "deferred"
-    assert response.data["code"] == "migration_adapter_not_installed"
+    assert response.status == "accepted"
+    assert response.data["code"] == "migration_completed"
+    assert called == {"paths": paths, "request": request}

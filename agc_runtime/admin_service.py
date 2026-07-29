@@ -14,6 +14,7 @@ from agc_runtime.catalog import (
 )
 from agc_runtime.contracts import ToolResponse
 from agc_runtime.locking import root_write_lock
+from agc_runtime.migration_service import migrate_v1
 from agc_runtime.models import MemoryItem
 from agc_runtime.paths import MemoryPaths
 from agc_runtime.policy import validate_transition
@@ -67,6 +68,7 @@ def _managed_directories(paths: MemoryPaths) -> tuple[Path, ...]:
         paths.cache,
         paths.backups,
         paths.tombstones,
+        paths.migrations,
     )
 
 
@@ -100,7 +102,8 @@ def _strict_decode_managed(paths: MemoryPaths, issues: list[dict[str, str]]) -> 
             ".runtime/backups/"
         ) or relative.endswith(".tmp"):
             continue
-        if path.suffix.lower() not in _TEXT_SUFFIXES:
+        is_migration_text = relative.startswith(".runtime/migrations/")
+        if not is_migration_text and path.suffix.lower() not in _TEXT_SUFFIXES:
             _issue(issues, path, "unsupported binary managed file")
             continue
         try:
@@ -626,14 +629,9 @@ def _handle_rebuild_catalog(
 
 
 def _handle_migrate(
-    _paths: MemoryPaths, _request: dict[str, Any]
+    paths: MemoryPaths, request: dict[str, Any]
 ) -> ToolResponse:
-    return ToolResponse(
-        tool="agc.admin",
-        action="migrate",
-        status="deferred",
-        data={"code": "migration_adapter_not_installed"},
-    )
+    return migrate_v1(paths, request)
 
 
 _HANDLERS = {

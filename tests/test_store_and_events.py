@@ -1,3 +1,4 @@
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -164,3 +165,23 @@ def test_retry_finalizes_fully_committed_pending_transaction(
     assert retry.code == "duplicate_source"
     assert not list(store.paths.queue.glob("*.json"))
     assert store.get_memory(principle.id) == principle
+
+
+def test_create_memory_acquires_root_lock_by_default(
+    store: MemoryStore, monkeypatch: pytest.MonkeyPatch
+):
+    calls = []
+
+    @contextmanager
+    def recording_lock(paths):
+        calls.append(paths.root)
+        yield paths.locks / "write.lock"
+
+    monkeypatch.setattr("agc_runtime.store.root_write_lock", recording_lock)
+
+    store.create_memory(
+        load_principle(),
+        SourceKey("codex-task:default-lock", "r1", "c" * 64),
+    )
+
+    assert calls == [store.paths.root]
