@@ -1,0 +1,664 @@
+import hashlib
+import io
+import json
+import os
+import tempfile
+import zipfile
+from pathlib import Path, PurePosixPath
+from typing import Any
+
+from agc_runtime.catalog import (
+    build_catalog,
+    rebuild_catalog,
+    render_catalog_markdown,
+)
+from agc_runtime.contracts import ToolResponse
+from agc_runtime.locking import root_write_lock
+from agc_runtime.models import MemoryItem
+from agc_runtime.paths import MemoryPaths
+from agc_runtime.policy import validate_transition
+from agc_runtime.schema import validate_memory_item
+from agc_runtime.utf8_io import atomic_write_text, strict_read_text
+
+
+CONFIG_TEXT = """schema_version: 2
+sensitive_storage: disabled
+recall:
+  overview_token_budget: 250
+  compact_card_token_budget: 600
+evidence_threshold:
+  minimum_evidence: 3
+  minimum_distinct_sessions: 2
+  minimum_time_span_days: 7
+"""
+_TEXT_SUFFIXES = {
+    "",
+    ".md",
+    ".json",
+    ".jsonl",
+    ".txt",
+    ".yaml",
+    ".yml",
+    ".toml",
+}
+
+
+def _failed(action: str, code: str, message: str, **data: Any) -> ToolResponse:
+    return ToolResponse(
+        tool="agc.admin",
+        action=action,
+        status="failed",
+        data=data,
+        error={"code": code, "message": message},
+    )
+
+
+def _managed_directories(paths: MemoryPaths) -> tuple[Path, ...]:
+    return (
+        paths.memories,
+        paths.contexts,
+        paths.candidates / "ordinary",
+        paths.candidates / "conflicted",
+        paths.events,
+        paths.archive,
+        paths.queue,
+        paths.receipts,
+        paths.locks,
+        paths.cache,
+        paths.backups,
+        paths.tombstones,
+    )
+
+
+def _handle_init(paths: MemoryPaths, _request: dict[str, Any]) -> ToolResponse:
+    with root_write_lock(paths):
+        for directory in _managed_directories(paths):
+            directory.mkdir(parents=True, exist_ok=True)
+        atomic_write_text(paths.root / "schema-version", "2\n")
+        atomic_write_text(paths.root / "config.yaml", CONFIG_TEXT)
+        catalog = rebuild_catalog(paths, acquire_lock=False)
+    return ToolResponse(
+        tool="agc.admin",
+        action="init",
+        status="accepted",
+        data={"code": "initialized", "memory_count": catalog["memory_count"]},
+    )
+
+
+def _issue(issues: list[dict[str, str]], path: Path, message: str) -> None:
+    issues.append({"path": str(path), "message": message})
+
+
+def _strict_decode_managed(paths: MemoryPaths, issues: list[dict[str, str]]) -> None:
+    if not paths.root.exists():
+        return
+    for path in sorted(paths.root.rglob("*")):
+        if not path.is_file():
+            continue
+        relative = str(path.relative_to(paths.root)).replace("\\", "/")
+        if relative.startswith(".runtime/locks/") or relative.startswith(
+            ".runtime/backups/"
+        ) or relative.endswith(".tmp"):
+            continue
+        if path.suffix.lower() not in _TEXT_SUFFIXES:
+            _issue(issues, path, "unsupported binary managed file")
+            continue
+        try:
+            strict_read_text(path)
+        except UnicodeDecodeError as error:
+            _issue(issues, path, f"invalid UTF-8: {error}")
+
+
+def _validate_memories(
+    paths: MemoryPaths, issues: list[dict[str, str]]
+) -> None:
+    seen: dict[str, Path] = {}
+    if not paths.memories.exists():
+        return
+    for path in sorted(paths.memories.rglob("*.md")):
+        try:
+            item = MemoryItem.from_markdown(strict_read_text(path))
+            validate_memory_item(item)
+            if item.id in seen:
+                _issue(
+                    issues,
+                    path,
+                    f"duplicate memory id also present at {seen[item.id]}",
+                )
+            else:
+                seen[item.id] = path
+            if path.stem != item.id:
+                _issue(issues, path, "memory filename does not match id")
+            if path.parent.name != item.kind:
+                _issue(issues, path, "memory directory does not match kind")
+        except (ValueError, OSError, UnicodeDecodeError) as error:
+            _issue(issues, path, str(error))
+
+
+def _validate_receipts(
+    paths: MemoryPaths, issues: list[dict[str, str]]
+) -> None:
+    receipt_file = paths.receipts / "source-keys.json"
+    if not receipt_file.exists():
+        return
+    try:
+        registry = json.loads(strict_read_text(receipt_file))
+        sources = registry["sources"]
+        seen: set[tuple[str, str, str]] = set()
+        for entry in sources:
+            key = (
+                entry["ref"],
+                entry["revision"],
+                entry["content_hash"],
+            )
+            if key in seen:
+                _issue(issues, receipt_file, "duplicate exact source key")
+            seen.add(key)
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+        _issue(issues, receipt_file, f"invalid source receipt registry: {error}")
+
+
+def _validate_events(paths: MemoryPaths, issues: list[dict[str, str]]) -> None:
+    event_file = paths.events / "events.jsonl"
+    if not event_file.exists():
+        return
+    try:
+        event_lines = strict_read_text(event_file).splitlines()
+    except (OSError, UnicodeDecodeError) as error:
+        _issue(issues, event_file, f"invalid event log encoding: {error}")
+        return
+    for line_number, line in enumerate(
+        event_lines, start=1
+    ):
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+            old = event.get("old_lifecycle")
+            new = event.get("new_lifecycle")
+            if old is not None and new is not None:
+                validate_transition(old, new)
+        except (ValueError, TypeError, json.JSONDecodeError) as error:
+            _issue(issues, event_file, f"line {line_number}: {error}")
+
+
+def _validate_catalog(
+    paths: MemoryPaths, issues: list[dict[str, str]]
+) -> None:
+    try:
+        expected = build_catalog(paths)
+    except (ValueError, OSError, UnicodeDecodeError):
+        return
+    if not paths.catalog_json.exists():
+        _issue(issues, paths.catalog_json, "generated catalog is missing")
+        return
+    try:
+        actual = json.loads(strict_read_text(paths.catalog_json))
+    except (ValueError, OSError, UnicodeDecodeError) as error:
+        _issue(issues, paths.catalog_json, f"invalid generated catalog: {error}")
+        return
+    if actual != expected:
+        _issue(issues, paths.catalog_json, "generated catalog is stale")
+    if not paths.catalog_md.exists():
+        _issue(issues, paths.catalog_md, "generated Markdown catalog is missing")
+    else:
+        try:
+            actual_markdown = strict_read_text(paths.catalog_md)
+        except (OSError, UnicodeDecodeError) as error:
+            _issue(
+                issues,
+                paths.catalog_md,
+                f"invalid generated Markdown catalog: {error}",
+            )
+        else:
+            if actual_markdown != render_catalog_markdown(expected):
+                _issue(
+                    issues,
+                    paths.catalog_md,
+                    "generated Markdown catalog is stale",
+                )
+
+
+def _validate_fixed_config(
+    paths: MemoryPaths, issues: list[dict[str, str]]
+) -> None:
+    schema_file = paths.root / "schema-version"
+    config_file = paths.root / "config.yaml"
+    try:
+        if strict_read_text(schema_file) != "2\n":
+            _issue(issues, schema_file, "schema-version must be 2")
+    except OSError as error:
+        _issue(issues, schema_file, f"schema-version is missing: {error}")
+    try:
+        if strict_read_text(config_file) != CONFIG_TEXT:
+            _issue(issues, config_file, "fixed v2 policy config was modified")
+    except OSError as error:
+        _issue(issues, config_file, f"config.yaml is missing: {error}")
+
+
+def _validate_root(paths: MemoryPaths) -> list[dict[str, str]]:
+    issues: list[dict[str, str]] = []
+    _strict_decode_managed(paths, issues)
+    _validate_fixed_config(paths, issues)
+    _validate_memories(paths, issues)
+    _validate_receipts(paths, issues)
+    _validate_events(paths, issues)
+    _validate_catalog(paths, issues)
+    return issues
+
+
+def _handle_validate(
+    paths: MemoryPaths, _request: dict[str, Any]
+) -> ToolResponse:
+    issues = _validate_root(paths)
+    return ToolResponse(
+        tool="agc.admin",
+        action="validate",
+        status="failed" if issues else "accepted",
+        data={
+            "code": "validation_failed" if issues else "valid",
+            "invalid_count": len(issues),
+            "issues": issues,
+        },
+        error=(
+            {
+                "code": "validation_failed",
+                "message": f"{len(issues)} validation issue(s) found",
+            }
+            if issues
+            else None
+        ),
+    )
+
+
+def _zip_info(name: str) -> zipfile.ZipInfo:
+    info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
+    info.compress_type = zipfile.ZIP_DEFLATED
+    info.external_attr = 0o600 << 16
+    return info
+
+
+def _backup_files(paths: MemoryPaths) -> list[tuple[str, bytes]]:
+    files = []
+    if not paths.root.exists():
+        return files
+    for path in paths.root.rglob("*"):
+        if not path.is_file():
+            continue
+        relative = str(path.relative_to(paths.root)).replace("\\", "/")
+        if (
+            relative.startswith(".runtime/locks/")
+            or relative.startswith(".runtime/backups/")
+            or relative.endswith(".tmp")
+        ):
+            continue
+        files.append((relative, path.read_bytes()))
+    return sorted(files, key=lambda item: item[0].encode("utf-8"))
+
+
+def _manifest(files: list[tuple[str, bytes]]) -> dict[str, Any]:
+    return {
+        "schema_version": 2,
+        "files": [
+            {
+                "path": name,
+                "sha256": hashlib.sha256(data).hexdigest(),
+                "size": len(data),
+            }
+            for name, data in files
+        ],
+    }
+
+
+def _archive_bytes(
+    files: list[tuple[str, bytes]], manifest: dict[str, Any]
+) -> bytes:
+    output = io.BytesIO()
+    manifest_bytes = (
+        json.dumps(manifest, ensure_ascii=False, sort_keys=True, indent=2).encode(
+            "utf-8"
+        )
+        + b"\n"
+    )
+    with zipfile.ZipFile(output, "w") as archive:
+        for name, data in files:
+            archive.writestr(_zip_info(name), data)
+        archive.writestr(_zip_info("manifest.json"), manifest_bytes)
+    return output.getvalue()
+
+
+def _atomic_write_bytes(path: Path, data: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    except BaseException:
+        Path(temporary).unlink(missing_ok=True)
+        raise
+
+
+def _handle_backup(paths: MemoryPaths, _request: dict[str, Any]) -> ToolResponse:
+    issues = _validate_root(paths)
+    if issues:
+        return _failed(
+            "backup",
+            "validation_failed",
+            "refusing to back up an invalid memory root",
+            invalid_count=len(issues),
+            issues=issues,
+        )
+    with root_write_lock(paths):
+        files = _backup_files(paths)
+        manifest = _manifest(files)
+        manifest_id = hashlib.sha256(
+            json.dumps(
+                manifest, sort_keys=True, separators=(",", ":")
+            ).encode("utf-8")
+        ).hexdigest()
+        archive_data = _archive_bytes(files, manifest)
+        archive_path = paths.backups / f"agc-backup-{manifest_id}.zip"
+        _atomic_write_bytes(archive_path, archive_data)
+    return ToolResponse(
+        tool="agc.admin",
+        action="backup",
+        status="accepted",
+        data={
+            "code": "backup_created",
+            "backup_path": str(archive_path),
+            "archive_sha256": hashlib.sha256(archive_data).hexdigest(),
+            "manifest": manifest,
+        },
+    )
+
+
+def _safe_archive_name(name: str) -> None:
+    pure = PurePosixPath(name.replace("\\", "/"))
+    if pure.is_absolute() or ".." in pure.parts or not pure.parts:
+        raise ValueError(f"unsafe archive path: {name}")
+
+
+def _read_verified_archive(
+    backup_path: Path,
+) -> tuple[dict[str, bytes], dict[str, Any]]:
+    archive_data = backup_path.read_bytes()
+    with zipfile.ZipFile(io.BytesIO(archive_data), "r") as archive:
+        names = [info.filename for info in archive.infolist() if not info.is_dir()]
+        if len(names) != len(set(names)):
+            raise ValueError("backup contains duplicate paths")
+        for name in names:
+            _safe_archive_name(name)
+        if "manifest.json" not in names:
+            raise ValueError("backup manifest is missing")
+        manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
+        entries = {
+            name: archive.read(name) for name in names if name != "manifest.json"
+        }
+    expected_names = [item["path"] for item in manifest.get("files", [])]
+    if set(expected_names) != set(entries) or len(expected_names) != len(entries):
+        raise ValueError("backup manifest file set does not match archive")
+    for item in manifest["files"]:
+        data = entries[item["path"]]
+        if item.get("size") != len(data) or item.get("sha256") != hashlib.sha256(
+            data
+        ).hexdigest():
+            raise ValueError(f"backup checksum mismatch: {item['path']}")
+    return entries, manifest
+
+
+def _read_tombstones_from_files(
+    files: dict[str, bytes],
+) -> dict[str, dict[str, Any]]:
+    tombstones = {}
+    for name, data in files.items():
+        if not name.startswith(".runtime/tombstones/") or not name.endswith(
+            ".json"
+        ):
+            continue
+        value = json.loads(data.decode("utf-8"))
+        memory_id = value.get("memory_id")
+        if isinstance(memory_id, str):
+            tombstones[memory_id] = value
+    return tombstones
+
+
+def _read_current_tombstones(paths: MemoryPaths) -> dict[str, dict[str, Any]]:
+    values = {}
+    if not paths.tombstones.exists():
+        return values
+    for path in paths.tombstones.glob("*.json"):
+        value = json.loads(strict_read_text(path))
+        memory_id = value.get("memory_id")
+        if isinstance(memory_id, str):
+            values[memory_id] = value
+    return values
+
+
+def _preserve_during_restore(paths: MemoryPaths, path: Path) -> bool:
+    try:
+        relative = str(path.relative_to(paths.root)).replace("\\", "/")
+    except ValueError:
+        return True
+    return (
+        relative.startswith(".runtime/locks/")
+        or relative.startswith(".runtime/backups/")
+        or relative.startswith(".runtime/tombstones/")
+    )
+
+
+def _current_replaceable_files(paths: MemoryPaths) -> dict[str, bytes]:
+    if not paths.root.exists():
+        return {}
+    return {
+        str(path.relative_to(paths.root)).replace("\\", "/"): path.read_bytes()
+        for path in paths.root.rglob("*")
+        if path.is_file() and not _preserve_during_restore(paths, path)
+    }
+
+
+def _clear_replaceable_files(paths: MemoryPaths) -> None:
+    if not paths.root.exists():
+        return
+    for path in sorted(paths.root.rglob("*"), reverse=True):
+        if path.is_file() and not _preserve_during_restore(paths, path):
+            path.unlink()
+
+
+def _restore_file_snapshot(
+    paths: MemoryPaths, snapshot: dict[str, bytes]
+) -> None:
+    _clear_replaceable_files(paths)
+    for name, data in sorted(snapshot.items()):
+        target = paths.resolve_managed(Path(*PurePosixPath(name).parts))
+        atomic_write_text(target, data.decode("utf-8", errors="strict"))
+
+
+def _suppress_restored_ids(paths: MemoryPaths, memory_ids: set[str]) -> None:
+    for memory_id in memory_ids:
+        for path in paths.memories.glob(f"*/{memory_id}.md"):
+            path.unlink(missing_ok=True)
+        for path in paths.archive.rglob(f"{memory_id}.md"):
+            path.unlink(missing_ok=True)
+        for path in paths.candidates.rglob("*.json"):
+            try:
+                value = json.loads(strict_read_text(path))
+            except (ValueError, UnicodeDecodeError):
+                continue
+            if value.get("candidate_id") == memory_id:
+                path.unlink(missing_ok=True)
+
+    event_file = paths.events / "events.jsonl"
+    if event_file.exists():
+        retained = []
+        for line in strict_read_text(event_file).splitlines():
+            if not line:
+                continue
+            event = json.loads(line)
+            if event.get("object_id") not in memory_ids:
+                retained.append(event)
+        atomic_write_text(
+            event_file,
+            "".join(
+                json.dumps(event, ensure_ascii=False, sort_keys=True) + "\n"
+                for event in retained
+            ),
+        )
+    receipt_file = paths.receipts / "source-keys.json"
+    if receipt_file.exists():
+        registry = json.loads(strict_read_text(receipt_file))
+        registry["sources"] = [
+            entry
+            for entry in registry.get("sources", [])
+            if entry.get("object_id") not in memory_ids
+        ]
+        atomic_write_text(
+            receipt_file,
+            json.dumps(registry, ensure_ascii=False, sort_keys=True, indent=2)
+            + "\n",
+        )
+
+
+def _restore_path(paths: MemoryPaths, request: dict[str, Any]) -> Path:
+    raw = request.get("backup_path")
+    if raw is not None:
+        if not isinstance(raw, str) or not raw:
+            raise ValueError("backup_path must be a non-empty string")
+        return Path(raw).resolve()
+    backups = sorted(paths.backups.glob("*.zip"))
+    if not backups:
+        raise FileNotFoundError("no AGC backup is available")
+    return backups[-1].resolve()
+
+
+def _handle_restore(paths: MemoryPaths, request: dict[str, Any]) -> ToolResponse:
+    backup_path = _restore_path(paths, request)
+    try:
+        entries, _manifest_value = _read_verified_archive(backup_path)
+    except (
+        OSError,
+        ValueError,
+        KeyError,
+        TypeError,
+        json.JSONDecodeError,
+        zipfile.BadZipFile,
+    ) as error:
+        return _failed(
+            "restore",
+            "backup_verification_failed",
+            str(error),
+        )
+
+    current_tombstones = _read_current_tombstones(paths)
+    archive_tombstones = _read_tombstones_from_files(entries)
+    tombstones = {**archive_tombstones, **current_tombstones}
+    suppressed = set(tombstones)
+
+    with root_write_lock(paths):
+        snapshot = _current_replaceable_files(paths)
+        try:
+            _clear_replaceable_files(paths)
+            for name, data in sorted(entries.items()):
+                if name.startswith(".runtime/locks/") or name.startswith(
+                    ".runtime/backups/"
+                ):
+                    continue
+                pure = PurePosixPath(name)
+                if (
+                    len(pure.parts) >= 3
+                    and pure.parts[0] == "memories"
+                    and pure.stem in suppressed
+                ):
+                    continue
+                target = paths.resolve_managed(Path(*pure.parts))
+                try:
+                    text = data.decode("utf-8", errors="strict")
+                except UnicodeDecodeError as error:
+                    raise ValueError(
+                        f"non-UTF-8 managed backup entry: {name}"
+                    ) from error
+                atomic_write_text(target, text)
+            for value in tombstones.values():
+                memory_id = value["memory_id"]
+                digest = hashlib.sha256(memory_id.encode("utf-8")).hexdigest()
+                atomic_write_text(
+                    paths.tombstones / f"{digest}.json",
+                    json.dumps(
+                        value, ensure_ascii=False, sort_keys=True, indent=2
+                    )
+                    + "\n",
+                )
+            _suppress_restored_ids(paths, suppressed)
+            catalog = rebuild_catalog(paths, acquire_lock=False)
+        except BaseException:
+            _restore_file_snapshot(paths, snapshot)
+            raise
+
+    return ToolResponse(
+        tool="agc.admin",
+        action="restore",
+        status="accepted",
+        data={
+            "code": "backup_restored",
+            "backup_path": str(backup_path),
+            "memory_count": catalog["memory_count"],
+            "suppressed_memory_ids": sorted(
+                suppressed, key=lambda value: value.encode("utf-8")
+            ),
+        },
+    )
+
+
+def _handle_rebuild_catalog(
+    paths: MemoryPaths, _request: dict[str, Any]
+) -> ToolResponse:
+    catalog = rebuild_catalog(paths)
+    return ToolResponse(
+        tool="agc.admin",
+        action="rebuild_catalog",
+        status="accepted",
+        data={"code": "catalog_rebuilt", "memory_count": catalog["memory_count"]},
+    )
+
+
+def _handle_migrate(
+    _paths: MemoryPaths, _request: dict[str, Any]
+) -> ToolResponse:
+    return ToolResponse(
+        tool="agc.admin",
+        action="migrate",
+        status="deferred",
+        data={"code": "migration_adapter_not_installed"},
+    )
+
+
+_HANDLERS = {
+    "init": _handle_init,
+    "validate": _handle_validate,
+    "rebuild_catalog": _handle_rebuild_catalog,
+    "backup": _handle_backup,
+    "restore": _handle_restore,
+    "migrate": _handle_migrate,
+}
+
+
+def dispatch_admin(paths: MemoryPaths, request: Any) -> ToolResponse:
+    if not isinstance(request, dict):
+        return _failed("admin", "invalid_request", "request must be a mapping")
+    action = request.get("action")
+    if not isinstance(action, str) or action not in _HANDLERS:
+        return _failed(
+            action if isinstance(action, str) else "",
+            "invalid_action",
+            "unsupported agc.admin action",
+        )
+    try:
+        return _HANDLERS[action](paths, request)
+    except (ValueError, KeyError, TypeError, json.JSONDecodeError) as error:
+        return _failed(action, "invalid_request", str(error))
+    except OSError as error:
+        return _failed(action, "admin_failed", str(error))

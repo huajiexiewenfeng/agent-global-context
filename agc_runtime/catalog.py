@@ -34,7 +34,7 @@ def _memory_files(paths: MemoryPaths) -> list[Path]:
     )
 
 
-def _catalog_mapping(paths: MemoryPaths) -> dict[str, Any]:
+def build_catalog(paths: MemoryPaths) -> dict[str, Any]:
     cards = []
     for path in _memory_files(paths):
         item = MemoryItem.from_markdown(strict_read_text(path))
@@ -44,7 +44,7 @@ def _catalog_mapping(paths: MemoryPaths) -> dict[str, Any]:
     return {"schema_version": 2, "memory_count": len(cards), "cards": cards}
 
 
-def _catalog_markdown(catalog: dict[str, Any]) -> str:
+def render_catalog_markdown(catalog: dict[str, Any]) -> str:
     lines = [
         "# Agent Global Context Catalog",
         "",
@@ -75,13 +75,13 @@ def rebuild_catalog(
 ) -> dict[str, Any]:
     lock = root_write_lock(paths) if acquire_lock else nullcontext()
     with lock:
-        catalog = _catalog_mapping(paths)
+        catalog = build_catalog(paths)
         atomic_write_text(
             paths.catalog_json,
             json.dumps(catalog, ensure_ascii=False, sort_keys=True, indent=2)
             + "\n",
         )
-        atomic_write_text(paths.catalog_md, _catalog_markdown(catalog))
+        atomic_write_text(paths.catalog_md, render_catalog_markdown(catalog))
     return catalog
 
 
