@@ -138,6 +138,7 @@ material until it is explicitly retired.
 - [Architecture](docs/architecture.md)
 - [Design](docs/design.md)
 - [Agent Global Context v2 approved design (Chinese)](docs/superpowers/specs/2026-07-28-agent-global-context-v2-design.md)
+- [Skill–MCP–Runtime architecture retrospective (Chinese)](docs/skill-mcp-runtime-pattern.md)
 - [Install](docs/install.md)
 - [Examples](docs/examples.md)
 - [Full Flow Example](docs/full-flow-example.md)
