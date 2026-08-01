@@ -61,14 +61,12 @@ def direct_preference_request() -> dict:
     }
 
 
-def test_init_write_rebuild_read_forget(tmp_path: Path, cli):
+def test_init_write_read_forget_keeps_catalog_valid(tmp_path: Path, cli):
     root = tmp_path / "memory"
 
     assert cli("admin", root, {"action": "init"})["status"] == "accepted"
     assert cli("write", root, direct_preference_request())["status"] == "accepted"
-    assert cli("admin", root, {"action": "rebuild_catalog"})["data"][
-        "memory_count"
-    ] == 1
+    assert cli("admin", root, {"action": "validate"})["status"] == "accepted"
     assert cli(
         "read",
         root,

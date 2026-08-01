@@ -1,9 +1,12 @@
+import json
 from pathlib import Path
 
 import pytest
 
+from agc_runtime.catalog import rebuild_catalog
 from agc_runtime.models import MemoryItem
 from agc_runtime.paths import MemoryPaths
+from agc_runtime.read_service import dispatch_read
 from agc_runtime.write_service import dispatch_write
 
 
@@ -73,6 +76,47 @@ def test_direct_normal_can_create_confirmed(tmp_path: Path):
     assert response.status == "accepted"
     assert response.data["lifecycle"] == "active"
     assert response.data["confidence"] == "confirmed"
+    assert len(list(paths.memories.rglob("*.md"))) == 1
+
+
+def test_formal_write_refreshes_existing_catalog_for_progressive_reads(
+    tmp_path: Path,
+):
+    paths = MemoryPaths.from_root(tmp_path / "memory")
+    rebuild_catalog(paths)
+
+    response = dispatch_write(paths, direct_request())
+    overview = dispatch_read(paths, {"action": "overview"})
+    search = dispatch_read(paths, {"action": "search", "limit": 20})
+    catalog = json.loads(paths.catalog_json.read_text(encoding="utf-8"))
+
+    assert response.status == "accepted"
+    assert catalog["memory_count"] == 1
+    assert principle().id in paths.catalog_md.read_text(encoding="utf-8")
+    assert overview.data["memory_count"] == 1
+    assert [item["id"] for item in search.data["items"]] == [principle().id]
+
+
+def test_catalog_refresh_failure_warns_without_rejecting_saved_memory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    paths = MemoryPaths.from_root(tmp_path / "memory")
+    rebuild_catalog(paths)
+
+    def fail_refresh(*_args, **_kwargs):
+        raise OSError("catalog unavailable")
+
+    monkeypatch.setattr(
+        "agc_runtime.write_service.rebuild_catalog",
+        fail_refresh,
+        raising=False,
+    )
+
+    response = dispatch_write(paths, direct_request())
+
+    assert response.status == "accepted"
+    assert response.data["code"] == "memory_created"
+    assert response.warnings == ("catalog_refresh_failed",)
     assert len(list(paths.memories.rglob("*.md"))) == 1
 
 

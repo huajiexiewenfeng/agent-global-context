@@ -300,6 +300,13 @@ schemas above.
 
 Action-specific rules:
 
+- An accepted formal-memory mutation refreshes `catalog.json` and `catalog.md`
+  automatically. Ordinary callers do not invoke `agc.admin rebuild_catalog`
+  after `agc.write`.
+- If the source-of-truth Memory, Event, and Receipt commit succeeds but the
+  derived Catalog refresh fails, the write remains `accepted` and includes the
+  stable warning `catalog_refresh_failed`. Use `agc.admin validate` and
+  `rebuild_catalog` for repair; do not report the accepted memory as lost.
 - `observe`: `memory_markdown` is required only when disposition is `new` or
   `update`; omit it for `reinforce`, `conflict`, `need_more_evidence`, and
   `ignore`.

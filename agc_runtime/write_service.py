@@ -6,6 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
+from agc_runtime.catalog import rebuild_catalog
 from agc_runtime.contracts import (
     EvidenceSummary,
     ObservationEnvelope,
@@ -169,6 +170,22 @@ def _mutation_response(
             }
         )
     return _response(action, result.status, result.code, data=data)
+
+
+def _refresh_catalog_after_formal_memory(
+    paths: MemoryPaths, response: ToolResponse
+) -> ToolResponse:
+    memory_id = response.data.get("memory_id")
+    if response.status != "accepted" or not isinstance(memory_id, str):
+        return response
+    try:
+        rebuild_catalog(paths)
+    except (KeyError, OSError, RuntimeError, TypeError, ValueError):
+        return replace(
+            response,
+            warnings=(*response.warnings, "catalog_refresh_failed"),
+        )
+    return response
 
 
 def _load_observation(request: dict[str, Any]) -> ObservationEnvelope:
@@ -460,7 +477,10 @@ def dispatch_write(paths: MemoryPaths, request: Any) -> ToolResponse:
             },
         )
     try:
-        return _HANDLERS[action](paths, request)
+        response = _HANDLERS[action](paths, request)
+        if action == "forget":
+            return response
+        return _refresh_catalog_after_formal_memory(paths, response)
     except (ValueError, KeyError, TypeError) as error:
         return ToolResponse(
             tool="agc.write",

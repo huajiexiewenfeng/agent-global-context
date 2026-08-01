@@ -22,3 +22,16 @@
 - v1 remains rollback material with auto capture disabled.
 - Capture/backfill, Trace/Eval/Loop, and LLM Wiki Runtime remain deferred.
 - No dashboard was updated because this repository has no enabled or registered progress dashboard.
+
+## 2026-08-01 — 2026-08-01-catalog-stale-after-write
+
+- Reproduced a write-to-recall consistency defect: one persisted formal memory
+  was available by exact ID but absent from stale overview/search catalogs.
+- The write dispatcher now refreshes derived catalogs for accepted formal-memory
+  results and reports `catalog_refresh_failed` without contradicting a committed write.
+- Agent-local verification passed: 190 tests, diff check, installed Runtime smoke
+  test without manual rebuild, and live validation/search of all 20 formal memories.
+- Codex configuration now points to content-addressed Runtime `0918faf6...6145ee`;
+  the previous Runtime and installer rollback backup remain available.
+- Verification and handoff artifacts were registered. No dashboard was updated
+  because this repository has no enabled or registered progress dashboard.
