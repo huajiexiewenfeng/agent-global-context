@@ -102,10 +102,43 @@ def test_capability_description_is_thin_and_contains_no_personal_fact():
     assert "@" not in description
 
 
+def test_capability_description_names_recall_triggers_and_exclusions():
+    description = _frontmatter_description(_skill_text()).casefold()
+    expected_triggers = (
+        "important decision",
+        "personalized writing",
+        "collaboration",
+        "learning",
+        "research",
+        "growth review",
+        "cross-task continuation",
+    )
+
+    assert all(trigger in description for trigger in expected_triggers)
+    assert re.search(
+        r"skip.*(?:self-contained|factual|mechanical)", description
+    )
+
+
+def test_ordinary_recall_is_small_and_value_gated():
+    raw = _skill_text()
+    text = _normalized_skill_text()
+
+    assert re.search(r'\{\s*"action"\s*:\s*"overview"\s*\}', raw)
+    assert re.search(r"search.*filters.*limit.*5", text)
+    assert "literal substring" in text
+    assert re.search(
+        r"tool-contract\.md.*(?:write|admin)", text
+    )
+    assert "decision, expression, continuity, or growth support" in text
+    assert re.search(r"no material change.*discard", text)
+
+
 def test_skill_makes_recall_and_application_llm_choices_explicit():
     text = _normalized_skill_text()
 
     assert "materially improve" in text
+    assert re.search(r"llm.*decides.*relevance.*application", text)
     assert re.search(r"(?:small|self-contained).*do not call.*agc\.read", text)
     assert "overview → search → get → history/evidence" in text
     assert all(mode in text for mode in ("`adapt`", "`continue`", "`grow`"))
