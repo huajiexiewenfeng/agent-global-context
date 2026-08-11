@@ -9,8 +9,8 @@
 - read_only_scope: existing memories and active installed AGC until verification passes.
 - candidate_scope: none.
 - excluded_scope: retrieval ranking, query semantics, Capture, memory mutation, Trace/Eval, broad Recall redesign.
-- current_gate: Scope Lock Gate.
-- requested_stage_or_bridge: executing-plans plus test-driven-development.
+- current_gate: Completion Gate passed.
+- requested_stage_or_bridge: completed execution and local deployment.
 - constraints: work from failing tests; keep unrelated tasks quiet; preserve failure-open reads and the schema-v2 envelope.
 
 ## Scope Lock
@@ -29,7 +29,7 @@
 
 ## Execution Status
 
-- current_batch: tests-first implementation
+- current_batch: complete
 - baseline: `192 passed` with an explicit writable pytest base directory
-- implementation_head: pending
-- verification: pending
+- implementation_head: `b4c18d8`
+- verification: focused suites passed; full suite passed twice with `195 passed`; strict UTF-8/no-BOM and `git diff --check` passed; deployed Runtime validated 22 memories with zero invalid objects; unknown `scope` filter returned `invalid_request`.

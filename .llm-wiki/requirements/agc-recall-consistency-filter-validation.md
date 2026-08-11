@@ -3,7 +3,7 @@
 ## Summary
 
 - title: AGC Recall consistency and search filter validation
-- status: active
+- status: completed
 - flow_id: agc-recall-consistency-filter-validation
 - why: Post-deployment evidence shows that two equivalent "related to my research" requests route inconsistently, and an invalid `scope` filter is silently ignored, returning unrelated cards.
 - changes: Add one explicit research-relevance Recall trigger and reject unknown Search filter keys.
@@ -52,9 +52,9 @@
 | source | done | 2026-08-11 three-day AGC audit | 2026-08-11 |
 | design | done | two-layer minimal fix approved by user | 2026-08-11 |
 | plan | done | linked implementation plan | 2026-08-11 |
-| development | active | TDD execution in isolated worktree | 2026-08-11 |
-| testing | pending | focused and full verification | 2026-08-11 |
-| archive | pending | final verification/handoff | 2026-08-11 |
+| development | done | implementation commit `b4c18d8` | 2026-08-11 |
+| testing | done | focused suites passed; feature branch and merged `main` each passed all 195 tests | 2026-08-11 |
+| archive | done | linked verification and handoff records; local Runtime deployment verified | 2026-08-11 |
 
 ## Open Questions
 

@@ -1,5 +1,16 @@
 # LLM Wiki Log
 
+## 2026-08-11 — agc-recall-consistency-filter-validation
+
+- Added an explicit Recall trigger for evaluating whether a project, repository,
+  tool, or technology fits the user's research, learning, or long-term goals.
+- Restricted Search filters to the six documented names and changed unknown names
+  from silent ignore to the standard `invalid_request` response.
+- Agent-local release gate passed twice at 195 tests, plus Skill validation,
+  strict UTF-8/no-BOM, diff, deployed Runtime, and active Skill hash checks.
+- Local deployment reports all 22 memories valid and unchanged; the current Codex
+  process requires a new task or restart to load the new Skill and MCP process.
+
 ## 2026-07-29 — agc-v2-runtime-foundation
 
 - Flow Record moved from execution to archived completion.
