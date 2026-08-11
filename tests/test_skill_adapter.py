@@ -120,12 +120,35 @@ def test_capability_description_names_recall_triggers_and_exclusions():
     )
 
 
+def test_research_relevance_is_an_explicit_recall_trigger():
+    description = _frontmatter_description(_skill_text()).casefold()
+    text = _normalized_skill_text()
+
+    assert "project or technology" in description
+    assert "research direction" in description
+    assert "project, repository, tool, or technology" in text
+    assert "research, learning, or long-term goals" in text
+    assert re.search(r"generic (?:explanation|overview).*do not call", text)
+
+
 def test_ordinary_recall_is_small_and_value_gated():
     raw = _skill_text()
     text = _normalized_skill_text()
 
     assert re.search(r'\{\s*"action"\s*:\s*"overview"\s*\}', raw)
     assert re.search(r"search.*filters.*limit.*5", text)
+    assert all(
+        filter_name in text
+        for filter_name in (
+            "`kind`",
+            "`scopes`",
+            "`decision_impact`",
+            "`sensitivity`",
+            "`exposure`",
+            "`confidence`",
+        )
+    )
+    assert '{"scopes":["research"]}' in raw
     assert "literal substring" in text
     assert re.search(
         r"tool-contract\.md.*(?:write|admin)", text
@@ -191,6 +214,12 @@ def test_tool_contract_has_a_request_example_for_every_action():
     for action, required_fields in expected_fields.items():
         assert examples[action]["action"] == action
         assert required_fields <= set(examples[action])
+
+
+def test_tool_contract_rejects_unknown_search_filter_names():
+    text = TOOL_CONTRACT.read_text(encoding="utf-8")
+
+    assert "Unknown filter names are rejected" in text
 
 
 def test_tool_contract_defines_the_reusable_write_schemas():

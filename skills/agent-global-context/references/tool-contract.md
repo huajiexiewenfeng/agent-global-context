@@ -31,6 +31,7 @@ than raising across the tool boundary.
 (non-empty string), `filters` (mapping), and `limit` (integer, 1–100; default
 20). Every filter value is a list of strings. Supported filters are `kind`,
 `scopes`, `decision_impact`, `sensitivity`, `exposure`, and `confidence`.
+Unknown filter names are rejected rather than ignored.
 `get`, `history`, and `evidence` require an exact non-empty `id`.
 
 | Action | Example request |

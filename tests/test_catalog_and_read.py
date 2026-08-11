@@ -131,6 +131,21 @@ def test_search_filters_before_loading_bodies(populated_paths: MemoryPaths):
     assert "full_meaning" not in response.data["items"][0]
 
 
+def test_search_rejects_unknown_filter_keys(populated_paths: MemoryPaths):
+    response = dispatch_read(
+        populated_paths,
+        {
+            "action": "search",
+            "filters": {"scope": ["research"]},
+            "limit": 5,
+        },
+    )
+
+    assert response.status == "failed"
+    assert response.error["code"] == "invalid_request"
+    assert response.error["message"] == "unsupported search filter: scope"
+
+
 def test_discoverable_and_history_are_not_default(
     populated_paths: MemoryPaths,
 ):

@@ -11,6 +11,16 @@ from agc_runtime.utf8_io import strict_read_text
 
 OVERVIEW_TOKEN_BUDGET = 250
 SEARCH_LIMIT_MAX = 100
+SEARCH_FILTERS = frozenset(
+    {
+        "kind",
+        "scopes",
+        "decision_impact",
+        "sensitivity",
+        "exposure",
+        "confidence",
+    }
+)
 
 
 def _estimate_response_tokens(response: ToolResponse) -> int:
@@ -135,6 +145,11 @@ def _handle_search(paths: MemoryPaths, request: dict[str, Any]) -> ToolResponse:
     filters = request.get("filters", {})
     if not isinstance(filters, dict):
         raise ValueError("filters must be a mapping")
+    unknown_filters = sorted(set(filters) - SEARCH_FILTERS)
+    if unknown_filters:
+        raise ValueError(
+            f"unsupported search filter: {', '.join(unknown_filters)}"
+        )
     limit = request.get("limit", 20)
     if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 100:
         raise ValueError(f"limit must be between 1 and {SEARCH_LIMIT_MAX}")

@@ -74,7 +74,7 @@ overview → search → 必要时 get → 极少数情况 history/evidence
 约束如下：
 
 - `overview` 只确认可用的 kind、scope 和紧凑卡片。
-- `search` 优先使用 `scope`、`kind`、`decision_impact` 等现有 filters，并把 `limit` 控制在 5 以内。
+- `search` 只使用 `kind`、`scopes`、`decision_impact`、`sensitivity`、`exposure`、`confidence`，所有值均为字符串列表，并把 `limit` 控制在 5 以内。
 - 当前 Runtime 的 `query` 是字面子串匹配，因此普通 Recall 不生成长自然语言查询；不确定时只用 filters。
 - 只有紧凑卡片不足以判断适用边界时才调用 `get`。
 - 只有冲突、变化或来源核验才调用 `history` 或 `evidence`。
@@ -134,3 +134,12 @@ overview → search → 必要时 get → 极少数情况 history/evidence
 - 无关任务仍可保持零个人记忆 Token。
 - Recall 调用以产生实际应用为目的，而不是只证明记忆存在。
 - 存储层继续保持稳定，改动失败也不会影响主任务和已有记忆。
+
+## 8. 2026-08-11 使用证据后的最小修正
+
+新的三日审计首次观察到 Recall 产生实际价值，同时暴露两个窄问题：同为“是否与我的研究相关”的仓库评估任务触发不一致；一次 Search 使用了错误的 `scope` 字段，Runtime 静默忽略后返回了无关卡片。
+
+因此增加两个不改变总体架构的约束：
+
+- “项目、仓库、工具或技术是否符合用户研究、学习或长期目标”是明确 Recall 场景；不涉及个人方向的普通项目介绍仍不 Recall。
+- Runtime 对未知 Search filter 返回 `invalid_request`，不再静默忽略；合法 scope 字段固定为列表形式的 `scopes`。
