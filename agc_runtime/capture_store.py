@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Callable, Sequence
 
 from agc_runtime.capture_contracts import (
-    CAPTURE_SCHEMA_VERSION, CaptureKey, CaptureLease, CaptureReceipt,
+    CAPTURE_SCHEMA_VERSION, CAPTURE_STATUSES, CaptureKey, CaptureLease, CaptureReceipt,
     CollectedObservation, LedgerEntry, SanitizedError, receipt_id_for,
     validate_capture_transition,
 )
@@ -397,7 +397,10 @@ class CaptureStore:
             raise ValueError("invalid Capture transaction journal")
         if value.get("schema_version") != CAPTURE_SCHEMA_VERSION or value.get("receipt_id") != receipt_id:
             raise ValueError("invalid Capture transaction journal")
-        return tuple(self._manifest_value(receipt_id, value.get("observation_ids", []))["observation_ids"])
+        ids = value.get("observation_ids", [])
+        if not isinstance(ids, list) or len(ids) > 8:
+            raise ValueError("invalid Capture transaction journal")
+        return tuple(self._manifest_value(receipt_id, ids)["observation_ids"])
 
     def _artifact_binds(self, directory: Path, receipt_id: str, observation_id: str) -> bool:
         path = self._path(directory, observation_id, _OBSERVATION_ID)
@@ -426,6 +429,16 @@ class CaptureStore:
             value = read_json(path)
             if set(value) != {"schema_version", "operation", "receipt_id", "expected_status", "target_status"} or value.get("schema_version") != CAPTURE_SCHEMA_VERSION or value.get("operation") != "transition" or not isinstance(value.get("receipt_id"), str) or not _RECEIPT_ID.fullmatch(value["receipt_id"]):
                 raise ValueError("invalid transition journal")
+            if path.name != f"tr_{value['receipt_id']}.json":
+                raise ValueError("transition journal filename binding mismatch")
+            expected = value["expected_status"]
+            target = value["target_status"]
+            if not isinstance(expected, str) or not isinstance(target, str) or expected not in CAPTURE_STATUSES or target not in CAPTURE_STATUSES:
+                raise ValueError("invalid transition journal status")
+            validate_capture_transition(
+                expected, target,
+                reopen_reason="explicit_retry" if expected in {"failed", "quarantined"} and target == "queued" else None,
+            )
             receipt = self._read_receipt(value["receipt_id"])
             if receipt.status == value["target_status"]:
                 self._write_ledger(receipt, status=receipt.status, processed_at=None)
@@ -459,6 +472,7 @@ class CaptureStore:
                 except (ValueError, TypeError):
                     corrupt += 1; self._quarantine(path)
             referenced: set[str] = set()
+            active_stage_ids: set[str] = set()
             seen_receipts: set[str] = set()
             for receipt_path in sorted(self.capture.receipts.glob("*.json")):
                 if not _RECEIPT_ID.fullmatch(receipt_path.stem):
@@ -470,6 +484,8 @@ class CaptureStore:
                 seen_receipts.add(receipt.receipt_id)
                 journal_ids_for_receipt = journal_ids.get(receipt.receipt_id)
                 has_journal = journal_ids_for_receipt is not None
+                if has_journal and receipt.status == "extracting":
+                    active_stage_ids.update(journal_ids_for_receipt)
                 valid = self._manifest_valid(receipt)
                 if receipt.status == "complete" and valid:
                     referenced.update(self._read_manifest(receipt.receipt_id))
@@ -528,7 +544,7 @@ class CaptureStore:
                     observation = CollectedObservation.from_mapping(read_json(path))
                 except ValueError:
                     corrupt += 1; self._quarantine(path); continue
-                if observation.observation_id not in referenced:
+                if observation.observation_id not in active_stage_ids:
                     orphan += 1; safe_unlink(path)
         return RecoveryReport(recovered, orphan, partial, duplicate, corrupt)
 

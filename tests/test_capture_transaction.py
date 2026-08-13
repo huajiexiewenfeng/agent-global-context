@@ -107,7 +107,9 @@ def test_recovery_never_deletes_foreign_observation_named_by_another_journal_or_
     assert store.read_receipt(owner_receipt.receipt_id).status == "complete"
     assert store.visible_observations(owner_receipt.receipt_id) == (owner_observation,)
     assert (paths.capture.observations / f"{owner_observation.observation_id}.json").is_file()
+    assert not (paths.capture.staging / f"{owner_observation.observation_id}.json").exists()
     assert store.read_receipt(foreign_receipt.receipt_id).status in {"extracting", "retryable"}
+    assert store.recover_transactions(now="2026-08-13T12:02:00Z").orphan_count == 0
 
 
 def test_recovery_counts_conflicting_journal_binding_as_duplicate_without_harming_complete_batch(tmp_path: Path):
@@ -155,6 +157,35 @@ def test_journal_without_receipt_cleans_only_its_bound_local_artifacts(tmp_path:
     assert not (paths.capture.journals / f"{missing_receipt.receipt_id}.json").exists()
     assert not (paths.capture.staging / f"{missing_observation.observation_id}.json").exists()
     assert not (paths.capture.observations / f"{missing_observation.observation_id}.json").exists()
+
+
+def test_recovery_rejects_over_limit_extraction_journal_binding(tmp_path: Path):
+    paths = MemoryPaths.from_root(tmp_path / "memory")
+    store = CaptureStore(paths, clock=lambda: "2026-08-13T12:00:00Z")
+    store.ensure_layout()
+    receipt = _receipt()
+    observations = [_observation(f"User synthetic journal item {index}.", index) for index in range(9)]
+    atomic_write_json(
+        paths.capture.journals / f"{receipt.receipt_id}.json",
+        {"schema_version": 1, "receipt_id": receipt.receipt_id, "observation_ids": [item.observation_id for item in observations]},
+    )
+    report = store.recover_transactions(now="2026-08-13T12:01:00Z")
+    assert report.corrupt_count == 1
+    assert list(paths.capture.quarantines.glob("corrupt-*.json"))
+
+
+def test_recovery_rejects_transition_journal_with_invalid_filename_binding_or_status(tmp_path: Path):
+    paths = MemoryPaths.from_root(tmp_path / "memory")
+    store = CaptureStore(paths, clock=lambda: "2026-08-13T12:00:00Z")
+    receipt = _receipt(status="queued")
+    store.register_extraction(receipt)
+    atomic_write_json(
+        paths.capture.journals / f"tr_{receipt.receipt_id}.json",
+        {"schema_version": 1, "operation": "transition", "receipt_id": receipt.receipt_id, "expected_status": "queued", "target_status": "not-a-status"},
+    )
+    report = store.recover_transactions(now="2026-08-13T12:01:00Z")
+    assert report.corrupt_count == 1
+    assert store.read_receipt(receipt.receipt_id).status == "queued"
 
 
 @pytest.mark.parametrize(
