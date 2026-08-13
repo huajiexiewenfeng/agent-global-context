@@ -147,6 +147,15 @@ class CaptureStore:
     def read_receipt(self, receipt_id: str) -> CaptureReceipt:
         return self._read_receipt(receipt_id)
 
+    def iter_receipts(self) -> tuple[CaptureReceipt, ...]:
+        """Return strictly decoded receipts for the isolated read service."""
+        if not self.capture.receipts.exists():
+            return ()
+        return tuple(
+            self._read_receipt(path.stem)
+            for path in sorted(self.capture.receipts.glob("*.json"))
+        )
+
     def _write_receipt(self, receipt: CaptureReceipt) -> None:
         atomic_write_json(self._receipt_path(receipt.receipt_id), receipt.to_mapping())
 
@@ -374,6 +383,14 @@ class CaptureStore:
         ids = self._read_manifest(receipt_id)
         items = tuple(CollectedObservation.from_mapping(read_json(self._observation_path(item))) for item in ids)
         return tuple(sorted(items, key=lambda item: (item.ordinal, item.observation_id)))
+
+    def iter_visible_observations(self) -> tuple[CollectedObservation, ...]:
+        """Expose only observations backed by a complete immutable manifest."""
+        items: list[CollectedObservation] = []
+        for receipt in self.iter_receipts():
+            if receipt.status == "complete":
+                items.extend(self.visible_observations(receipt.receipt_id))
+        return tuple(items)
 
     def _cleanup_ids(self, receipt_id: str, ids: Sequence[str], *, remove_manifest: bool) -> None:
         for observation_id in ids:

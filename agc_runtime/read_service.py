@@ -2,6 +2,7 @@ import json
 from typing import Any
 
 from agc_runtime.catalog import catalog_counts, load_catalog
+from agc_runtime.capture_read_service import capture_get, capture_overview, capture_search
 from agc_runtime.contracts import ToolResponse
 from agc_runtime.models import MemoryItem
 from agc_runtime.paths import MemoryPaths
@@ -235,12 +236,27 @@ def _handle_evidence(paths: MemoryPaths, request: dict[str, Any]) -> ToolRespons
     )
 
 
+def _handle_capture_overview(paths: MemoryPaths, _request: dict[str, Any]) -> ToolResponse:
+    return ToolResponse(tool="agc.read", action="capture_overview", status="accepted", data=capture_overview(paths))
+
+
+def _handle_capture_search(paths: MemoryPaths, request: dict[str, Any]) -> ToolResponse:
+    return ToolResponse(tool="agc.read", action="capture_search", status="accepted", data=capture_search(paths, request))
+
+
+def _handle_capture_get(paths: MemoryPaths, request: dict[str, Any]) -> ToolResponse:
+    return ToolResponse(tool="agc.read", action="capture_get", status="accepted", data=capture_get(paths, request))
+
+
 _HANDLERS = {
     "overview": _handle_overview,
     "search": _handle_search,
     "get": _handle_get,
     "history": _handle_history,
     "evidence": _handle_evidence,
+    "capture_overview": _handle_capture_overview,
+    "capture_search": _handle_capture_search,
+    "capture_get": _handle_capture_get,
 }
 
 

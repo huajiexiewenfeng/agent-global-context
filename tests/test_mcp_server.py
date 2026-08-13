@@ -138,3 +138,17 @@ def test_request_body_is_not_logged_to_stdout(tmp_path, capsys):
     captured = capsys.readouterr()
     assert marker not in captured.out
     assert captured.out == ""
+
+
+def test_capture_actions_use_existing_three_tool_envelope(tmp_path):
+    mcp_server_module = _mcp_server_module()
+    server = mcp_server_module.create_server(tmp_path / "memory")
+
+    read = _call(server, "agc.read", {"action": "capture_overview"})
+    admin = _call(server, "agc.admin", {"action": "capture_status"})
+
+    assert read["status"] == "accepted"
+    assert read["action"] == "capture_overview"
+    assert admin["status"] == "accepted"
+    assert admin["action"] == "capture_status"
+    assert {tool.name for tool in _list_tools(server)} == {"agc.read", "agc.write", "agc.admin"}

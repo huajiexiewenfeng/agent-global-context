@@ -22,6 +22,7 @@ from agc_runtime.capture_contracts import (
     RevisionRef,
     SourceQuarantine,
 )
+from agc_runtime.capture_status_service import capture_status
 from agc_runtime.contracts import ToolResponse
 from agc_runtime.locking import root_write_lock
 from agc_runtime.migration_service import migrate_v1
@@ -720,6 +721,15 @@ def _handle_migrate(
     return migrate_v1(paths, request)
 
 
+def _handle_capture_status(
+    paths: MemoryPaths, _request: dict[str, Any]
+) -> ToolResponse:
+    return ToolResponse(
+        tool="agc.admin", action="capture_status", status="accepted",
+        data=capture_status(paths),
+    )
+
+
 _HANDLERS = {
     "init": _handle_init,
     "validate": _handle_validate,
@@ -727,6 +737,7 @@ _HANDLERS = {
     "backup": _handle_backup,
     "restore": _handle_restore,
     "migrate": _handle_migrate,
+    "capture_status": _handle_capture_status,
 }
 
 
