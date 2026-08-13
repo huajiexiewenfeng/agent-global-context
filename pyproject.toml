@@ -11,7 +11,13 @@ dependencies = ["PyYAML>=6.0.2,<7"]
 
 [project.optional-dependencies]
 mcp = ["mcp==2.0.0"]
-test = ["pytest==9.1.1", "build>=1.2,<2", "mcp==2.0.0"]
+test = [
+  "pytest==9.1.1",
+  "build>=1.2,<2",
+  "setuptools>=68",
+  "wheel>=0.43",
+  "mcp==2.0.0",
+]
 
 [project.scripts]
 agc = "agc_runtime.cli:main"

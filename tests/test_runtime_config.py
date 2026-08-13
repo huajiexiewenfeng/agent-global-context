@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import subprocess
 import sys
 import zipfile
@@ -131,17 +132,70 @@ def test_admin_validate_parses_valid_non_default_config(tmp_path: Path):
 
 def test_built_wheel_contains_default_and_installed_admin_init_works(tmp_path: Path):
     repository = Path(__file__).parents[1]
+    repository_artifacts_before = {
+        path.relative_to(repository): (path.stat().st_mtime_ns, path.stat().st_size)
+        for pattern in ("build/**/*", "dist/**/*", "*.egg-info/**/*")
+        for path in repository.glob(pattern)
+        if path.is_file()
+    }
+    source = tmp_path / "source"
+    excluded = {
+        "build",
+        "dist",
+        ".venv",
+        ".git",
+        ".pytest_cache",
+        "__pycache__",
+    }
+    shutil.copytree(
+        repository,
+        source,
+        ignore=lambda _directory, names: [
+            name
+            for name in names
+            if name in excluded or name.endswith(".egg-info")
+        ],
+    )
+    assert not (source / "build").exists()
+    assert not (source / "dist").exists()
+    assert not (source / ".venv").exists()
+    assert not list(source.glob("*.egg-info"))
+
     wheel_dir = tmp_path / "wheel"
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "PIP_NO_INDEX": "1",
+            "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+            "PIP_NO_INPUT": "1",
+        }
+    )
+    backend = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import setuptools.build_meta, wheel; print('offline backend ready')",
+        ],
+        cwd=source,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert backend.returncode == 0, backend.stdout + backend.stderr
+    assert backend.stdout.strip() == "offline backend ready"
     build = subprocess.run(
         [
             sys.executable,
             "-m",
             "build",
             "--wheel",
+            "--no-isolation",
             "--outdir",
             str(wheel_dir),
         ],
-        cwd=repository,
+        cwd=source,
+        env=environment,
         capture_output=True,
         text=True,
         check=False,
@@ -171,7 +225,6 @@ def test_built_wheel_contains_default_and_installed_admin_init_works(tmp_path: P
     assert install.returncode == 0, install.stdout + install.stderr
 
     memory_root = tmp_path / "memory"
-    environment = os.environ.copy()
     environment["PYTHONPATH"] = str(install_dir)
     environment["PYTHONNOUSERSITE"] = "1"
     initialized = subprocess.run(
@@ -198,3 +251,10 @@ def test_built_wheel_contains_default_and_installed_admin_init_works(tmp_path: P
     assert (memory_root / "config.yaml").read_bytes() == (
         install_dir / "agc_runtime" / "default_config.yaml"
     ).read_bytes()
+    repository_artifacts_after = {
+        path.relative_to(repository): (path.stat().st_mtime_ns, path.stat().st_size)
+        for pattern in ("build/**/*", "dist/**/*", "*.egg-info/**/*")
+        for path in repository.glob(pattern)
+        if path.is_file()
+    }
+    assert repository_artifacts_after == repository_artifacts_before
