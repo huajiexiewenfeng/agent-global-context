@@ -113,3 +113,36 @@ def root_write_lock(paths: MemoryPaths) -> Iterator[Path]:
                 current = {}
             if current.get("lock_id") == lock_id:
                 lock_file.unlink()
+
+
+@contextmanager
+def capture_write_lock(paths: MemoryPaths) -> Iterator[Path]:
+    """Serialize Capture transactions without sharing formal-memory receipts."""
+    paths.capture.root.mkdir(parents=True, exist_ok=True)
+    lock_file = paths.capture.root / ".writer.lock"
+    lock_id = uuid.uuid4().hex
+    payload = {
+        "lock_id": lock_id, "pid": os.getpid(), "host": socket.gethostname(),
+        "acquired_at": datetime.now(timezone.utc).isoformat(),
+    }
+    for attempt in range(2):
+        try:
+            descriptor = os.open(lock_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL)
+            break
+        except FileExistsError as error:
+            if attempt == 0 and _reclaim_dead_same_host_lock(lock_file):
+                continue
+            raise RuntimeError("active Capture write lock exists") from error
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as stream:
+            json.dump(payload, stream, ensure_ascii=False, sort_keys=True)
+            stream.write("\n")
+        yield lock_file
+    finally:
+        if lock_file.exists():
+            try:
+                current = json.loads(strict_read_text(lock_file))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                current = {}
+            if current.get("lock_id") == lock_id:
+                lock_file.unlink()
