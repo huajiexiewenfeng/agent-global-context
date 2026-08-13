@@ -15,6 +15,7 @@ def card_from_item(item: MemoryItem) -> dict[str, Any]:
     return {
         "id": item.id,
         "kind": item.kind,
+        "lifecycle": item.lifecycle.status,
         "scopes": list(item.recall.scopes),
         "updated_at": item.provenance.updated_at,
         "confidence": item.confidence.level,
@@ -41,7 +42,7 @@ def build_catalog(paths: MemoryPaths) -> dict[str, Any]:
         validate_memory_item(item)
         cards.append(card_from_item(item))
     cards.sort(key=lambda card: card["id"].encode("utf-8"))
-    return {"schema_version": 2, "memory_count": len(cards), "cards": cards}
+    return {"schema_version": 3, "memory_count": len(cards), "cards": cards}
 
 
 def render_catalog_markdown(catalog: dict[str, Any]) -> str:
@@ -57,6 +58,7 @@ def render_catalog_markdown(catalog: dict[str, Any]) -> str:
                 f"## {card['id']}",
                 "",
                 f"- kind: {card['kind']}",
+                f"- lifecycle: {card['lifecycle']}",
                 f"- scopes: {', '.join(card['scopes'])}",
                 f"- updated_at: {card['updated_at']}",
                 f"- confidence: {card['confidence']}",
@@ -91,10 +93,14 @@ def load_catalog(paths: MemoryPaths) -> dict[str, Any]:
     value = json.loads(strict_read_text(paths.catalog_json))
     if (
         not isinstance(value, dict)
-        or value.get("schema_version") != 2
+        or value.get("schema_version") != 3
         or not isinstance(value.get("cards"), list)
+        or any(
+            not isinstance(card, dict) or not isinstance(card.get("lifecycle"), str)
+            for card in value["cards"]
+        )
     ):
-        raise ValueError("invalid generated catalog")
+        return rebuild_catalog(paths)
     return value
 
 

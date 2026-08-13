@@ -5,11 +5,12 @@ from agc_runtime.catalog import catalog_counts, load_catalog
 from agc_runtime.contracts import ToolResponse
 from agc_runtime.models import MemoryItem
 from agc_runtime.paths import MemoryPaths
+from agc_runtime.response_budget import _with_estimate, fit_overview_response
+from agc_runtime.runtime_config import load_runtime_config
 from agc_runtime.store import MemoryStore
 from agc_runtime.utf8_io import strict_read_text
 
 
-OVERVIEW_TOKEN_BUDGET = 250
 SEARCH_LIMIT_MAX = 100
 SEARCH_FILTERS = frozenset(
     {
@@ -23,44 +24,6 @@ SEARCH_FILTERS = frozenset(
 )
 
 
-def _estimate_response_tokens(response: ToolResponse) -> int:
-    serialized = json.dumps(
-        response.to_dict(),
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-    return (len(serialized) + 2) // 3
-
-
-def _with_estimate(response: ToolResponse) -> ToolResponse:
-    data = dict(response.data)
-    estimate = 0
-    for _ in range(3):
-        data["estimated_tokens"] = estimate
-        candidate = ToolResponse(
-            tool=response.tool,
-            action=response.action,
-            status=response.status,
-            data=data,
-            warnings=response.warnings,
-            error=response.error,
-        )
-        updated = _estimate_response_tokens(candidate)
-        if updated == estimate:
-            return candidate
-        estimate = updated
-    data["estimated_tokens"] = estimate
-    return ToolResponse(
-        tool=response.tool,
-        action=response.action,
-        status=response.status,
-        data=data,
-        warnings=response.warnings,
-        error=response.error,
-    )
-
-
 def _failed(action: str, code: str, message: str) -> ToolResponse:
     return ToolResponse(
         tool="agc.read",
@@ -71,8 +34,12 @@ def _failed(action: str, code: str, message: str) -> ToolResponse:
 
 
 def _handle_overview(paths: MemoryPaths, _request: dict[str, Any]) -> ToolResponse:
+    config = load_runtime_config(paths)
     catalog = load_catalog(paths)
-    counts = catalog_counts(catalog)
+    active_cards = [
+        card for card in catalog["cards"] if card["lifecycle"] == "active"
+    ]
+    counts = catalog_counts({"cards": active_cards})
     data: dict[str, Any] = {
         "memory_count": catalog["memory_count"],
         "counts": {
@@ -82,35 +49,25 @@ def _handle_overview(paths: MemoryPaths, _request: dict[str, Any]) -> ToolRespon
         "high_impact_scopes": counts["high_impact_scopes"],
         "available_card_count": sum(
             card["exposure"] in {"core_card", "scoped_card"}
-            for card in catalog["cards"]
+            for card in active_cards
         ),
         "cards": [],
     }
     eligible = [
         card
         for card in catalog["cards"]
-        if card["exposure"] in {"core_card", "scoped_card"}
+        if card["lifecycle"] == "active"
+        and card["exposure"] in {"core_card", "scoped_card"}
     ]
-    for card in eligible:
-        trial = {**data, "cards": [*data["cards"], card]}
-        response = _with_estimate(
-            ToolResponse(
-                tool="agc.read",
-                action="overview",
-                status="accepted",
-                data=trial,
-            )
-        )
-        if response.data["estimated_tokens"] > OVERVIEW_TOKEN_BUDGET:
-            break
-        data = trial
-    return _with_estimate(
+    data["cards"] = eligible
+    return fit_overview_response(
         ToolResponse(
             tool="agc.read",
             action="overview",
             status="accepted",
             data=data,
-        )
+        ),
+        budget=config.recall.overview_token_budget,
     )
 
 
@@ -157,10 +114,13 @@ def _handle_search(paths: MemoryPaths, request: dict[str, Any]) -> ToolResponse:
     if query is not None and (not isinstance(query, str) or not query):
         raise ValueError("query must be a non-empty string")
 
+    load_runtime_config(paths)
     catalog = load_catalog(paths)
     filtered = []
     query_folded = query.casefold() if query else None
     for card in catalog["cards"]:
+        if card["lifecycle"] != "active":
+            continue
         if not _matches_filters(card, filters):
             continue
         if query_folded and query_folded not in (
@@ -175,7 +135,11 @@ def _handle_search(paths: MemoryPaths, request: dict[str, Any]) -> ToolResponse:
             tool="agc.read",
             action="search",
             status="accepted",
-            data={"items": filtered, "returned_count": len(filtered)},
+            data={
+                "results": filtered,
+                "items": filtered,
+                "returned_count": len(filtered),
+            },
         )
     )
 

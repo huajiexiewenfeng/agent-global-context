@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from agc_runtime.catalog import rebuild_catalog
+from agc_runtime.admin_service import dispatch_admin
 from agc_runtime.contracts import SourceKey
 from agc_runtime.models import MemoryItem
 from agc_runtime.paths import MemoryPaths
@@ -20,6 +21,7 @@ def base_principle() -> MemoryItem:
 @pytest.fixture
 def populated_paths(tmp_path: Path) -> MemoryPaths:
     paths = MemoryPaths.from_root(tmp_path / "memory")
+    assert dispatch_admin(paths, {"action": "init"}).status == "accepted"
     store = MemoryStore(paths)
     principle = base_principle()
     family = replace(
@@ -125,10 +127,10 @@ def test_search_filters_before_loading_bodies(populated_paths: MemoryPaths):
         },
     )
 
-    assert [item["id"] for item in response.data["items"]] == [
+    assert [item["id"] for item in response.data["results"]] == [
         "difficult-but-correct"
     ]
-    assert "full_meaning" not in response.data["items"][0]
+    assert "full_meaning" not in response.data["results"][0]
 
 
 def test_search_rejects_unknown_filter_keys(populated_paths: MemoryPaths):
@@ -155,6 +157,15 @@ def test_discoverable_and_history_are_not_default(
     assert "family-structure" not in ids
     assert "old-role" not in ids
     assert "difficult-but-correct" in ids
+
+
+def test_catalog_cards_include_lifecycle(populated_paths: MemoryPaths):
+    catalog = json.loads(populated_paths.catalog_json.read_text(encoding="utf-8"))
+
+    assert catalog["schema_version"] == 3
+    assert {
+        card["id"]: card["lifecycle"] for card in catalog["cards"]
+    }["old-role"] == "historical"
 
 
 def test_catalog_is_sorted_by_utf8_id_and_rebuild_is_deterministic(

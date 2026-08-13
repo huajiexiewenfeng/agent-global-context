@@ -18,20 +18,12 @@ from agc_runtime.migration_service import migrate_v1
 from agc_runtime.models import MemoryItem
 from agc_runtime.paths import MemoryPaths
 from agc_runtime.policy import validate_transition
+from agc_runtime.runtime_config import default_config_text, load_runtime_config
 from agc_runtime.schema import validate_memory_item
 from agc_runtime.utf8_io import atomic_write_text, strict_read_text
 
 
-CONFIG_TEXT = """schema_version: 2
-sensitive_storage: disabled
-recall:
-  overview_token_budget: 250
-  compact_card_token_budget: 600
-evidence_threshold:
-  minimum_evidence: 3
-  minimum_distinct_sessions: 2
-  minimum_time_span_days: 7
-"""
+CONFIG_TEXT = default_config_text()
 _TEXT_SUFFIXES = {
     "",
     ".md",
@@ -233,9 +225,10 @@ def _validate_fixed_config(
     except OSError as error:
         _issue(issues, schema_file, f"schema-version is missing: {error}")
     try:
-        if strict_read_text(config_file) != CONFIG_TEXT:
-            _issue(issues, config_file, "fixed v2 policy config was modified")
-    except OSError as error:
+        if not config_file.exists():
+            raise OSError("config.yaml does not exist")
+        load_runtime_config(paths)
+    except (OSError, ValueError) as error:
         _issue(issues, config_file, f"config.yaml is missing: {error}")
 
 

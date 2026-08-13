@@ -46,7 +46,7 @@ def family() -> MemoryItem:
     )
 
 
-def test_init_creates_v2_layout_and_fixed_policy(tmp_path: Path):
+def test_init_creates_v2_layout_and_runtime_config(tmp_path: Path):
     paths = MemoryPaths.from_root(tmp_path / "memory")
 
     response = dispatch_admin(paths, {"action": "init"})
@@ -55,11 +55,11 @@ def test_init_creates_v2_layout_and_fixed_policy(tmp_path: Path):
     assert (paths.root / "schema-version").read_text(encoding="utf-8") == "2\n"
     config = (paths.root / "config.yaml").read_text(encoding="utf-8")
     assert "sensitive_storage: disabled" in config
+    assert "schema_version: 3" in config
     assert "overview_token_budget: 250" in config
     assert "compact_card_token_budget: 600" in config
-    assert "minimum_evidence: 3" in config
-    assert "minimum_distinct_sessions: 2" in config
-    assert "minimum_time_span_days: 7" in config
+    assert "enabled: false" in config
+    assert "mode: off" in config
     assert paths.migrations.is_dir()
 
 
@@ -81,19 +81,19 @@ def test_validate_reports_invalid_memory_without_cataloging_it(tmp_path: Path):
     assert any("invalid kind" in issue["message"] for issue in response.data["issues"])
 
 
-def test_validate_detects_fixed_policy_drift(tmp_path: Path):
+def test_validate_rejects_invalid_runtime_config(tmp_path: Path):
     paths = MemoryPaths.from_root(tmp_path / "memory")
     dispatch_admin(paths, {"action": "init"})
     atomic_write_text(
         paths.root / "config.yaml",
-        "schema_version: 2\nsensitive_storage: enabled\n",
+        "schema_version: 3\nsensitive_storage: enabled\n",
     )
 
     response = dispatch_admin(paths, {"action": "validate"})
 
     assert response.status == "failed"
     assert any(
-        "fixed v2 policy config was modified" in issue["message"]
+        "missing runtime config field: capture" in issue["message"]
         for issue in response.data["issues"]
     )
 
