@@ -26,6 +26,7 @@ from agc_runtime.capture_status_service import capture_status
 from agc_runtime.capture_store import CaptureStore
 from agc_runtime.contracts import ToolResponse
 from agc_runtime.locking import root_write_lock
+from agc_runtime import managed_backup
 from agc_runtime.migration_service import migrate_v1
 from agc_runtime.models import MemoryItem
 from agc_runtime.paths import MemoryPaths
@@ -171,13 +172,6 @@ def _validate_receipts(
 def _validate_capture(paths: MemoryPaths, issues: list[dict[str, str]]) -> None:
     if not paths.capture.root.exists():
         return
-    if CaptureStore(paths).cursor_key_status()["state"] != "ready":
-        _capture_issue(
-            issues,
-            paths,
-            paths.capture.cursor_hmac_key,
-            "Capture cursor key is missing or invalid",
-        )
     try:
         if strict_read_text(paths.capture.schema_version) != "1\n":
             _capture_issue(issues, paths, paths.capture.schema_version, "Capture schema-version must be 1")
@@ -195,7 +189,6 @@ def _validate_capture(paths: MemoryPaths, issues: list[dict[str, str]]) -> None:
         paths.capture.observations: CollectedObservation.from_mapping,
         paths.capture.ledger: LedgerEntry.from_mapping,
         paths.capture.census: RevisionRef.from_mapping,
-        paths.capture.leases: CaptureLease.from_mapping,
         paths.capture.quarantines: SourceQuarantine.from_mapping,
         paths.capture.tombstones: CaptureSuppressionTombstone.from_mapping,
     }
@@ -216,23 +209,14 @@ def _validate_capture(paths: MemoryPaths, issues: list[dict[str, str]]) -> None:
                 )
             except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as error:
                 _capture_issue(issues, paths, path, f"invalid Capture object: {error}")
-    unsupported_directories = (
-        paths.capture.conflicts,
-        paths.capture.dirty,
-        paths.capture.journals,
-        paths.capture.staging,
-        paths.capture.indexes,
-        paths.capture.scan_state,
-        paths.capture.budgets,
-    )
-    for directory in unsupported_directories:
-        if not directory.exists():
-            continue
-        for path in sorted(directory.rglob("*")):
-            if path.is_file():
-                _capture_issue(
-                    issues, paths, path, "unsupported Capture payload for schema version 1"
-                )
+    if paths.capture.conflicts.exists():
+        for path in sorted(paths.capture.conflicts.glob("*.json")):
+            try:
+                value = json.loads(strict_read_text(path))
+                if set(value) != {"schema_version", "code", "created_at"} or value.get("schema_version") != 1 or value.get("code") != "source_conflict" or not isinstance(value.get("created_at"), str):
+                    raise ValueError("invalid conflict")
+            except (ValueError, OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+                _capture_issue(issues, paths, path, f"invalid Capture conflict: {error}")
 
 
 def _capture_issue(
@@ -454,16 +438,16 @@ def _handle_backup(paths: MemoryPaths, _request: dict[str, Any]) -> ToolResponse
             issues=issues,
         )
     with root_write_lock(paths):
-        files = _backup_files(paths)
-        manifest = _manifest(files)
+        files = managed_backup.backup_files(paths)
+        manifest = managed_backup.manifest(files)
         manifest_id = hashlib.sha256(
             json.dumps(
                 manifest, sort_keys=True, separators=(",", ":")
             ).encode("utf-8")
         ).hexdigest()
-        archive_data = _archive_bytes(files, manifest)
+        archive_data = managed_backup.archive_bytes(files, manifest)
         archive_path = paths.backups / f"agc-backup-{manifest_id}.zip"
-        _atomic_write_bytes(archive_path, archive_data)
+        managed_backup.atomic_write_bytes(archive_path, archive_data)
     return ToolResponse(
         tool="agc.admin",
         action="backup",
@@ -639,7 +623,7 @@ def _restore_path(paths: MemoryPaths, request: dict[str, Any]) -> Path:
 def _handle_restore(paths: MemoryPaths, request: dict[str, Any]) -> ToolResponse:
     backup_path = _restore_path(paths, request)
     try:
-        entries, _manifest_value = _read_verified_archive(backup_path)
+        entries, _manifest_value = managed_backup.read_verified_archive(backup_path)
     except (
         OSError,
         ValueError,

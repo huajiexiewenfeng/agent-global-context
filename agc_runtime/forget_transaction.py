@@ -19,6 +19,7 @@ from agc_runtime._forget_types import ForgetOperation, ForgetPlanError
 from agc_runtime.catalog import build_catalog, render_catalog_markdown
 from agc_runtime.migration_manifest import SHA256_PATTERN
 from agc_runtime.paths import MemoryPaths
+from agc_runtime import managed_backup
 from agc_runtime.utf8_io import strict_read_text
 
 
@@ -151,17 +152,10 @@ def _rewritten_backup_bytes(
                     continue
             retained[normalized_name] = data
     retained[tombstone_name] = tombstone_bytes
-    files = [
-        {
-            "path": name,
-            "sha256": hashlib.sha256(data).hexdigest(),
-            "size": len(data),
-        }
-        for name, data in sorted(retained.items())
-    ]
+    files = sorted(retained.items(), key=lambda item: item[0].encode("utf-8"))
     manifest = (
         json.dumps(
-            {"schema_version": 2, "files": files},
+            managed_backup.manifest(files),
             ensure_ascii=False,
             sort_keys=True,
             indent=2,
@@ -170,7 +164,7 @@ def _rewritten_backup_bytes(
     )
     output = io.BytesIO()
     with zipfile.ZipFile(output, "w") as archive:
-        for name, data in sorted(retained.items()):
+        for name, data in files:
             archive.writestr(_zip_info(name), data)
         archive.writestr(_zip_info("manifest.json"), manifest)
     return output.getvalue()

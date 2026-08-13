@@ -440,6 +440,12 @@ def _handle_forget(paths: MemoryPaths, request: dict[str, Any]) -> ToolResponse:
     return forget(paths, request)
 
 
+def _handle_capture_forget(paths: MemoryPaths, request: dict[str, Any]) -> ToolResponse:
+    from agc_runtime.capture_forget_service import capture_forget
+
+    return capture_forget(paths, request)
+
+
 Handler = Callable[[MemoryPaths, dict[str, Any]], ToolResponse]
 _HANDLERS: dict[str, Handler] = {
     "observe": _handle_observe,
@@ -451,6 +457,7 @@ _HANDLERS: dict[str, Handler] = {
     "archive": _handle_archive,
     "reject": _handle_reject,
     "forget": _handle_forget,
+    "capture_forget": _handle_capture_forget,
 }
 
 
@@ -478,7 +485,7 @@ def dispatch_write(paths: MemoryPaths, request: Any) -> ToolResponse:
         )
     try:
         response = _HANDLERS[action](paths, request)
-        if action == "forget":
+        if action in {"forget", "capture_forget"}:
             return response
         return _refresh_catalog_after_formal_memory(paths, response)
     except (ValueError, KeyError, TypeError) as error:

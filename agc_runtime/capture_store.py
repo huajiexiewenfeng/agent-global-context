@@ -19,7 +19,7 @@ from typing import Callable, Sequence
 from agc_runtime.capture_contracts import (
     CAPTURE_SCHEMA_VERSION, CAPTURE_STATUSES, CaptureKey, CaptureLease, CaptureReceipt,
     CaptureSuppressionTombstone, CollectedObservation, LedgerEntry, RevisionRef,
-    SanitizedError, SourceQuarantine, receipt_id_for,
+    SanitizedError, SourceQuarantine, receipt_id_for, tombstone_id_for,
     validate_capture_transition,
 )
 from agc_runtime.capture_transaction import atomic_write_bytes, atomic_write_json, read_json, safe_unlink
@@ -515,6 +515,18 @@ class CaptureStore:
             raise ValueError("discovery receipt must be non-terminal")
         with capture_write_lock(self.paths):
             self._ensure_layout_locked()
+            tombstone_path = self._path(
+                self.capture.tombstones,
+                tombstone_id_for(receipt.key),
+                _CAPTURE_ID,
+            )
+            if tombstone_path.exists():
+                tombstone = CaptureSuppressionTombstone.from_mapping(
+                    read_json(tombstone_path)
+                )
+                if tombstone.capture_key == receipt.key:
+                    return ReconcileResult("suppressed", False, receipt.receipt_id)
+                raise ValueError("Capture suppression tombstone binding is invalid")
             target = self._receipt_path(receipt.receipt_id)
             if not target.exists():
                 self._write_receipt(receipt)
