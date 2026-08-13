@@ -32,9 +32,17 @@ _TRANSITIONS = {
 
 
 def _canonical_json(value: Mapping[str, Any]) -> bytes:
-    return json.dumps(
-        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-    ).encode("utf-8")
+    try:
+        text = json.dumps(
+            value,
+            allow_nan=False,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    except (TypeError, ValueError) as error:
+        raise ValueError("value is not valid canonical JSON") from error
+    return text.encode("utf-8")
 
 
 def _digest(prefix: str, value: Mapping[str, Any]) -> str:
@@ -307,6 +315,7 @@ class SourceQuarantine:
 @dataclass(frozen=True)
 class CaptureSuppressionTombstone:
     schema_version: int
+    tombstone_id: str
     capture_key: CaptureKey
     created_at: str
     reason: str
@@ -318,7 +327,7 @@ class CaptureSuppressionTombstone:
         return capture_suppression_tombstone_from_mapping(value)
 
     def to_mapping(self) -> dict[str, Any]:
-        return {"schema_version": self.schema_version, "capture_key": self.capture_key.to_mapping(), "created_at": self.created_at, "reason": self.reason}
+        return {"schema_version": self.schema_version, "tombstone_id": self.tombstone_id, "capture_key": self.capture_key.to_mapping(), "created_at": self.created_at, "reason": self.reason}
 
 
 def receipt_id_for(key: CaptureKey) -> str:
@@ -330,8 +339,12 @@ def observation_fingerprint_for(value: Mapping[str, Any] | CollectedObservation)
     assertion = _mapping(mapping.get("assertion"), "observation.assertion")
     statement = mapping.get("statement")
     scopes = mapping.get("scopes")
-    if not isinstance(statement, str) or not isinstance(scopes, list):
-        raise ValueError("observation fingerprint requires statement and scopes")
+    if (
+        not isinstance(statement, str)
+        or not isinstance(scopes, list)
+        or any(not isinstance(item, str) for item in scopes)
+    ):
+        raise ValueError("value is not valid canonical JSON for an observation fingerprint")
     payload = {
         "schema_version": CAPTURE_SCHEMA_VERSION,
         "statement": unicodedata.normalize("NFC", " ".join(statement.split())),
@@ -351,8 +364,27 @@ def tombstone_id_for(key: CaptureKey) -> str:
     return _digest("ct_", {"schema_version": CAPTURE_SCHEMA_VERSION, "capture_key": key.to_mapping()})
 
 
-def validate_capture_transition(source: str, target: str) -> None:
-    if source not in CAPTURE_STATUSES or target not in CAPTURE_STATUSES:
+def validate_capture_transition(
+    source: str, target: str, *, reopen_reason: str | None = None
+) -> None:
+    if (
+        not isinstance(source, str)
+        or not isinstance(target, str)
+        or source not in CAPTURE_STATUSES
+        or target not in CAPTURE_STATUSES
+    ):
         raise ValueError("unknown capture status")
     if target not in _TRANSITIONS[source]:
         raise ValueError(f"illegal capture status transition: {source} -> {target}")
+    is_parked_reopen = source in {"failed", "quarantined"} and target == "queued"
+    if is_parked_reopen:
+        if (
+            not isinstance(reopen_reason, str)
+            or reopen_reason
+            not in {"explicit_retry", "compatible_version_upgrade"}
+        ):
+            raise ValueError(
+                "reopen_reason must be explicit_retry or compatible_version_upgrade"
+            )
+    elif reopen_reason is not None:
+        raise ValueError("reopen_reason is allowed only when reopening a parked status")

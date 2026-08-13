@@ -1,4 +1,6 @@
 from copy import deepcopy
+import math
+import unicodedata
 
 import pytest
 
@@ -9,10 +11,13 @@ from agc_runtime.capture_contracts import (
     CaptureReceipt,
     CollectedObservation,
     CaptureSuppressionTombstone,
+    LedgerEntry,
+    SanitizedError,
     SourceQuarantine,
     observation_fingerprint_for,
     observation_id_for,
     receipt_id_for,
+    tombstone_id_for,
     validate_capture_transition,
 )
 
@@ -122,6 +127,45 @@ def test_receipt_round_trip_requires_every_field_and_rejects_unknown_fields():
         CaptureReceipt.from_mapping(value)
 
 
+def test_schema_version_and_enums_reject_bool_and_container_types_with_value_error():
+    invalid_schema = receipt_mapping()
+    invalid_schema["schema_version"] = True
+    with pytest.raises(ValueError, match="schema_version"):
+        CaptureReceipt.from_mapping(invalid_schema)
+
+    for field, value in (
+        ("status", []),
+        ("identity_quality", {}),
+        ("usage_quality", ("actual",)),
+    ):
+        invalid = receipt_mapping()
+        invalid[field] = value
+        with pytest.raises(ValueError, match=field):
+            CaptureReceipt.from_mapping(invalid)
+
+
+@pytest.mark.parametrize("non_finite", [math.nan, math.inf, -math.inf])
+def test_public_id_and_fingerprint_helpers_reject_non_finite_values(
+    non_finite: float,
+):
+    with pytest.raises(ValueError, match="canonical JSON"):
+        receipt_id_for(CaptureKey(non_finite, "root", "task", "revision"))
+    with pytest.raises(ValueError, match="canonical JSON"):
+        observation_id_for("cr_" + "a" * 64, non_finite)
+    with pytest.raises(ValueError, match="canonical JSON"):
+        tombstone_id_for(CaptureKey("adapter", "root", non_finite, "revision"))
+
+    observation = observation_mapping()
+    observation["project_scope"] = non_finite
+    with pytest.raises(ValueError, match="canonical JSON"):
+        observation_fingerprint_for(observation)
+
+    observation = observation_mapping()
+    observation["scopes"] = [non_finite]
+    with pytest.raises(ValueError, match="canonical JSON"):
+        observation_fingerprint_for(observation)
+
+
 def test_receipt_conditional_fields_follow_status_and_redaction_invariants():
     discovered = receipt_mapping(status="discovered")
     assert CaptureReceipt.from_mapping(discovered).status == "discovered"
@@ -186,6 +230,74 @@ def test_receipt_error_coalescing_and_exclusion_fields_are_status_conditioned():
 
 
 @pytest.mark.parametrize(
+    "field,value",
+    [
+        ("stage", "Traceback from extractor"),
+        ("stage", "extract\nsecret"),
+        ("code", "contains private prose"),
+        ("code", "x" * 65),
+        ("code", ["not", "a", "slug"]),
+    ],
+)
+def test_sanitized_error_accepts_only_bounded_machine_code_slugs(field, value):
+    payload = {"stage": "extract", "code": "synthetic_failure", "retryable": True}
+    payload[field] = value
+
+    with pytest.raises(ValueError, match=field):
+        SanitizedError.from_mapping(payload)
+
+
+def test_receipt_error_retryability_matches_terminal_status():
+    retryable = receipt_mapping(status="retryable")
+    retryable.update(
+        {
+            "next_retry_at": UTC,
+            "extractor_id": "synthetic_extractor",
+            "extractor_version": "1",
+            "extractor_schema_version": "1",
+            "taxonomy_version": "taxonomy-v1",
+            "sanitized_error": {
+                "stage": "extract",
+                "code": "synthetic_failure",
+                "retryable": False,
+            },
+        }
+    )
+    with pytest.raises(ValueError, match="retryable"):
+        CaptureReceipt.from_mapping(retryable)
+
+    failed = deepcopy(retryable)
+    failed.update(
+        {
+            "status": "failed",
+            "next_retry_at": None,
+            "sanitized_error": {
+                "stage": "extract",
+                "code": "attempts_exhausted",
+                "retryable": True,
+            },
+        }
+    )
+    with pytest.raises(ValueError, match="retryable"):
+        CaptureReceipt.from_mapping(failed)
+
+
+def test_receipt_control_metadata_rejects_prose_and_noncanonical_references():
+    excluded = receipt_mapping(status="excluded")
+    excluded["exclusion_reason"] = "User asked us to exclude this private task."
+    with pytest.raises(ValueError, match="exclusion_reason"):
+        CaptureReceipt.from_mapping(excluded)
+
+    coalesced = receipt_mapping(status="coalesced")
+    coalesced["coalesced_to"] = "another receipt"
+    with pytest.raises(ValueError, match="coalesced_to"):
+        CaptureReceipt.from_mapping(coalesced)
+
+    coalesced["coalesced_to"] = "cr_" + "a" * 64
+    assert CaptureReceipt.from_mapping(coalesced).coalesced_to.startswith("cr_")
+
+
+@pytest.mark.parametrize(
     ("source", "target"),
     [
         ("discovered", "queued"), ("discovered", "excluded"),
@@ -197,11 +309,49 @@ def test_receipt_error_coalescing_and_exclusion_fields_are_status_conditioned():
         ("retryable", "queued"), ("retryable", "deferred_budget"),
         ("retryable", "failed"), ("retryable", "quarantined"),
         ("deferred_budget", "queued"), ("deferred_budget", "excluded"),
-        ("failed", "queued"), ("quarantined", "queued"),
     ],
 )
 def test_capture_status_graph_accepts_every_legal_transition(source: str, target: str):
     validate_capture_transition(source, target)
+
+
+@pytest.mark.parametrize("source", ["failed", "quarantined"])
+@pytest.mark.parametrize(
+    "reopen_reason", ["explicit_retry", "compatible_version_upgrade"]
+)
+def test_parked_status_reopens_only_with_an_explicit_reason(
+    source: str, reopen_reason: str
+):
+    validate_capture_transition(source, "queued", reopen_reason=reopen_reason)
+
+
+@pytest.mark.parametrize("source", ["failed", "quarantined"])
+@pytest.mark.parametrize("reopen_reason", [None, "automatic_retry", ""])
+def test_parked_status_rejects_missing_or_invalid_reopen_reason(
+    source: str, reopen_reason: str | None
+):
+    with pytest.raises(ValueError, match="reopen_reason"):
+        validate_capture_transition(source, "queued", reopen_reason=reopen_reason)
+
+
+def test_non_reopen_transition_rejects_pseudo_authorization():
+    with pytest.raises(ValueError, match="reopen_reason"):
+        validate_capture_transition(
+            "discovered", "queued", reopen_reason="explicit_retry"
+        )
+
+
+@pytest.mark.parametrize(
+    "source,target,reopen_reason",
+    [([], "queued", None), ("failed", {}, None), ("failed", "queued", [])],
+)
+def test_transition_validation_rejects_container_enum_values_with_value_error(
+    source, target, reopen_reason
+):
+    with pytest.raises(ValueError):
+        validate_capture_transition(
+            source, target, reopen_reason=reopen_reason
+        )
 
 
 @pytest.mark.parametrize(
@@ -265,6 +415,34 @@ def test_observation_fingerprint_is_canonical_and_excludes_ordinal_and_source_me
     assert observation_id_for(first["receipt_id"], first_fingerprint).startswith("co_")
 
 
+def test_observation_persists_statement_and_scopes_in_nfc():
+    value = observation_mapping()
+    value["statement"] = "Cafe\u0301 preference"
+    value["scopes"] = ["re\u0301sume\u0301"]
+    value["observation_fingerprint"] = observation_fingerprint_for(value)
+    value["observation_id"] = observation_id_for(
+        value["receipt_id"], value["observation_fingerprint"]
+    )
+
+    observation = CollectedObservation.from_mapping(value)
+
+    assert observation.statement == "Café preference"
+    assert observation.scopes == ("résumé",)
+    assert unicodedata.is_normalized("NFC", observation.to_mapping()["statement"])
+
+
+def test_observation_rejects_scopes_that_duplicate_after_nfc_normalization():
+    value = observation_mapping()
+    value["scopes"] = ["café", "cafe\u0301"]
+    value["observation_fingerprint"] = observation_fingerprint_for(value)
+    value["observation_id"] = observation_id_for(
+        value["receipt_id"], value["observation_fingerprint"]
+    )
+
+    with pytest.raises(ValueError, match="unique.*NFC"):
+        CollectedObservation.from_mapping(value)
+
+
 def test_capture_ids_are_full_sha256_and_stable_across_mapping_order_and_exact_replay():
     key = CaptureKey(
         adapter_id="synthetic_adapter",
@@ -296,17 +474,53 @@ def test_strict_objects_reject_ids_that_do_not_match_their_canonical_inputs():
     with pytest.raises(ValueError, match="observation_id does not match"):
         CollectedObservation.from_mapping(observation)
 
+    cross_key = observation_mapping()
+    cross_key["source"]["task_id"] = "another-task"
+    cross_key["observation_fingerprint"] = observation_fingerprint_for(cross_key)
+    cross_key["observation_id"] = observation_id_for(
+        cross_key["receipt_id"], cross_key["observation_fingerprint"]
+    )
+    with pytest.raises(ValueError, match="receipt_id does not match"):
+        CollectedObservation.from_mapping(cross_key)
+
+
+def test_ledger_receipt_id_is_bound_to_its_capture_key():
+    key = CaptureKey("adapter", "root", "task", "revision")
+    valid = {
+        "schema_version": CAPTURE_SCHEMA_VERSION,
+        "capture_key": key.to_mapping(),
+        "receipt_id": receipt_id_for(key),
+        "discovered_at": UTC,
+        "processed_at": None,
+        "status": "discovered",
+    }
+    assert LedgerEntry.from_mapping(valid).to_mapping() == valid
+
+    invalid = deepcopy(valid)
+    invalid["capture_key"]["task_id"] = "another-task"
+    with pytest.raises(ValueError, match="receipt_id does not match"):
+        LedgerEntry.from_mapping(invalid)
+
 
 def test_control_plane_contracts_reject_content_and_absolute_paths():
+    key = CaptureKey("adapter", "root", "task", "revision")
     tombstone = CaptureSuppressionTombstone.from_mapping(
         {
             "schema_version": CAPTURE_SCHEMA_VERSION,
-            "capture_key": CaptureKey("adapter", "root", "task", "revision").to_mapping(),
+            "tombstone_id": tombstone_id_for(key),
+            "capture_key": key.to_mapping(),
             "created_at": UTC,
             "reason": "user_forget",
         }
     )
     assert tombstone.reason == "user_forget"
+    assert tombstone.tombstone_id == tombstone_id_for(key)
+    assert tombstone.to_mapping()["tombstone_id"].startswith("ct_")
+
+    invalid_tombstone = tombstone.to_mapping()
+    invalid_tombstone["tombstone_id"] = "ct_" + "a" * 64
+    with pytest.raises(ValueError, match="tombstone_id does not match"):
+        CaptureSuppressionTombstone.from_mapping(invalid_tombstone)
 
     with pytest.raises(ValueError, match="absolute path"):
         SourceQuarantine.from_mapping(

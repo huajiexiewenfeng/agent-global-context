@@ -18,6 +18,7 @@ from agc_runtime.capture_contracts import (
     CaptureSuppressionTombstone,
     CollectedObservation,
     LedgerEntry,
+    RevisionRef,
     SourceQuarantine,
 )
 from agc_runtime.contracts import ToolResponse
@@ -174,6 +175,7 @@ def _validate_capture(paths: MemoryPaths, issues: list[dict[str, str]]) -> None:
         paths.capture.receipts: CaptureReceipt.from_mapping,
         paths.capture.observations: CollectedObservation.from_mapping,
         paths.capture.ledger: LedgerEntry.from_mapping,
+        paths.capture.census: RevisionRef.from_mapping,
         paths.capture.leases: CaptureLease.from_mapping,
         paths.capture.quarantines: SourceQuarantine.from_mapping,
         paths.capture.tombstones: CaptureSuppressionTombstone.from_mapping,
@@ -191,6 +193,23 @@ def _validate_capture(paths: MemoryPaths, issues: list[dict[str, str]]) -> None:
                 parser(json.loads(strict_read_text(path)))
             except (ValueError, OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
                 _capture_issue(issues, paths, path, f"invalid Capture object: {error}")
+    unsupported_directories = (
+        paths.capture.conflicts,
+        paths.capture.dirty,
+        paths.capture.journals,
+        paths.capture.staging,
+        paths.capture.indexes,
+        paths.capture.scan_state,
+        paths.capture.budgets,
+    )
+    for directory in unsupported_directories:
+        if not directory.exists():
+            continue
+        for path in sorted(directory.rglob("*")):
+            if path.is_file():
+                _capture_issue(
+                    issues, paths, path, "unsupported Capture payload for schema version 1"
+                )
 
 
 def _capture_issue(

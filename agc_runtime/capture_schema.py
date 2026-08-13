@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from datetime import datetime
 from typing import Any
 
@@ -10,7 +11,7 @@ from agc_runtime.capture_contracts import (
     CAPTURE_SCHEMA_VERSION, CAPTURE_STATUSES, CaptureKey, CaptureLease,
     CaptureReceipt, CaptureSuppressionTombstone, CollectedObservation, LedgerEntry,
     RevisionRef, SanitizedError, SourceQuarantine, TokenUsage,
-    observation_fingerprint_for, observation_id_for, receipt_id_for,
+    observation_fingerprint_for, observation_id_for, receipt_id_for, tombstone_id_for,
 )
 
 
@@ -22,6 +23,7 @@ _CATEGORIES = frozenset({"personal_growth", "research", "learning", "project", "
 _KINDS = frozenset({"identity", "principle", "preference", "interest", "capability", "goal", "pattern", "context"})
 _CONFIDENCE = frozenset({"tentative", "observed", "confirmed", "disputed"})
 _SIGNAL_TYPES = frozenset({"explicit_user_state", "decision_or_constraint", "verified_outcome", "reusable_method", "learning_change", "research_change", "capability_evidence", "open_commitment"})
+_MACHINE_CODE = re.compile(r"^[a-z][a-z0-9_.-]{0,63}$")
 
 
 def _strict(value: Any, name: str, fields: set[str]) -> dict[str, Any]:
@@ -37,7 +39,7 @@ def _strict(value: Any, name: str, fields: set[str]) -> dict[str, Any]:
 
 
 def _schema(value: Any, name: str) -> int:
-    if value != CAPTURE_SCHEMA_VERSION:
+    if type(value) is not int or value != CAPTURE_SCHEMA_VERSION:
         raise ValueError(f"{name}.schema_version must be {CAPTURE_SCHEMA_VERSION}")
     return value
 
@@ -71,7 +73,7 @@ def _integer(value: Any, name: str, *, minimum: int = 0) -> int:
 
 
 def _enum(value: Any, name: str, choices: frozenset[str]) -> str:
-    if value not in choices:
+    if not isinstance(value, str) or value not in choices:
         raise ValueError(f"{name} must be one of {sorted(choices)}")
     return value
 
@@ -81,6 +83,24 @@ def _hash(value: Any, name: str, *, nullable: bool = False) -> str | None:
         return None
     if not isinstance(value, str) or not _HASH.fullmatch(value):
         raise ValueError(f"{name} must be a lowercase SHA-256 hash")
+    return value
+
+
+def _machine_code(value: Any, name: str, *, nullable: bool = False) -> str | None:
+    if value is None and nullable:
+        return None
+    if not isinstance(value, str) or not _MACHINE_CODE.fullmatch(value):
+        raise ValueError(f"{name} must be a 1-64 character machine-code slug")
+    return value
+
+
+def _capture_id(value: Any, name: str, prefix: str) -> str:
+    if (
+        not isinstance(value, str)
+        or not value.startswith(prefix)
+        or not _HASH.fullmatch(value[len(prefix):])
+    ):
+        raise ValueError(f"{name} must be a canonical {prefix} SHA-256 id")
     return value
 
 
@@ -117,7 +137,7 @@ def sanitized_error_from_mapping(value: Any) -> SanitizedError:
     root = _strict(value, "SanitizedError", {"stage", "code", "retryable"})
     if not isinstance(root["retryable"], bool):
         raise ValueError("SanitizedError.retryable must be a boolean")
-    return SanitizedError(_opaque(root["stage"], "SanitizedError.stage"), _opaque(root["code"], "SanitizedError.code"), root["retryable"])
+    return SanitizedError(_machine_code(root["stage"], "SanitizedError.stage"), _machine_code(root["code"], "SanitizedError.code"), root["retryable"])
 
 
 def _optional_pair(root: dict[str, Any], left: str, right: str, name: str) -> tuple[str | None, str | None]:
@@ -132,9 +152,7 @@ def capture_receipt_from_mapping(value: Any) -> CaptureReceipt:
     fields = {"schema_version", "receipt_id", "adapter_id", "adapter_version", "source_schema_version", "source_root_id", "task_id", "revision_id", "identity_quality", "source_fingerprint", "source_hash_schema_version", "capsule_hash", "capsule_schema_version", "settled_at", "discovered_at", "updated_at", "status", "attempt_count", "next_retry_at", "extractor_id", "extractor_version", "extractor_schema_version", "taxonomy_version", "observation_count", "filtered_counts", "duplicate_suppression_count", "token_usage", "usage_quality", "redacted_by_forget", "forgotten_observation_count", "zero_reason", "sanitized_error", "coalesced_to", "exclusion_reason"}
     root = _strict(value, "CaptureReceipt", fields)
     schema_version = _schema(root["schema_version"], "CaptureReceipt")
-    receipt_id = _opaque(root["receipt_id"], "CaptureReceipt.receipt_id")
-    if not receipt_id.startswith("cr_") or not _HASH.fullmatch(receipt_id[3:]):
-        raise ValueError("CaptureReceipt.receipt_id must be a cr_ SHA-256 id")
+    receipt_id = _capture_id(root["receipt_id"], "CaptureReceipt.receipt_id", "cr_")
     key = CaptureKey(
         _opaque(root["adapter_id"], "CaptureReceipt.adapter_id"),
         _opaque(root["source_root_id"], "CaptureReceipt.source_root_id"),
@@ -185,10 +203,17 @@ def capture_receipt_from_mapping(value: Any) -> CaptureReceipt:
     sanitized = root["sanitized_error"]
     if status in {"retryable", "failed", "quarantined"}:
         sanitized = sanitized_error_from_mapping(sanitized)
+        expected_retryable = status == "retryable"
+        if sanitized.retryable is not expected_retryable:
+            raise ValueError(
+                "sanitized_error.retryable must match the CaptureReceipt status"
+            )
     elif sanitized is not None:
         raise ValueError("sanitized_error is allowed only for retryable, failed, or quarantined receipts")
-    coalesced_to = _opaque(root["coalesced_to"], "CaptureReceipt.coalesced_to", nullable=True)
-    exclusion_reason = _opaque(root["exclusion_reason"], "CaptureReceipt.exclusion_reason", nullable=True)
+    coalesced_to = root["coalesced_to"]
+    if coalesced_to is not None:
+        coalesced_to = _capture_id(coalesced_to, "CaptureReceipt.coalesced_to", "cr_")
+    exclusion_reason = _machine_code(root["exclusion_reason"], "CaptureReceipt.exclusion_reason", nullable=True)
     if (status == "coalesced") != (coalesced_to is not None):
         raise ValueError("coalesced_to is required only for coalesced receipts")
     if (status == "excluded") != (exclusion_reason is not None):
@@ -214,26 +239,40 @@ def collected_observation_from_mapping(value: Any) -> CollectedObservation:
     statement = root["statement"]
     if not isinstance(statement, str) or not statement.strip():
         raise ValueError("CollectedObservation.statement must be a non-empty string")
+    statement = unicodedata.normalize("NFC", statement)
     if len(statement) > 300:
         raise ValueError("CollectedObservation.statement must be at most 300 Unicode code points")
     scopes = root["scopes"]
-    if not isinstance(scopes, list) or not scopes or any(not isinstance(item, str) or not item for item in scopes) or len(set(scopes)) != len(scopes):
+    if not isinstance(scopes, list) or not scopes or any(not isinstance(item, str) or not item for item in scopes):
         raise ValueError("CollectedObservation.scopes must be a non-empty unique list of strings")
+    normalized_scopes = tuple(unicodedata.normalize("NFC", item) for item in scopes)
+    if len(set(normalized_scopes)) != len(normalized_scopes):
+        raise ValueError("CollectedObservation.scopes must be unique after NFC normalization")
     observation_id = _opaque(root["observation_id"], "CollectedObservation.observation_id")
     receipt_id = _opaque(root["receipt_id"], "CollectedObservation.receipt_id")
     fingerprint = _hash(root["observation_fingerprint"], "CollectedObservation.observation_fingerprint")
     if not observation_id.startswith("co_") or not _HASH.fullmatch(observation_id[3:]) or not receipt_id.startswith("cr_") or not _HASH.fullmatch(receipt_id[3:]):
         raise ValueError("CollectedObservation IDs must be canonical capture IDs")
+    source_key = CaptureKey(
+        source_value["adapter_id"], source_value["source_root_id"],
+        source_value["task_id"], source_value["revision_id"],
+    )
+    if receipt_id != receipt_id_for(source_key):
+        raise ValueError("CollectedObservation.receipt_id does not match its source CaptureKey")
     if fingerprint != observation_fingerprint_for(root):
         raise ValueError("CollectedObservation.observation_fingerprint does not match its canonical fields")
     if observation_id != observation_id_for(receipt_id, fingerprint):
         raise ValueError("CollectedObservation.observation_id does not match its receipt and fingerprint")
-    return CollectedObservation(_schema(root["schema_version"], "CollectedObservation"), observation_id, receipt_id, source_value, _integer(root["ordinal"], "CollectedObservation.ordinal"), fingerprint, statement, assertion_value, _enum(root["primary_category"], "CollectedObservation.primary_category", _CATEGORIES), _opaque(root["taxonomy_version"], "CollectedObservation.taxonomy_version"), _enum(root["kind"], "CollectedObservation.kind", _KINDS), tuple(scopes), _opaque(root["project_scope"], "CollectedObservation.project_scope", nullable=True), confidence, _enum(root["sensitivity"], "CollectedObservation.sensitivity", frozenset({"normal", "personal"})), _enum(root["signal_type"], "CollectedObservation.signal_type", _SIGNAL_TYPES), _utc(root["observed_at"], "CollectedObservation.observed_at"), _utc(root["captured_at"], "CollectedObservation.captured_at"), _opaque(root["extractor_version"], "CollectedObservation.extractor_version"), _enum(root["processing_state"], "CollectedObservation.processing_state", frozenset({"collected"})))
+    return CollectedObservation(_schema(root["schema_version"], "CollectedObservation"), observation_id, receipt_id, source_value, _integer(root["ordinal"], "CollectedObservation.ordinal"), fingerprint, statement, assertion_value, _enum(root["primary_category"], "CollectedObservation.primary_category", _CATEGORIES), _opaque(root["taxonomy_version"], "CollectedObservation.taxonomy_version"), _enum(root["kind"], "CollectedObservation.kind", _KINDS), normalized_scopes, _opaque(root["project_scope"], "CollectedObservation.project_scope", nullable=True), confidence, _enum(root["sensitivity"], "CollectedObservation.sensitivity", frozenset({"normal", "personal"})), _enum(root["signal_type"], "CollectedObservation.signal_type", _SIGNAL_TYPES), _utc(root["observed_at"], "CollectedObservation.observed_at"), _utc(root["captured_at"], "CollectedObservation.captured_at"), _opaque(root["extractor_version"], "CollectedObservation.extractor_version"), _enum(root["processing_state"], "CollectedObservation.processing_state", frozenset({"collected"})))
 
 
 def ledger_entry_from_mapping(value: Any) -> LedgerEntry:
     root = _strict(value, "LedgerEntry", {"schema_version", "capture_key", "receipt_id", "discovered_at", "processed_at", "status"})
-    return LedgerEntry(_schema(root["schema_version"], "LedgerEntry"), capture_key_from_mapping(root["capture_key"]), _opaque(root["receipt_id"], "LedgerEntry.receipt_id"), _utc(root["discovered_at"], "LedgerEntry.discovered_at"), _utc(root["processed_at"], "LedgerEntry.processed_at", nullable=True), _enum(root["status"], "LedgerEntry.status", CAPTURE_STATUSES))
+    key = capture_key_from_mapping(root["capture_key"])
+    receipt_id = _opaque(root["receipt_id"], "LedgerEntry.receipt_id")
+    if receipt_id != receipt_id_for(key):
+        raise ValueError("LedgerEntry.receipt_id does not match its CaptureKey")
+    return LedgerEntry(_schema(root["schema_version"], "LedgerEntry"), key, receipt_id, _utc(root["discovered_at"], "LedgerEntry.discovered_at"), _utc(root["processed_at"], "LedgerEntry.processed_at", nullable=True), _enum(root["status"], "LedgerEntry.status", CAPTURE_STATUSES))
 
 
 def capture_lease_from_mapping(value: Any) -> CaptureLease:
@@ -243,11 +282,15 @@ def capture_lease_from_mapping(value: Any) -> CaptureLease:
 
 def source_quarantine_from_mapping(value: Any) -> SourceQuarantine:
     root = _strict(value, "SourceQuarantine", {"schema_version", "adapter_id", "source_root_id", "created_at", "code"})
-    return SourceQuarantine(_schema(root["schema_version"], "SourceQuarantine"), _opaque(root["adapter_id"], "SourceQuarantine.adapter_id"), _opaque(root["source_root_id"], "SourceQuarantine.source_root_id"), _utc(root["created_at"], "SourceQuarantine.created_at"), _opaque(root["code"], "SourceQuarantine.code"))
+    return SourceQuarantine(_schema(root["schema_version"], "SourceQuarantine"), _opaque(root["adapter_id"], "SourceQuarantine.adapter_id"), _opaque(root["source_root_id"], "SourceQuarantine.source_root_id"), _utc(root["created_at"], "SourceQuarantine.created_at"), _machine_code(root["code"], "SourceQuarantine.code"))
 
 
 def capture_suppression_tombstone_from_mapping(value: Any) -> CaptureSuppressionTombstone:
-    root = _strict(value, "CaptureSuppressionTombstone", {"schema_version", "capture_key", "created_at", "reason"})
+    root = _strict(value, "CaptureSuppressionTombstone", {"schema_version", "tombstone_id", "capture_key", "created_at", "reason"})
     if root["reason"] != "user_forget":
         raise ValueError("CaptureSuppressionTombstone.reason must be user_forget")
-    return CaptureSuppressionTombstone(_schema(root["schema_version"], "CaptureSuppressionTombstone"), capture_key_from_mapping(root["capture_key"]), _utc(root["created_at"], "CaptureSuppressionTombstone.created_at"), root["reason"])
+    key = capture_key_from_mapping(root["capture_key"])
+    tombstone_id = _opaque(root["tombstone_id"], "CaptureSuppressionTombstone.tombstone_id")
+    if tombstone_id != tombstone_id_for(key):
+        raise ValueError("CaptureSuppressionTombstone.tombstone_id does not match its CaptureKey")
+    return CaptureSuppressionTombstone(_schema(root["schema_version"], "CaptureSuppressionTombstone"), tombstone_id, key, _utc(root["created_at"], "CaptureSuppressionTombstone.created_at"), root["reason"])

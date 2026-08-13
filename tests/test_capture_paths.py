@@ -1,7 +1,10 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from agc_runtime.admin_service import _managed_directories, dispatch_admin
+from agc_runtime.capture_contracts import CAPTURE_SCHEMA_VERSION, CaptureKey
 from agc_runtime.paths import MemoryPaths
 
 
@@ -53,3 +56,74 @@ def test_admin_validate_strictly_decodes_present_capture_receipts(tmp_path: Path
     assert response.status == "failed"
     assert any("CaptureReceipt" in issue["message"] for issue in response.data["issues"])
     assert all(not Path(issue["path"]).is_absolute() for issue in response.data["issues"])
+
+
+def test_admin_validate_contains_contract_type_errors_as_validation_issues(tmp_path: Path):
+    paths = MemoryPaths.from_root(tmp_path / "memory")
+    dispatch_admin(paths, {"action": "init"})
+    (paths.capture.receipts / "cr_bad.json").write_text(
+        json.dumps({"schema_version": 1, "status": []}), encoding="utf-8"
+    )
+
+    response = dispatch_admin(paths, {"action": "validate"})
+
+    assert response.status == "failed"
+    assert response.error["code"] == "validation_failed"
+    assert any("CaptureReceipt" in issue["message"] for issue in response.data["issues"])
+
+
+def test_admin_validate_strictly_decodes_census_revision_refs(tmp_path: Path):
+    paths = MemoryPaths.from_root(tmp_path / "memory")
+    dispatch_admin(paths, {"action": "init"})
+    revision = {
+        "schema_version": CAPTURE_SCHEMA_VERSION,
+        "capture_key": CaptureKey("adapter", "root", "task", "revision").to_mapping(),
+        "rollout_anchor_id": "turn-anchor",
+        "completed_at": "2026-08-13T12:00:00Z",
+        "locator": "sessions/opaque-turn-token",
+        "identity_quality": "session_id",
+        "adapter_version": "1",
+        "source_schema_version": "1",
+    }
+    (paths.capture.census / "revision.json").write_text(
+        json.dumps(revision), encoding="utf-8"
+    )
+
+    assert dispatch_admin(paths, {"action": "validate"}).status == "accepted"
+
+    revision["unknown"] = "rejected"
+    (paths.capture.census / "revision.json").write_text(
+        json.dumps(revision), encoding="utf-8"
+    )
+    response = dispatch_admin(paths, {"action": "validate"})
+    assert response.status == "failed"
+    assert any("RevisionRef" in issue["message"] for issue in response.data["issues"])
+
+
+@pytest.mark.parametrize(
+    "attribute",
+    [
+        "conflicts",
+        "dirty",
+        "journals",
+        "staging",
+        "indexes",
+        "scan_state",
+        "budgets",
+    ],
+)
+def test_admin_validate_rejects_payloads_in_future_capture_directories(
+    tmp_path: Path, attribute: str
+):
+    paths = MemoryPaths.from_root(tmp_path / "memory")
+    dispatch_admin(paths, {"action": "init"})
+    directory = getattr(paths.capture, attribute)
+    (directory / "payload.json").write_text(
+        '{"private_text":"must never appear in validation"}', encoding="utf-8"
+    )
+
+    response = dispatch_admin(paths, {"action": "validate"})
+
+    assert response.status == "failed"
+    assert any("unsupported Capture payload" in issue["message"] for issue in response.data["issues"])
+    assert "must never appear" not in json.dumps(response.data)
