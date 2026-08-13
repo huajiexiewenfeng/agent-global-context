@@ -2,6 +2,7 @@
 
 import inspect
 
+import agc_runtime.admin_service as admin_service
 import agc_runtime.capture_status_service as capture_status_service
 from agc_runtime.capture_status_service import capture_status
 from agc_runtime.capture_store import root_fingerprint
@@ -70,4 +71,6 @@ def test_direct_admin_api_has_no_host_evidence_injection_surface(tmp_path):
 
     assert response.data["memory_root"]["assessment"] == "not_assessed"
     assert tuple(inspect.signature(dispatch_admin).parameters) == ("paths", "request")
+    assert tuple(inspect.signature(capture_status).parameters) == ("value",)
     assert not hasattr(capture_status_service, "HostBindingEvidence")
+    assert not hasattr(admin_service, "make_host_bound_admin_dispatch")

@@ -21,11 +21,7 @@ def _fingerprint(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
-def capture_status(
-    value: MemoryPaths | Path,
-    *,
-    _host_bound: bool = False,
-) -> dict[str, Any]:
+def capture_status(value: MemoryPaths | Path) -> dict[str, Any]:
     paths = _paths(value)
     config_path = paths.root / "config.yaml"
     config_exists = config_path.exists()
@@ -33,7 +29,6 @@ def capture_status(
     config = load_runtime_config(paths)
     capture = config.capture
     memory_fingerprint = root_fingerprint(paths)
-    memory_assessment = "verified" if _host_bound else "not_assessed"
     reasons: list[str] = []
     if not capture.enabled:
         reasons.append("capture_disabled")
@@ -44,8 +39,7 @@ def capture_status(
         "extractor_capability_not_assessed",
         "route_not_assessed",
     ))
-    if not _host_bound:
-        reasons.append("memory_root_binding_not_assessed")
+    reasons.append("memory_root_binding_not_assessed")
     return {
         "config_source": {
             "kind": "memory_root_config" if config_exists else "runtime_default",
@@ -54,9 +48,9 @@ def capture_status(
         "runtime": {"version": __version__},
         "memory_root": {
             "fingerprint": memory_fingerprint,
-            "assessment": memory_assessment,
-            "matches_host_binding": True if _host_bound else None,
-            "evidence": {"kind": "mcp_memory_root"} if _host_bound else None,
+            "assessment": "not_assessed",
+            "matches_host_binding": None,
+            "evidence": None,
         },
         "source_roots": {
             "configured_count": len(capture.sources),

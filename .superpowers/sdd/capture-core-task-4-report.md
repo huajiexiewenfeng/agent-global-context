@@ -38,9 +38,11 @@ model, network, scheduler, or extractor behavior was added.
   only that binding. Source roots expose configured count plus unavailable
   assessment and an empty ID list. Activation remains false with machine
   reasons; the cursor key exposes only readiness and key ID. Public
-  `dispatch_admin` has no host-evidence parameter; MCP receives a host-bound
-  dispatcher closure at server construction, so request data cannot forge the
-  evidence.
+  `capture_status` and `dispatch_admin` have no host-evidence parameter or
+  factory. Only the `create_server`-local admin handler enhances an already
+  accepted public status response with the MemoryRoot proof captured by that
+  server instance, so request data cannot forge the evidence. Route and
+  extractor assessments remain unchanged and activation remains false.
 - Cursor key bytes are excluded from backup and preserved across restore. This
   is the minimum safe integration needed for the new secret; Task 5 owns any
   future backup-encryption, export, and explicit key-rotation policy.

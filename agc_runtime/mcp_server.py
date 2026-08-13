@@ -13,14 +13,33 @@ if TYPE_CHECKING:
 def create_server(memory_root: Path) -> "MCPServer":
     from mcp.server.mcpserver import MCPServer
 
-    from agc_runtime.admin_service import make_host_bound_admin_dispatch
+    from agc_runtime.admin_service import dispatch_admin
     from agc_runtime.paths import MemoryPaths
     from agc_runtime.read_service import dispatch_read
     from agc_runtime.write_service import dispatch_write
 
     paths = MemoryPaths.from_root(memory_root)
-    dispatch_admin = make_host_bound_admin_dispatch(paths)
     server = MCPServer("agent-global-context")
+
+    def host_bound_admin(request: dict[str, Any]) -> dict[str, Any]:
+        response = dispatch_admin(paths, request).to_dict()
+        if (
+            request.get("action") == "capture_status"
+            and response["status"] == "accepted"
+        ):
+            data = response["data"]
+            data["memory_root"] = {
+                **data["memory_root"],
+                "assessment": "verified",
+                "matches_host_binding": True,
+                "evidence": {"kind": "mcp_memory_root"},
+            }
+            data["activation_reasons"] = [
+                reason
+                for reason in data["activation_reasons"]
+                if reason != "memory_root_binding_not_assessed"
+            ]
+        return response
 
     @server.tool(name="agc.read")
     def agc_read(request: dict[str, Any]) -> dict[str, Any]:
@@ -32,7 +51,7 @@ def create_server(memory_root: Path) -> "MCPServer":
 
     @server.tool(name="agc.admin")
     def agc_admin(request: dict[str, Any]) -> dict[str, Any]:
-        return dispatch_admin(request).to_dict()
+        return host_bound_admin(request)
 
     return server
 

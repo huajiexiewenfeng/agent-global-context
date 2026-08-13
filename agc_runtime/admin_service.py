@@ -733,11 +733,11 @@ def _handle_migrate(
 
 
 def _handle_capture_status(
-    paths: MemoryPaths, _request: dict[str, Any], *, _host_bound: bool = False
+    paths: MemoryPaths, _request: dict[str, Any]
 ) -> ToolResponse:
     return ToolResponse(
         tool="agc.admin", action="capture_status", status="accepted",
-        data=capture_status(paths, _host_bound=_host_bound),
+        data=capture_status(paths),
     )
 
 
@@ -752,7 +752,7 @@ _HANDLERS = {
 }
 
 
-def _dispatch_admin(paths: MemoryPaths, request: Any, *, _host_bound: bool) -> ToolResponse:
+def dispatch_admin(paths: MemoryPaths, request: Any) -> ToolResponse:
     if not isinstance(request, dict):
         return _failed("admin", "invalid_request", "request must be a mapping")
     action = request.get("action")
@@ -764,7 +764,7 @@ def _dispatch_admin(paths: MemoryPaths, request: Any, *, _host_bound: bool) -> T
         )
     try:
         if action == "capture_status":
-            return _handle_capture_status(paths, request, _host_bound=_host_bound)
+            return _handle_capture_status(paths, request)
         return _HANDLERS[action](paths, request)
     except (ValueError, KeyError, TypeError, json.JSONDecodeError):
         if action == "capture_status":
@@ -774,16 +774,3 @@ def _dispatch_admin(paths: MemoryPaths, request: Any, *, _host_bound: bool) -> T
         if action == "capture_status":
             return _failed(action, "invalid_runtime_config", "runtime configuration is invalid")
         return _failed(action, "admin_failed", "admin operation failed")
-
-
-def dispatch_admin(paths: MemoryPaths, request: Any) -> ToolResponse:
-    return _dispatch_admin(paths, request, _host_bound=False)
-
-
-def make_host_bound_admin_dispatch(paths: MemoryPaths):
-    """Create an admin handler whose MemoryRoot was bound by its host."""
-
-    def dispatch(request: Any) -> ToolResponse:
-        return _dispatch_admin(paths, request, _host_bound=True)
-
-    return dispatch

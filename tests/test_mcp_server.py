@@ -268,6 +268,15 @@ def test_mcp_capture_status_proves_only_the_bound_memory_root(tmp_path):
     assert data["memory_root"]["assessment"] == "verified"
     assert data["memory_root"]["matches_host_binding"] is True
     assert data["memory_root"]["evidence"] == {"kind": "mcp_memory_root"}
+    assert "memory_root_binding_not_assessed" not in data["activation_reasons"]
+    assert {
+        "capture_disabled",
+        "capture_mode_off",
+        "source_roots_unavailable",
+        "extractor_capability_not_assessed",
+        "route_not_assessed",
+    }.issubset(data["activation_reasons"])
+    assert data["activation_ready"] is False
     assert data["route"]["assessment"] == "not_assessed"
     assert data["extractor_boundary"]["capability_assessment"] == "not_assessed"
     assert data["cursor_key"]["state"] == "ready"
