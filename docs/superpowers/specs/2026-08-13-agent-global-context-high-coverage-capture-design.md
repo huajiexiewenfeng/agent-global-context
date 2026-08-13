@@ -544,7 +544,7 @@ Observation 幂等键：
 - Backup 包含有效 Receipt、Observation、Ledger 与必要 Tombstone；
 - 不包含 Capsule、transcript 副本、staged 临时内容或异常堆栈；
 - Restore 后重新校验 Capture Key 唯一性、Receipt/Observation 引用、Ledger 一致性和普通 Recall 隔离；
-- 旧版本不认识 Capture Schema 时拒绝不安全 restore，而不是把 Observation 混入 Memory。
+- 所有允许产生 Capture 数据的 Runtime 都带 manifest/Capture Schema compatibility fence，并拒绝不支持的版本，而不是把 Observation 混入 Memory。已发布的 pre-Capture 0.2.0 不具备该 fence；一旦产生 Capture 数据，Host 必须阻止回退到 0.2.0，并保留 Capture-capable Runtime 提供 read/status/forget。
 
 ### 10.3 Capture Hard Forget
 
@@ -694,7 +694,7 @@ parked = failed + quarantined
 | AC-14 Controls | enabled/paused、task/project exclude 与 scanner-only 均可诊断、可恢复；excluded 无内容持久化。 |
 | AC-15 Token | 七天回填按实际或 reserved usage 累计不超过 100,000；余额不足的 Revision 为 deferred_budget。 |
 | AC-16 Read Views | capture overview/search/get 的过滤、稳定排序、分页、空结果、来源限制与敏感过滤都有契约测试。 |
-| AC-17 Backup/Restore | Capture 数据 round-trip 后 Schema、引用、Ledger、幂等和 Recall 隔离保持成立。 |
+| AC-17 Backup/Restore | Capture 数据 round-trip 后 Schema、引用、Ledger、幂等和 Recall 隔离保持成立；Capture-capable Runtime 拒绝未知 Schema，已有 Capture 数据时二进制降级到 pre-Capture 0.2.0 被阻止。 |
 | AC-18 Hard Forget | Observation 级 forget 后 Receipt 计数与 redaction 不变量成立；Revision 级 forget 后只保留 content-free suppression tombstone。两者在所有 AGC 受管正文和内容摘要中的命中均为 0，且原 Codex Task 不受影响。 |
 | AC-19 Format Drift | 未知 transcript identity/completion 形态 fail closed：有稳定 Key 时写 quarantined Receipt，无稳定 Key 时写 Source Quarantine 且 Source Health=degraded；adapter/hash schema 升级不被误判成同版本来源冲突。 |
 | AC-20 Release Gate | 新增测试、完整既有测试、package、installer、部署 Profile 诊断、严格 UTF-8/no-BOM 与 `git diff --check` 全部通过并记录原始证据。 |
@@ -740,6 +740,7 @@ Rollback：
 
 - 关闭 Hook、Runner 与 Scanner 的新处理；
 - 保留现有 Capture 数据的只读查看与 Hard Forget 能力；
+- 已产生 Capture 数据后保留 Capture-capable Runtime，不回退到无法理解 Capture Schema 的 pre-Capture 0.2.0；
 - 不回滚或修改 Formal Memory，因为 Phase 1 从未自动写它；
 - 恢复处理时从 Ledger 和 Receipt 继续，不重新扫描全部历史；
 - 如需删除 Capture 数据，必须走用户授权的 Hard Forget，不用卸载脚本静默删除。

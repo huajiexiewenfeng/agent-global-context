@@ -3,17 +3,25 @@
 ## Context Handoff
 
 - lifecycle_session: agc-capture-coverage-mvp
-- user_intent: Continue from the confirmed Capture Coverage target into a reviewable written specification, then prepare an implementation plan only after written-spec approval.
+- user_intent: Continue from the approved Capture Coverage written specification into dependency-ordered implementation plans, then pause for an execution-mode decision before production or test changes.
 - active_sources:
   - `../requirements/agc-capture-coverage-mvp.md`
   - `../../docs/superpowers/specs/2026-07-28-agent-global-context-v2-design.md`
   - `../../docs/superpowers/specs/2026-08-13-agent-global-context-high-coverage-capture-design.md`
+  - `../../docs/superpowers/plans/2026-08-13-agent-global-context-capture-core.md`
+  - `../../docs/superpowers/plans/2026-08-13-agent-global-context-codex-source-census.md`
+  - `../../docs/superpowers/plans/2026-08-13-agent-global-context-capture-extractor-runner.md`
+  - `../../docs/superpowers/plans/2026-08-13-agent-global-context-capture-host-rollout.md`
 - active_scope:
   - `.llm-wiki/requirements/agc-capture-coverage-mvp.md`
   - `.llm-wiki/working-context/agc-capture-coverage-mvp.md`
   - `.llm-wiki/artifacts/index.md`
   - `.llm-wiki/log.md`
   - `docs/superpowers/specs/2026-08-13-agent-global-context-high-coverage-capture-design.md`
+  - `docs/superpowers/plans/2026-08-13-agent-global-context-capture-core.md`
+  - `docs/superpowers/plans/2026-08-13-agent-global-context-codex-source-census.md`
+  - `docs/superpowers/plans/2026-08-13-agent-global-context-capture-extractor-runner.md`
+  - `docs/superpowers/plans/2026-08-13-agent-global-context-capture-host-rollout.md`
 - read_only_scope:
   - `agc_runtime/`
   - `tests/`
@@ -23,12 +31,12 @@
   - `README.zh.md`
   - current Codex Host configuration and task-source metadata
 - candidate_scope:
-  - Capture Runtime modules, Source Adapter, Runner/Scanner entry points, installer/config changes, focused Recall contract fixes, and tests named by the future confirmed implementation plan
+  - exact Runtime, Source Adapter, Scanner/Runner, host, installer, documentation, and test files named by the four proposed implementation plans
 - excluded_scope:
   - production and test edits before plan confirmation
   - Observation aggregation, Candidate/Formal Memory mutation, semantic Recall changes, Trace/Eval/Loop, external memory engines, and full-history replay
-- current_gate: written specification review
-- requested_stage_or_bridge: brainstorming full-spec revision, followed by writing-plans only after user review
+- current_gate: implementation plan review and execution-mode selection
+- requested_stage_or_bridge: select Subagent-Driven Development or Inline Execution; production/test work starts only after that choice
 - constraints:
   - current task behavior remains failure-open
   - foreground Hook performs no LLM, network, transcript parsing, or formal-memory work
@@ -39,9 +47,9 @@
 
 ## Scope Lock
 
-- locked_active_scope: documentation files listed under `active_scope`
+- locked_active_scope: planning and lifecycle documentation files listed under `active_scope`
 - locked_read_only_scope: existing Runtime, tests, installers, Skills, README, and Host evidence
-- locked_candidate_scope: implementation files selected by a later confirmed plan
+- locked_candidate_scope: implementation files and tests named by the four proposed plans
 - locked_excluded_scope: production implementation in the written-spec revision; Phase 2 aggregation/promotion; Phase 3 application evaluation
 - accepted_assumptions:
   - Hook delivery is an optimization and Scanner reconciliation is the coverage authority.
@@ -59,9 +67,9 @@
 
 ## Execution Status
 
-- requirement: clarified
-- written_spec: active
-- implementation_plan: pending written-spec review
+- requirement: planned
+- written_spec: approved
+- implementation_plan: proposed and complete
 - development: not started
 - testing: not started
-- next_gate: user review of the committed written specification
+- next_gate: user selects Subagent-Driven Development or Inline Execution

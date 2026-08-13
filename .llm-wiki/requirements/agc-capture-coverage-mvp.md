@@ -3,7 +3,7 @@
 ## Summary
 
 - title: AGC Codex Task Revision Capture Coverage MVP
-- status: clarified
+- status: planned
 - flow_id: agc-capture-coverage-mvp
 - why: AGC can govern and recall formal memories, but it cannot prove that completed Codex task revisions were checked for durable signals. The system currently cannot distinguish no useful signal from capture not running or failing.
 - changes: Add a failure-open side-channel capture plane that discovers every in-scope main-task revision, records a truthful Capture Receipt, stores zero to eight safe classified Collected Observations, and exposes read-only capture coverage views. Capture data never enters ordinary Recall; pre-existing Recall lifecycle and budget defects are corrected as an activation gate.
@@ -60,14 +60,19 @@
 14. Runner concurrency defaults to one, supports pause/backpressure, and reports discovered, complete, zero-observation, deferred, retryable, failed, quarantined, coalesced, token, and duplicate-suppression counts.
 15. The active profile supports global pause plus explicit project/task exclusions. Exclusion decisions create metadata-only state and do not persist excluded task content.
 16. Re-running the seven-day backfill stays within the confirmed `100,000` total model-token ceiling and does not expand to older history without a new user decision.
-17. Capture backup/restore preserves schema, references, idempotency, and Recall isolation; an older Runtime rejects an unknown Capture schema instead of importing it as memory.
+17. Capture backup/restore preserves schema, references, idempotency, and Recall isolation. Every Capture-capable Runtime rejects unsupported Capture schema; once Capture data exists, host rollback keeps a Capture-capable Runtime and blocks binary downgrade to the pre-Capture 0.2.0 Runtime.
 18. User-authorized Capture Hard Forget removes Observation content and content-derived summaries from every AGC-managed copy. Observation-level forget transactionally redacts its Receipt; Revision-level forget leaves only a content-free suppression tombstone. Both leave the original Codex task unchanged.
 
 ## Plan
 
-- active_plan: none
-- status: none
-- evidence: Written design review must pass before `writing-plans` creates the execution plan.
+- active_plan:
+  - `docs/superpowers/plans/2026-08-13-agent-global-context-capture-core.md`
+  - `docs/superpowers/plans/2026-08-13-agent-global-context-codex-source-census.md`
+  - `docs/superpowers/plans/2026-08-13-agent-global-context-capture-extractor-runner.md`
+  - `docs/superpowers/plans/2026-08-13-agent-global-context-capture-host-rollout.md`
+- status: proposed
+- execution: awaiting user selection between Subagent-Driven Development and Inline Execution
+- evidence: The user approved continuation after written-spec review; four dependency-ordered TDD plans now map AC-01 through AC-20 to independently runnable gates.
 
 ## External Dependencies
 
@@ -86,15 +91,15 @@
 | Step | Status | Evidence | Updated |
 |---|---|---|---|
 | source | done | confirmed v2 North Star, current Runtime evidence, and 2026-08-13 user decisions | 2026-08-13 |
-| design | active | `docs/superpowers/specs/2026-08-13-agent-global-context-high-coverage-capture-design.md` under written-spec revision | 2026-08-13 |
-| plan | pending | waiting for written-spec review | 2026-08-13 |
+| design | done | approved written specification in `docs/superpowers/specs/2026-08-13-agent-global-context-high-coverage-capture-design.md` | 2026-08-13 |
+| plan | done | four dependency-ordered TDD plans with AC-01 through AC-20 traceability | 2026-08-13 |
 | development | pending |  | 2026-08-13 |
 | testing | pending |  | 2026-08-13 |
 | archive | pending |  | 2026-08-13 |
 
 ## Open Questions
 
-- None blocking written-spec review. File-level implementation decomposition remains intentionally deferred until the written specification is approved.
+- Execution mode is not yet selected. Real-profile Scanner enablement, Hook trust, Shadow Backfill, and continuous Runner activation remain separate explicit human gates even after implementation.
 
 ## Notes
 

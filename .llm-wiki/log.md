@@ -12,6 +12,16 @@
   backup/restore, Hard Forget, token accounting, and foreground latency gates.
 - Registered the Change Brief and design for user written-spec review. Planning,
   production implementation, deployment, and Capture activation have not started.
+- The user approved continuation after written-spec review. Split implementation
+  into four dependency-ordered TDD plans: deterministic core, Codex source/Census,
+  Extractor/Runner, and Windows host rollout.
+- Mapped AC-01 through AC-20 to independently runnable tests and preserved four
+  later human gates: real Scanner enablement, Hook trust, Shadow Backfill, and
+  continuous Runner activation.
+- Corrected rollback compatibility: released 0.2.0 cannot retroactively reject a
+  future Capture schema, so post-data rollback disables processing while retaining
+  a Capture-capable Runtime for read/status/forget instead of binary downgrade.
+- Production code, tests, installation, and real-profile Capture remain unchanged.
 
 ## 2026-08-11 — agc-recall-consistency-filter-validation
 
