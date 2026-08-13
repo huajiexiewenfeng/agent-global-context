@@ -35,8 +35,8 @@
 - excluded_scope:
   - production and test edits before plan confirmation
   - Observation aggregation, Candidate/Formal Memory mutation, semantic Recall changes, Trace/Eval/Loop, external memory engines, and full-history replay
-- current_gate: implementation plan review and execution-mode selection
-- requested_stage_or_bridge: select Subagent-Driven Development or Inline Execution; production/test work starts only after that choice
+- current_gate: Capture Core Task 1 implementation
+- requested_stage_or_bridge: Subagent-Driven Development directly on `main`, with per-task TDD and independent review
 - constraints:
   - current task behavior remains failure-open
   - foreground Hook performs no LLM, network, transcript parsing, or formal-memory work
@@ -69,7 +69,7 @@
 
 - requirement: planned
 - written_spec: approved
-- implementation_plan: proposed and complete
-- development: not started
+- implementation_plan: confirmed
+- development: active on Capture Core Task 1
 - testing: not started
-- next_gate: user selects Subagent-Driven Development or Inline Execution
+- next_gate: Capture Core Task 1 RED/GREEN, task review, and focused commit

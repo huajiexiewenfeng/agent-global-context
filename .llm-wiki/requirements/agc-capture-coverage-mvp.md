@@ -70,9 +70,9 @@
   - `docs/superpowers/plans/2026-08-13-agent-global-context-codex-source-census.md`
   - `docs/superpowers/plans/2026-08-13-agent-global-context-capture-extractor-runner.md`
   - `docs/superpowers/plans/2026-08-13-agent-global-context-capture-host-rollout.md`
-- status: proposed
-- execution: awaiting user selection between Subagent-Driven Development and Inline Execution
-- evidence: The user approved continuation after written-spec review; four dependency-ordered TDD plans now map AC-01 through AC-20 to independently runnable gates.
+- status: confirmed
+- execution: Subagent-Driven Development in the current session, directly on `main`
+- evidence: On 2026-08-13 the user selected option 1, then explicitly directed implementation on `main` after the isolation prompt.
 
 ## External Dependencies
 
@@ -93,13 +93,13 @@
 | source | done | confirmed v2 North Star, current Runtime evidence, and 2026-08-13 user decisions | 2026-08-13 |
 | design | done | approved written specification in `docs/superpowers/specs/2026-08-13-agent-global-context-high-coverage-capture-design.md` | 2026-08-13 |
 | plan | done | four dependency-ordered TDD plans with AC-01 through AC-20 traceability | 2026-08-13 |
-| development | pending |  | 2026-08-13 |
+| development | active | user selected Subagent-Driven Development and explicitly authorized direct work on `main` | 2026-08-13 |
 | testing | pending |  | 2026-08-13 |
 | archive | pending |  | 2026-08-13 |
 
 ## Open Questions
 
-- Execution mode is not yet selected. Real-profile Scanner enablement, Hook trust, Shadow Backfill, and continuous Runner activation remain separate explicit human gates even after implementation.
+- Real-profile Scanner enablement, Hook trust, Shadow Backfill, and continuous Runner activation remain separate explicit human gates even after implementation.
 
 ## Notes
 
