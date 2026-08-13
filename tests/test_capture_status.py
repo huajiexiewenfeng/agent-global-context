@@ -1,5 +1,8 @@
 """Contract tests for Capture status diagnostics."""
 
+import inspect
+
+import agc_runtime.capture_status_service as capture_status_service
 from agc_runtime.capture_status_service import capture_status
 from agc_runtime.capture_store import root_fingerprint
 from agc_runtime.admin_service import dispatch_admin
@@ -51,3 +54,20 @@ def test_capture_status_invalid_config_has_fixed_content_safe_machine_error(tmp_
     }
     assert "secret-marker" not in str(response.to_dict())
     assert str(paths.root) not in str(response.to_dict())
+
+
+def test_direct_admin_api_has_no_host_evidence_injection_surface(tmp_path):
+    paths = MemoryPaths.from_root(tmp_path / "memory")
+
+    response = dispatch_admin(
+        paths,
+        {
+            "action": "capture_status",
+            "host_binding": "mcp_memory_root",
+            "root_fingerprint": root_fingerprint(paths),
+        },
+    )
+
+    assert response.data["memory_root"]["assessment"] == "not_assessed"
+    assert tuple(inspect.signature(dispatch_admin).parameters) == ("paths", "request")
+    assert not hasattr(capture_status_service, "HostBindingEvidence")

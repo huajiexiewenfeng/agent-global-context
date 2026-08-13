@@ -28,11 +28,19 @@ model, network, scheduler, or extractor behavior was added.
   The read service no longer scans the private Capture layout.
 - Missing and corrupt Capture gets return fixed machine errors without paths,
   statements, raw exception text, or corrupt object content.
+- A read attempted while the Capture writer owns the root returns the typed,
+  fixed `capture_read_busy` machine error. A read against a nonexistent Capture
+  layout returns an empty snapshot without creating the layout; an existing
+  layout still uses the shared exclusive writer lock as a temporary snapshot
+  guard because Windows has no portable shared-lock primitive in this runtime.
 - Direct status marks MemoryRoot binding, routes, and extractor capability as
   `not_assessed`. MCP supplies explicit MemoryRoot binding evidence and proves
   only that binding. Source roots expose configured count plus unavailable
   assessment and an empty ID list. Activation remains false with machine
-  reasons; the cursor key exposes only readiness and key ID.
+  reasons; the cursor key exposes only readiness and key ID. Public
+  `dispatch_admin` has no host-evidence parameter; MCP receives a host-bound
+  dispatcher closure at server construction, so request data cannot forge the
+  evidence.
 - Cursor key bytes are excluded from backup and preserved across restore. This
   is the minimum safe integration needed for the new secret; Task 5 owns any
   future backup-encryption, export, and explicit key-rotation policy.
@@ -47,7 +55,7 @@ pytest tests/test_capture_read_service.py -q
 # Final focused Capture read/status/MCP/admin
 pytest tests/test_capture_read_service.py tests/test_capture_status.py \
   tests/test_mcp_server.py tests/test_admin_service.py -q
-46 passed
+59 passed (including ordinary Formal read compatibility coverage)
 
 # Related Capture/Admin/MCP/runtime, with wheel case separated because the
 # repository venv lacks setuptools
@@ -57,7 +65,7 @@ pytest tests/test_capture_transaction.py tests/test_capture_store.py \
   tests/test_admin_service.py tests/test_mcp_server.py \
   tests/test_runtime_config.py \
   -k "not built_wheel_contains_default_and_installed_admin_init_works" -q
-222 passed, 1 deselected
+227 passed, 1 deselected
 
 # Separated wheel behavior
 # Clean Codex Python: setuptools.build_meta.build_wheel on a disposable source
@@ -87,8 +95,9 @@ mock HMAC verification, snapshot parsing, MCP routing, or persistence. Assertion
 cover wrong filter/limit/root, plain-SHA forgery, tampering, cross-instance same
 root, key rotation, lazy key creation, strict empty-dataset validation,
 fractional timestamp order, tie order, three pages, corrupt/duplicate snapshots,
-safe missing/corrupt get errors, direct versus MCP evidence, rogue roots, and
-secret non-disclosure.
+safe missing/corrupt/busy errors, direct versus MCP evidence, request-level host
+evidence forgery, fresh restore key absence, rogue roots, ordinary Formal error
+compatibility, and secret non-disclosure.
 
 ## Residual concerns
 

@@ -16,6 +16,7 @@ from agc_runtime.capture_store import CaptureStore
 from agc_runtime.paths import MemoryPaths
 from agc_runtime.capture_transaction import atomic_write_json
 from agc_runtime.admin_service import dispatch_admin
+from agc_runtime.locking import capture_write_lock
 from agc_runtime.read_service import dispatch_read
 
 
@@ -76,6 +77,32 @@ def test_empty_capture_overview_marks_inspection_not_applicable(tmp_path):
 
     assert overview["coverage_unit"] == "ratio_0_to_1"
     assert overview["inspection_completion"] == "not_applicable"
+    assert not MemoryPaths.from_root(tmp_path).capture.root.exists()
+
+
+@pytest.mark.parametrize(
+    "read_request",
+    [
+        {"action": "capture_overview"},
+        {"action": "capture_search"},
+        {"action": "capture_get", "observation_id": "co_" + "f" * 64},
+    ],
+)
+def test_capture_reads_return_fixed_busy_error_while_writer_holds_root_lock(tmp_path, read_request):
+    paths = MemoryPaths.from_root(tmp_path / "memory")
+    CaptureStore(paths).ensure_layout()
+
+    with capture_write_lock(paths):
+        response = dispatch_read(paths, read_request)
+
+    assert response.status == "failed"
+    assert response.error == {
+        "code": "capture_read_busy",
+        "message": "Capture read is temporarily unavailable",
+    }
+    rendered = str(response.to_dict())
+    assert str(paths.root) not in rendered
+    assert ".writer.lock" not in rendered
 
 
 def test_capture_search_filters_orders_pages_and_redacts_source(tmp_path):
@@ -275,6 +302,39 @@ def test_capture_search_only_lazily_recreates_missing_key_when_a_cursor_is_neede
 
     partial_page = capture_search(paths, {"limit": 1})
     assert partial_page["next_cursor"] is not None
+    assert len(paths.capture.cursor_hmac_key.read_bytes()) == 32
+
+
+def test_fresh_restore_reports_missing_cursor_key_until_paginated_search_needs_it(tmp_path):
+    source_paths = MemoryPaths.from_root(tmp_path / "source-memory")
+    assert dispatch_admin(source_paths, {"action": "init"}).status == "accepted"
+    backup = dispatch_admin(source_paths, {"action": "backup"})
+    assert backup.status == "accepted"
+
+    paths = MemoryPaths.from_root(tmp_path / "restored-memory")
+    restored = dispatch_admin(
+        paths,
+        {"action": "restore", "backup_path": backup.data["backup_path"]},
+    )
+
+    assert restored.status == "accepted"
+    assert not paths.capture.cursor_hmac_key.exists()
+    status = dispatch_admin(paths, {"action": "capture_status"})
+    assert status.data["cursor_key"] == {"state": "missing", "key_id": None}
+
+    store = CaptureStore(paths, clock=lambda: UTC)
+    for index in range(2):
+        receipt = _receipt(_key(f"restored-task-{index}", f"r{index}"))
+        _complete(
+            store,
+            receipt.key,
+            (_observation(receipt, f"Synthetic restored {index}.", 0, captured_at=UTC),),
+        )
+    paths.capture.cursor_hmac_key.unlink()
+
+    assert capture_search(paths, {"limit": 20})["next_cursor"] is None
+    assert not paths.capture.cursor_hmac_key.exists()
+    assert capture_search(paths, {"limit": 1})["next_cursor"] is not None
     assert len(paths.capture.cursor_hmac_key.read_bytes()) == 32
 
 

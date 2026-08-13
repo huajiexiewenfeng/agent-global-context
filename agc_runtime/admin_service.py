@@ -22,7 +22,7 @@ from agc_runtime.capture_contracts import (
     RevisionRef,
     SourceQuarantine,
 )
-from agc_runtime.capture_status_service import HostBindingEvidence, capture_status
+from agc_runtime.capture_status_service import capture_status
 from agc_runtime.capture_store import CaptureStore
 from agc_runtime.contracts import ToolResponse
 from agc_runtime.locking import root_write_lock
@@ -733,11 +733,11 @@ def _handle_migrate(
 
 
 def _handle_capture_status(
-    paths: MemoryPaths, _request: dict[str, Any], *, host_binding: HostBindingEvidence | None = None
+    paths: MemoryPaths, _request: dict[str, Any], *, _host_bound: bool = False
 ) -> ToolResponse:
     return ToolResponse(
         tool="agc.admin", action="capture_status", status="accepted",
-        data=capture_status(paths, host_binding=host_binding),
+        data=capture_status(paths, _host_bound=_host_bound),
     )
 
 
@@ -752,12 +752,7 @@ _HANDLERS = {
 }
 
 
-def dispatch_admin(
-    paths: MemoryPaths,
-    request: Any,
-    *,
-    host_binding: HostBindingEvidence | None = None,
-) -> ToolResponse:
+def _dispatch_admin(paths: MemoryPaths, request: Any, *, _host_bound: bool) -> ToolResponse:
     if not isinstance(request, dict):
         return _failed("admin", "invalid_request", "request must be a mapping")
     action = request.get("action")
@@ -769,7 +764,7 @@ def dispatch_admin(
         )
     try:
         if action == "capture_status":
-            return _handle_capture_status(paths, request, host_binding=host_binding)
+            return _handle_capture_status(paths, request, _host_bound=_host_bound)
         return _HANDLERS[action](paths, request)
     except (ValueError, KeyError, TypeError, json.JSONDecodeError):
         if action == "capture_status":
@@ -779,3 +774,16 @@ def dispatch_admin(
         if action == "capture_status":
             return _failed(action, "invalid_runtime_config", "runtime configuration is invalid")
         return _failed(action, "admin_failed", "admin operation failed")
+
+
+def dispatch_admin(paths: MemoryPaths, request: Any) -> ToolResponse:
+    return _dispatch_admin(paths, request, _host_bound=False)
+
+
+def make_host_bound_admin_dispatch(paths: MemoryPaths):
+    """Create an admin handler whose MemoryRoot was bound by its host."""
+
+    def dispatch(request: Any) -> ToolResponse:
+        return _dispatch_admin(paths, request, _host_bound=True)
+
+    return dispatch

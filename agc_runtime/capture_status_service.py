@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import hashlib
 from pathlib import Path
 from typing import Any
@@ -12,18 +11,6 @@ from agc_runtime.capture_store import CaptureStore, root_fingerprint
 from agc_runtime.paths import MemoryPaths
 from agc_runtime.runtime_config import default_config_text, load_runtime_config
 from agc_runtime.utf8_io import strict_read_text
-
-
-@dataclass(frozen=True)
-class HostBindingEvidence:
-    """Explicit evidence supplied only by a host that bound MemoryRoot."""
-
-    kind: str
-    root_fingerprint: str
-
-    @classmethod
-    def mcp_memory_root(cls, paths: MemoryPaths) -> "HostBindingEvidence":
-        return cls("mcp_memory_root", root_fingerprint(paths))
 
 
 def _paths(value: MemoryPaths | Path) -> MemoryPaths:
@@ -37,7 +24,7 @@ def _fingerprint(value: str) -> str:
 def capture_status(
     value: MemoryPaths | Path,
     *,
-    host_binding: HostBindingEvidence | None = None,
+    _host_bound: bool = False,
 ) -> dict[str, Any]:
     paths = _paths(value)
     config_path = paths.root / "config.yaml"
@@ -46,12 +33,7 @@ def capture_status(
     config = load_runtime_config(paths)
     capture = config.capture
     memory_fingerprint = root_fingerprint(paths)
-    binding_matches = (
-        host_binding is not None
-        and host_binding.root_fingerprint == memory_fingerprint
-        and host_binding.kind == "mcp_memory_root"
-    )
-    memory_assessment = "verified" if host_binding is not None else "not_assessed"
+    memory_assessment = "verified" if _host_bound else "not_assessed"
     reasons: list[str] = []
     if not capture.enabled:
         reasons.append("capture_disabled")
@@ -62,10 +44,8 @@ def capture_status(
         "extractor_capability_not_assessed",
         "route_not_assessed",
     ))
-    if host_binding is None:
+    if not _host_bound:
         reasons.append("memory_root_binding_not_assessed")
-    elif not binding_matches:
-        reasons.append("memory_root_binding_mismatch")
     return {
         "config_source": {
             "kind": "memory_root_config" if config_exists else "runtime_default",
@@ -75,8 +55,8 @@ def capture_status(
         "memory_root": {
             "fingerprint": memory_fingerprint,
             "assessment": memory_assessment,
-            "matches_host_binding": binding_matches if host_binding is not None else None,
-            "evidence": {"kind": host_binding.kind} if host_binding is not None else None,
+            "matches_host_binding": True if _host_bound else None,
+            "evidence": {"kind": "mcp_memory_root"} if _host_bound else None,
         },
         "source_roots": {
             "configured_count": len(capture.sources),

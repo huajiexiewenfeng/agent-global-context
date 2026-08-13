@@ -13,14 +13,13 @@ if TYPE_CHECKING:
 def create_server(memory_root: Path) -> "MCPServer":
     from mcp.server.mcpserver import MCPServer
 
-    from agc_runtime.admin_service import dispatch_admin
-    from agc_runtime.capture_status_service import HostBindingEvidence
+    from agc_runtime.admin_service import make_host_bound_admin_dispatch
     from agc_runtime.paths import MemoryPaths
     from agc_runtime.read_service import dispatch_read
     from agc_runtime.write_service import dispatch_write
 
     paths = MemoryPaths.from_root(memory_root)
-    host_binding = HostBindingEvidence.mcp_memory_root(paths)
+    dispatch_admin = make_host_bound_admin_dispatch(paths)
     server = MCPServer("agent-global-context")
 
     @server.tool(name="agc.read")
@@ -33,7 +32,7 @@ def create_server(memory_root: Path) -> "MCPServer":
 
     @server.tool(name="agc.admin")
     def agc_admin(request: dict[str, Any]) -> dict[str, Any]:
-        return dispatch_admin(paths, request, host_binding=host_binding).to_dict()
+        return dispatch_admin(request).to_dict()
 
     return server
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 import hashlib
@@ -108,6 +109,13 @@ class CaptureSnapshot:
         return "degraded" if self.diagnostics else "healthy"
 
 
+class CaptureReadBusyError(RuntimeError):
+    """The content-safe read snapshot could not acquire the Capture root."""
+
+    def __init__(self) -> None:
+        super().__init__("capture_read_busy")
+
+
 class CaptureStore:
     def __init__(self, paths: MemoryPaths, *, crash_at: str | None = None, clock: Callable[[], str] | None = None) -> None:
         self.paths = paths
@@ -130,6 +138,18 @@ class CaptureStore:
         with capture_write_lock(self.paths):
             self._ensure_layout_locked()
 
+    @contextmanager
+    def _capture_read_lock(self):
+        guard = capture_write_lock(self.paths)
+        try:
+            guard.__enter__()
+        except RuntimeError:
+            raise CaptureReadBusyError() from None
+        try:
+            yield
+        finally:
+            guard.__exit__(None, None, None)
+
     def _read_cursor_key(self) -> bytes:
         key = self.capture.cursor_hmac_key.read_bytes()
         if len(key) != _CURSOR_KEY_BYTES:
@@ -150,7 +170,7 @@ class CaptureStore:
         return {"state": "ready", "key_id": self._cursor_key_id(key)}
 
     def encode_cursor(self, *, query_digest: str, captured_at: str, observation_id: str) -> str:
-        with capture_write_lock(self.paths):
+        with self._capture_read_lock():
             if not self.capture.cursor_hmac_key.exists():
                 atomic_write_bytes(self.capture.cursor_hmac_key, secrets.token_bytes(_CURSOR_KEY_BYTES))
             key = self._read_cursor_key()
@@ -181,7 +201,7 @@ class CaptureStore:
             payload, signature = raw[:-32], raw[-32:]
             if not self.capture.cursor_hmac_key.exists():
                 raise ValueError
-            with capture_write_lock(self.paths):
+            with self._capture_read_lock():
                 key = self._read_cursor_key()
             if not hmac.compare_digest(hmac.new(key, payload, hashlib.sha256).digest(), signature):
                 raise ValueError
@@ -278,7 +298,7 @@ class CaptureStore:
         """
         if not self.capture.root.exists():
             return CaptureSnapshot()
-        with capture_write_lock(self.paths):
+        with self._capture_read_lock():
             diagnostics: list[CaptureIntegrityDiagnostic] = []
             unavailable_ids: set[str] = set()
 

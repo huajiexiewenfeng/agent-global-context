@@ -3,6 +3,7 @@ from typing import Any
 
 from agc_runtime.catalog import catalog_counts, load_catalog
 from agc_runtime.capture_read_service import CaptureReadError, capture_get, capture_overview, capture_search
+from agc_runtime.capture_store import CaptureReadBusyError
 from agc_runtime.contracts import ToolResponse
 from agc_runtime.models import MemoryItem
 from agc_runtime.paths import MemoryPaths
@@ -258,6 +259,7 @@ _HANDLERS = {
     "capture_search": _handle_capture_search,
     "capture_get": _handle_capture_get,
 }
+_CAPTURE_ACTIONS = frozenset({"capture_overview", "capture_search", "capture_get"})
 
 
 def dispatch_read(paths: MemoryPaths, request: Any) -> ToolResponse:
@@ -272,19 +274,25 @@ def dispatch_read(paths: MemoryPaths, request: Any) -> ToolResponse:
         )
     try:
         return _HANDLERS[action](paths, request)
+    except CaptureReadBusyError:
+        return _failed(action, "capture_read_busy", "Capture read is temporarily unavailable")
     except CaptureReadError as error:
         if error.code == "capture_integrity_degraded":
             return _failed(action, error.code, "Capture object integrity is degraded")
         return _failed(action, "capture_not_found", "Capture object is not available")
-    except LookupError:
-        if action in {"get", "history", "evidence"} and (
-            not isinstance(request.get("id"), str) or not request.get("id")
-        ):
+    except LookupError as error:
+        if action in _CAPTURE_ACTIONS:
+            return _failed(action, "capture_not_found", "Capture object is not available")
+        if str(error) == "id_required":
             return _failed(action, "id_required", "explicit memory id is required")
-        return _failed(action, "not_found", "requested memory object is not available")
-    except FileNotFoundError:
-        return _failed(action, "not_found", "requested memory object is not available")
-    except (ValueError, TypeError, KeyError, json.JSONDecodeError):
+        return _failed(action, "not_found", str(error))
+    except FileNotFoundError as error:
+        message = "requested memory object is not available" if action in _CAPTURE_ACTIONS else str(error)
+        return _failed(action, "not_found", message)
+    except (ValueError, TypeError, KeyError, json.JSONDecodeError) as error:
+        if action not in _CAPTURE_ACTIONS:
+            return _failed(action, "invalid_request", str(error))
         return _failed(action, "invalid_request", "request is invalid")
-    except OSError:
-        return _failed(action, "read_failed", "read operation failed")
+    except OSError as error:
+        message = "read operation failed" if action in _CAPTURE_ACTIONS else str(error)
+        return _failed(action, "read_failed", message)
