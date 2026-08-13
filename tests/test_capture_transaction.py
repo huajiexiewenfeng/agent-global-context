@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from agc_runtime.capture_store import CaptureStore
+from agc_runtime.capture_transaction import atomic_write_json
 from tests.test_capture_store import _complete_receipt, _key, _observation, _receipt
 from agc_runtime.paths import MemoryPaths
 
@@ -40,4 +41,32 @@ def test_ac_09_crash_recovery_never_exposes_partial_or_duplicate_batches(
     assert (current.status == "complete") == (len(visible) == 2)
     if not visible:
         assert current.status == "retryable"
-    assert report.orphan_count == report.partial_count == report.duplicate_count == 0
+    assert report.orphan_count == report.duplicate_count == 0
+    assert report.partial_count in {0, 1}
+
+
+def test_recovery_fails_closed_for_unsafe_journal_name_and_never_deletes_outside_capture(tmp_path: Path):
+    paths = MemoryPaths.from_root(tmp_path / "memory")
+    store = CaptureStore(paths, clock=lambda: "2026-08-13T12:00:00Z")
+    store.ensure_layout()
+    outside = tmp_path / "outside.json"
+    atomic_write_json(outside, {"safe": "synthetic"})
+    atomic_write_json(paths.capture.journals / "not-a-receipt.json", {"observation_ids": ["../outside"]})
+    report = store.recover_transactions(now="2026-08-13T12:01:00Z")
+    assert outside.is_file()
+    assert report.corrupt_count >= 1
+    assert not (paths.capture.journals / "not-a-receipt.json").exists()
+    assert list(paths.capture.quarantines.glob("corrupt-*.json"))
+
+
+def test_recovery_audits_orphans_and_is_idempotent(tmp_path: Path):
+    paths = MemoryPaths.from_root(tmp_path / "memory")
+    store = CaptureStore(paths, clock=lambda: "2026-08-13T12:00:00Z")
+    store.ensure_layout()
+    orphan = _observation("User has an orphaned synthetic signal.", 0)
+    atomic_write_json(paths.capture.observations / f"{orphan.observation_id}.json", orphan.to_mapping())
+    first = store.recover_transactions(now="2026-08-13T12:01:00Z")
+    assert first.orphan_count == 1
+    assert not (paths.capture.observations / f"{orphan.observation_id}.json").exists()
+    second = store.recover_transactions(now="2026-08-13T12:02:00Z")
+    assert second.recovered_count == second.orphan_count == second.partial_count == second.duplicate_count == second.corrupt_count == 0

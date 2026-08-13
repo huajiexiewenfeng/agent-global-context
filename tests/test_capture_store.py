@@ -8,6 +8,7 @@ import pytest
 from agc_runtime.capture_contracts import (
     CAPTURE_SCHEMA_VERSION,
     CaptureKey,
+    CaptureLease,
     CaptureReceipt,
     CollectedObservation,
     TokenUsage,
@@ -15,7 +16,9 @@ from agc_runtime.capture_contracts import (
     observation_id_for,
     receipt_id_for,
 )
-from agc_runtime.capture_store import CaptureStore
+from agc_runtime.capture_store import CaptureStore, ReceiptTransitionPatch
+from agc_runtime.capture_transaction import atomic_write_json
+from agc_runtime.locking import capture_write_lock
 from agc_runtime.paths import MemoryPaths
 
 
@@ -187,3 +190,114 @@ def test_commit_validates_observation_binding_before_creating_transaction_files(
         store.commit_extraction(lease, (invalid,), _complete_receipt(receipt, 1))
     assert not list(store.capture.journals.glob("*.json"))
     assert not list(store.capture.staging.glob("*.json"))
+
+
+def test_fencing_epoch_rejects_rolled_back_lease_file_and_forged_leases(tmp_path: Path):
+    paths = MemoryPaths.from_root(tmp_path / "memory")
+    store = CaptureStore(paths, clock=lambda: UTC)
+    receipt = _receipt()
+    store.register_extraction(receipt)
+    first = store.acquire_lease(_key(), owner_id="worker-a", now=UTC, ttl_seconds=1)
+    assert first is not None
+    second = store.acquire_lease(_key(), owner_id="worker-b", now="2026-08-13T12:00:02Z", ttl_seconds=60)
+    assert second is not None and second.fencing_token == 2
+    atomic_write_json(paths.capture.leases / f"{receipt.receipt_id}.json", first.to_mapping())
+    restarted = CaptureStore(paths, clock=lambda: UTC)
+    for forged in (
+        first,
+        replace(second, owner_id="forged-owner"),
+        replace(second, capture_key=CaptureKey("synthetic_adapter", SOURCE_ROOT, "other", "revision-1")),
+    ):
+        with pytest.raises(ValueError, match="lease|epoch"):
+            restarted.commit_extraction(forged, (), _complete_receipt(receipt, 0))
+    assert restarted.acquire_lease(_key(), owner_id="worker-c", now="2026-08-13T12:01:03Z", ttl_seconds=60).fencing_token == 3
+
+
+def test_complete_visibility_requires_immutable_manifest_and_ignores_extra_files(tmp_path: Path):
+    store = _store(tmp_path)
+    receipt = _receipt()
+    store.register_extraction(receipt)
+    lease = store.acquire_lease(_key(), owner_id="worker", now=UTC, ttl_seconds=60)
+    assert lease is not None
+    observation = _observation("User needs a manifest binding.", 0)
+    store.commit_extraction(lease, (observation,), _complete_receipt(receipt, 1))
+    manifest = store.capture.indexes / f"{receipt.receipt_id}.json"
+    assert manifest.is_file()
+    assert list(__import__("json").loads(manifest.read_text(encoding="utf-8"))) == ["observation_ids", "receipt_id", "schema_version"]
+    extra = _observation("User creates an unrelated synthetic signal.", 1)
+    atomic_write_json(store.capture.observations / f"{extra.observation_id}.json", extra.to_mapping())
+    assert store.visible_observations(receipt.receipt_id) == (observation,)
+    manifest.unlink()
+    assert store.visible_observations(receipt.receipt_id) == ()
+
+
+def test_commit_revalidates_exact_batch_duplicate_count_and_limit(tmp_path: Path):
+    store = _store(tmp_path)
+    receipt = _receipt()
+    store.register_extraction(receipt)
+    lease = store.acquire_lease(_key(), owner_id="worker", now=UTC, ttl_seconds=60)
+    assert lease is not None
+    same = _observation("User deduplicates within one batch.", 0)
+    terminal = _complete_receipt(receipt, 1)
+    terminal = CaptureReceipt.from_mapping({**terminal.to_mapping(), "duplicate_suppression_count": 0})
+    with pytest.raises(ValueError, match="duplicate"):
+        store.commit_extraction(lease, (same, same), terminal)
+    many = tuple(_observation(f"User synthetic signal number {index}.", index) for index in range(9))
+    with pytest.raises(ValueError, match="at most 8"):
+        store.commit_extraction(lease, many, _complete_receipt(receipt, 8))
+
+
+def test_transition_validates_expected_status_reopen_and_immutable_metadata(tmp_path: Path):
+    store = _store(tmp_path)
+    receipt = _receipt()
+    store.register_extraction(receipt)
+    lease = store.acquire_lease(_key(), owner_id="worker", now=UTC, ttl_seconds=60)
+    assert lease is not None
+    with pytest.raises(ValueError, match="expected"):
+        store.transition(lease, expected=frozenset({"queued"}), target="retryable", patch=ReceiptTransitionPatch())
+    with pytest.raises(ValueError, match="illegal"):
+        store.transition(lease, expected=frozenset({"extracting"}), target="queued", patch=ReceiptTransitionPatch())
+    with pytest.raises(ValueError, match="immutable"):
+        store.transition(lease, expected=frozenset({"extracting"}), target="retryable", patch=ReceiptTransitionPatch(source_fingerprint="d" * 64))
+
+
+def test_transition_writes_valid_retryable_and_authorized_reopen(tmp_path: Path):
+    store = _store(tmp_path)
+    receipt = _receipt()
+    store.register_extraction(receipt)
+    lease = store.acquire_lease(_key(), owner_id="worker", now=UTC, ttl_seconds=60)
+    assert lease is not None
+    retryable = store.transition(
+        lease, expected=frozenset({"extracting"}), target="retryable",
+        patch=ReceiptTransitionPatch(
+            updated_at="2026-08-13T12:00:01Z", next_retry_at="2026-08-13T12:01:00Z",
+            sanitized_error=__import__("agc_runtime.capture_contracts", fromlist=["SanitizedError"]).SanitizedError("transaction", "interrupted", True),
+        ),
+    )
+    failed = store.transition(
+        lease, expected=frozenset({"retryable"}), target="failed",
+        patch=ReceiptTransitionPatch(
+            sanitized_error=__import__("agc_runtime.capture_contracts", fromlist=["SanitizedError"]).SanitizedError("transaction", "interrupted", False),
+        ),
+    )
+    reopened = store.transition(
+        lease, expected=frozenset({"failed"}), target="queued",
+        patch=ReceiptTransitionPatch(reopen_reason="explicit_retry"),
+    )
+    assert retryable.status == "retryable" and failed.status == "failed"
+    assert reopened.status == "queued" and reopened.sanitized_error is None
+
+
+def test_store_layout_keeps_task2_schema_marker_text_contract(tmp_path: Path):
+    store = _store(tmp_path)
+    store.ensure_layout()
+    assert store.capture.schema_version.read_bytes() == b"1\n"
+
+
+def test_corrupt_capture_lock_fails_closed(tmp_path: Path):
+    paths = MemoryPaths.from_root(tmp_path / "memory")
+    paths.capture.root.mkdir(parents=True)
+    (paths.capture.root / ".writer.lock").write_bytes(b"not-json\n")
+    with pytest.raises(RuntimeError, match="active Capture"):
+        with capture_write_lock(paths):
+            pass
