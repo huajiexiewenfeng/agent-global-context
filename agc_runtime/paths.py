@@ -3,6 +3,45 @@ from pathlib import Path
 
 
 @dataclass(frozen=True)
+class CapturePaths:
+    root: Path
+    schema_version: Path
+    receipts: Path
+    observations: Path
+    ledger: Path
+    census: Path
+    tombstones: Path
+    quarantines: Path
+    conflicts: Path
+    dirty: Path
+    journals: Path
+    staging: Path
+    leases: Path
+    indexes: Path
+    scan_state: Path
+    budgets: Path
+
+    @classmethod
+    def from_runtime(cls, runtime: Path) -> "CapturePaths":
+        root = runtime / "capture"
+        return cls(
+            root=root, schema_version=root / "schema-version", receipts=root / "receipts",
+            observations=root / "observations", ledger=root / "ledger", census=root / "census",
+            tombstones=root / "tombstones", quarantines=root / "quarantines", conflicts=root / "conflicts",
+            dirty=root / "dirty", journals=root / "journals", staging=root / "staging",
+            leases=root / "leases", indexes=root / "indexes", scan_state=root / "scan-state",
+            budgets=root / "budgets",
+        )
+
+    def directories(self) -> tuple[Path, ...]:
+        return (
+            self.receipts, self.observations, self.ledger, self.census, self.tombstones,
+            self.quarantines, self.conflicts, self.dirty, self.journals, self.staging,
+            self.leases, self.indexes, self.scan_state, self.budgets,
+        )
+
+
+@dataclass(frozen=True)
 class MemoryPaths:
     root: Path
     catalog_md: Path
@@ -19,6 +58,7 @@ class MemoryPaths:
     backups: Path
     tombstones: Path
     migrations: Path
+    capture: CapturePaths
 
     @classmethod
     def from_root(cls, root: Path) -> "MemoryPaths":
@@ -40,6 +80,7 @@ class MemoryPaths:
             backups=runtime / "backups",
             tombstones=runtime / "tombstones",
             migrations=runtime / "migrations",
+            capture=CapturePaths.from_runtime(runtime),
         )
 
     def resolve_managed(self, relative_path: str | Path) -> Path:

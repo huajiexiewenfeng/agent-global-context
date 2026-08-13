@@ -12,6 +12,14 @@ from agc_runtime.catalog import (
     rebuild_catalog,
     render_catalog_markdown,
 )
+from agc_runtime.capture_contracts import (
+    CaptureLease,
+    CaptureReceipt,
+    CaptureSuppressionTombstone,
+    CollectedObservation,
+    LedgerEntry,
+    SourceQuarantine,
+)
 from agc_runtime.contracts import ToolResponse
 from agc_runtime.locking import root_write_lock
 from agc_runtime.migration_service import migrate_v1
@@ -66,10 +74,11 @@ def _managed_directories(paths: MemoryPaths) -> tuple[Path, ...]:
 
 def _handle_init(paths: MemoryPaths, _request: dict[str, Any]) -> ToolResponse:
     with root_write_lock(paths):
-        for directory in _managed_directories(paths):
+        for directory in (*_managed_directories(paths), *paths.capture.directories()):
             directory.mkdir(parents=True, exist_ok=True)
         atomic_write_text(paths.root / "schema-version", "2\n")
         atomic_write_text(paths.root / "config.yaml", CONFIG_TEXT)
+        atomic_write_text(paths.capture.schema_version, "1\n")
         catalog = rebuild_catalog(paths, acquire_lock=False)
     return ToolResponse(
         tool="agc.admin",
@@ -92,7 +101,7 @@ def _strict_decode_managed(paths: MemoryPaths, issues: list[dict[str, str]]) -> 
         relative = str(path.relative_to(paths.root)).replace("\\", "/")
         if relative.startswith(".runtime/locks/") or relative.startswith(
             ".runtime/backups/"
-        ) or relative.endswith(".tmp"):
+        ) or relative.startswith(".runtime/capture/") or relative.endswith(".tmp"):
             continue
         is_migration_text = relative.startswith(".runtime/migrations/")
         if not is_migration_text and path.suffix.lower() not in _TEXT_SUFFIXES:
@@ -151,6 +160,44 @@ def _validate_receipts(
             seen.add(key)
     except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
         _issue(issues, receipt_file, f"invalid source receipt registry: {error}")
+
+
+def _validate_capture(paths: MemoryPaths, issues: list[dict[str, str]]) -> None:
+    if not paths.capture.root.exists():
+        return
+    try:
+        if strict_read_text(paths.capture.schema_version) != "1\n":
+            _capture_issue(issues, paths, paths.capture.schema_version, "Capture schema-version must be 1")
+    except OSError as error:
+        _capture_issue(issues, paths, paths.capture.schema_version, "Capture schema-version is missing")
+    parsers = {
+        paths.capture.receipts: CaptureReceipt.from_mapping,
+        paths.capture.observations: CollectedObservation.from_mapping,
+        paths.capture.ledger: LedgerEntry.from_mapping,
+        paths.capture.leases: CaptureLease.from_mapping,
+        paths.capture.quarantines: SourceQuarantine.from_mapping,
+        paths.capture.tombstones: CaptureSuppressionTombstone.from_mapping,
+    }
+    for directory, parser in parsers.items():
+        if not directory.exists():
+            continue
+        for path in sorted(directory.rglob("*")):
+            if not path.is_file():
+                continue
+            if path.suffix.lower() != ".json":
+                _capture_issue(issues, paths, path, "unsupported Capture object file")
+                continue
+            try:
+                parser(json.loads(strict_read_text(path)))
+            except (ValueError, OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+                _capture_issue(issues, paths, path, f"invalid Capture object: {error}")
+
+
+def _capture_issue(
+    issues: list[dict[str, str]], paths: MemoryPaths, path: Path, message: str
+) -> None:
+    relative = path.relative_to(paths.capture.root).as_posix()
+    issues.append({"path": f".runtime/capture/{relative}", "message": message})
 
 
 def _validate_events(paths: MemoryPaths, issues: list[dict[str, str]]) -> None:
@@ -238,6 +285,7 @@ def _validate_root(paths: MemoryPaths) -> list[dict[str, str]]:
     _validate_fixed_config(paths, issues)
     _validate_memories(paths, issues)
     _validate_receipts(paths, issues)
+    _validate_capture(paths, issues)
     _validate_events(paths, issues)
     _validate_catalog(paths, issues)
     return issues
