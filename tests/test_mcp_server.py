@@ -4,6 +4,101 @@ import json
 
 import pytest
 
+from agc_runtime.admin_service import dispatch_admin
+from agc_runtime.capture_store import root_fingerprint
+from agc_runtime.capture_contracts import (
+    CAPTURE_SCHEMA_VERSION,
+    CaptureKey,
+    CaptureReceipt,
+    CollectedObservation,
+    TokenUsage,
+    observation_fingerprint_for,
+    observation_id_for,
+    receipt_id_for,
+)
+from agc_runtime.capture_store import CaptureStore
+from agc_runtime.paths import MemoryPaths
+
+
+UTC = "2026-08-13T12:00:00Z"
+
+
+def _seed_visible_capture(paths: MemoryPaths) -> CollectedObservation:
+    key = CaptureKey("synthetic_adapter", "1" * 64, "task-1", "revision-1")
+    receipt = CaptureReceipt.from_mapping({
+        "schema_version": CAPTURE_SCHEMA_VERSION,
+        "receipt_id": receipt_id_for(key),
+        **key.to_mapping(),
+        "adapter_version": "1",
+        "source_schema_version": "1",
+        "identity_quality": "session_id",
+        "source_fingerprint": "b" * 64,
+        "source_hash_schema_version": "source-v1",
+        "capsule_hash": "c" * 64,
+        "capsule_schema_version": "capsule-v1",
+        "settled_at": UTC,
+        "discovered_at": UTC,
+        "updated_at": UTC,
+        "status": "extracting",
+        "attempt_count": 1,
+        "next_retry_at": None,
+        "extractor_id": "synthetic",
+        "extractor_version": "1",
+        "extractor_schema_version": "1",
+        "taxonomy_version": "taxonomy-v1",
+        "observation_count": None,
+        "filtered_counts": None,
+        "duplicate_suppression_count": None,
+        "token_usage": TokenUsage(1, 2, 3).to_mapping(),
+        "usage_quality": "actual",
+        "redacted_by_forget": False,
+        "forgotten_observation_count": 0,
+        "zero_reason": None,
+        "sanitized_error": None,
+        "coalesced_to": None,
+        "exclusion_reason": None,
+    })
+    observation_value = {
+        "schema_version": CAPTURE_SCHEMA_VERSION,
+        "observation_id": "co_" + "0" * 64,
+        "receipt_id": receipt.receipt_id,
+        "source": {**key.to_mapping(), "locator": "sessions/synthetic"},
+        "ordinal": 0,
+        "observation_fingerprint": "0" * 64,
+        "statement": "Synthetic MCP-visible observation.",
+        "assertion": {"subject": "user", "mode": "direct", "modality": "asserted"},
+        "primary_category": "work",
+        "taxonomy_version": "taxonomy-v1",
+        "kind": "preference",
+        "scopes": ["testing"],
+        "project_scope": None,
+        "confidence": "observed",
+        "sensitivity": "normal",
+        "signal_type": "decision_or_constraint",
+        "observed_at": UTC,
+        "captured_at": UTC,
+        "extractor_version": "1",
+        "processing_state": "collected",
+    }
+    observation_value["observation_fingerprint"] = observation_fingerprint_for(observation_value)
+    observation_value["observation_id"] = observation_id_for(
+        receipt.receipt_id, observation_value["observation_fingerprint"]
+    )
+    observation = CollectedObservation.from_mapping(observation_value)
+    complete = CaptureReceipt.from_mapping({
+        **receipt.to_mapping(),
+        "status": "complete",
+        "observation_count": 1,
+        "filtered_counts": {"safety": 0, "policy": 0, "over_limit": 0},
+        "duplicate_suppression_count": 0,
+    })
+    store = CaptureStore(paths, clock=lambda: UTC)
+    store.register_extraction(receipt)
+    lease = store.acquire_lease(key, owner_id="mcp-test", now=UTC, ttl_seconds=60)
+    assert lease is not None
+    store.commit_extraction(lease, (observation,), complete)
+    return observation
+
 
 def _mcp_server_module():
     try:
@@ -152,3 +247,72 @@ def test_capture_actions_use_existing_three_tool_envelope(tmp_path):
     assert admin["status"] == "accepted"
     assert admin["action"] == "capture_status"
     assert {tool.name for tool in _list_tools(server)} == {"agc.read", "agc.write", "agc.admin"}
+
+
+def test_mcp_capture_status_proves_only_the_bound_memory_root(tmp_path):
+    mcp_server_module = _mcp_server_module()
+    memory_root = tmp_path / "bound-memory"
+    rogue_root = tmp_path / "rogue-memory"
+    server = mcp_server_module.create_server(memory_root)
+    _call(server, "agc.admin", {"action": "init"})
+
+    response = _call(
+        server,
+        "agc.admin",
+        {"action": "capture_status", "root": str(rogue_root)},
+    )
+    data = response["data"]
+    direct = dispatch_admin(MemoryPaths.from_root(memory_root), {"action": "capture_status"})
+
+    assert data["memory_root"]["fingerprint"] == root_fingerprint(MemoryPaths.from_root(memory_root))
+    assert data["memory_root"]["assessment"] == "verified"
+    assert data["memory_root"]["matches_host_binding"] is True
+    assert data["memory_root"]["evidence"] == {"kind": "mcp_memory_root"}
+    assert data["route"]["assessment"] == "not_assessed"
+    assert data["extractor_boundary"]["capability_assessment"] == "not_assessed"
+    assert data["cursor_key"]["state"] == "ready"
+    assert len(data["cursor_key"]["key_id"]) == 64
+    assert direct.data["memory_root"]["fingerprint"] == data["memory_root"]["fingerprint"]
+    assert direct.data["memory_root"]["assessment"] == "not_assessed"
+    assert MemoryPaths.from_root(memory_root).capture.cursor_hmac_key.read_bytes().hex() not in str(data)
+    assert str(memory_root) not in str(data)
+    assert str(rogue_root) not in str(data)
+    assert not rogue_root.exists()
+
+
+def test_mcp_capture_search_and_get_use_bound_root_and_safe_machine_errors(tmp_path):
+    mcp_server_module = _mcp_server_module()
+    memory_root = tmp_path / "bound-memory"
+    rogue_root = tmp_path / "rogue-memory"
+    paths = MemoryPaths.from_root(memory_root)
+    observation = _seed_visible_capture(paths)
+    server = mcp_server_module.create_server(memory_root)
+
+    search = _call(
+        server,
+        "agc.read",
+        {"action": "capture_search", "limit": 1, "root": str(rogue_root)},
+    )
+    get = _call(
+        server,
+        "agc.read",
+        {"action": "capture_get", "observation_id": observation.observation_id, "root": str(rogue_root)},
+    )
+    missing = _call(
+        server,
+        "agc.read",
+        {"action": "capture_get", "observation_id": "co_" + "f" * 64},
+    )
+
+    assert search["status"] == "accepted"
+    assert search["data"]["results"][0]["observation_id"] == observation.observation_id
+    assert get["status"] == "accepted"
+    assert get["data"]["observation"]["statement"] == observation.statement
+    assert missing["status"] == "failed"
+    assert missing["error"] == {
+        "code": "capture_not_found",
+        "message": "Capture object is not available",
+    }
+    assert str(memory_root) not in str(missing)
+    assert str(rogue_root) not in str(search) + str(get) + str(missing)
+    assert not rogue_root.exists()

@@ -6,6 +6,7 @@ from pathlib import Path
 class CapturePaths:
     root: Path
     schema_version: Path
+    cursor_hmac_key: Path
     receipts: Path
     observations: Path
     ledger: Path
@@ -25,7 +26,8 @@ class CapturePaths:
     def from_runtime(cls, runtime: Path) -> "CapturePaths":
         root = runtime / "capture"
         return cls(
-            root=root, schema_version=root / "schema-version", receipts=root / "receipts",
+            root=root, schema_version=root / "schema-version", cursor_hmac_key=root / "cursor-hmac-key",
+            receipts=root / "receipts",
             observations=root / "observations", ledger=root / "ledger", census=root / "census",
             tombstones=root / "tombstones", quarantines=root / "quarantines", conflicts=root / "conflicts",
             dirty=root / "dirty", journals=root / "journals", staging=root / "staging",

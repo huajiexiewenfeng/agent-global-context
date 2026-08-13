@@ -22,7 +22,8 @@ from agc_runtime.capture_contracts import (
     RevisionRef,
     SourceQuarantine,
 )
-from agc_runtime.capture_status_service import capture_status
+from agc_runtime.capture_status_service import HostBindingEvidence, capture_status
+from agc_runtime.capture_store import CaptureStore
 from agc_runtime.contracts import ToolResponse
 from agc_runtime.locking import root_write_lock
 from agc_runtime.migration_service import migrate_v1
@@ -80,6 +81,7 @@ def _handle_init(paths: MemoryPaths, _request: dict[str, Any]) -> ToolResponse:
     with root_write_lock(paths):
         for directory in (*_managed_directories(paths), *paths.capture.directories()):
             directory.mkdir(parents=True, exist_ok=True)
+        CaptureStore(paths).ensure_layout()
         atomic_write_text(paths.root / "schema-version", "2\n")
         atomic_write_text(paths.root / "config.yaml", CONFIG_TEXT)
         atomic_write_text(paths.capture.schema_version, "1\n")
@@ -169,6 +171,13 @@ def _validate_receipts(
 def _validate_capture(paths: MemoryPaths, issues: list[dict[str, str]]) -> None:
     if not paths.capture.root.exists():
         return
+    if CaptureStore(paths).cursor_key_status()["state"] != "ready":
+        _capture_issue(
+            issues,
+            paths,
+            paths.capture.cursor_hmac_key,
+            "Capture cursor key is missing or invalid",
+        )
     try:
         if strict_read_text(paths.capture.schema_version) != "1\n":
             _capture_issue(issues, paths, paths.capture.schema_version, "Capture schema-version must be 1")
@@ -379,6 +388,7 @@ def _backup_files(paths: MemoryPaths) -> list[tuple[str, bytes]]:
         if (
             relative.startswith(".runtime/locks/")
             or relative.startswith(".runtime/backups/")
+            or relative == ".runtime/capture/cursor-hmac-key"
             or relative.endswith(".tmp")
         ):
             continue
@@ -538,6 +548,7 @@ def _preserve_during_restore(paths: MemoryPaths, path: Path) -> bool:
         relative.startswith(".runtime/locks/")
         or relative.startswith(".runtime/backups/")
         or relative.startswith(".runtime/tombstones/")
+        or relative == ".runtime/capture/cursor-hmac-key"
     )
 
 
@@ -655,7 +666,7 @@ def _handle_restore(paths: MemoryPaths, request: dict[str, Any]) -> ToolResponse
             for name, data in sorted(entries.items()):
                 if name.startswith(".runtime/locks/") or name.startswith(
                     ".runtime/backups/"
-                ):
+                ) or name == ".runtime/capture/cursor-hmac-key":
                     continue
                 pure = PurePosixPath(name)
                 if (
@@ -722,11 +733,11 @@ def _handle_migrate(
 
 
 def _handle_capture_status(
-    paths: MemoryPaths, _request: dict[str, Any]
+    paths: MemoryPaths, _request: dict[str, Any], *, host_binding: HostBindingEvidence | None = None
 ) -> ToolResponse:
     return ToolResponse(
         tool="agc.admin", action="capture_status", status="accepted",
-        data=capture_status(paths),
+        data=capture_status(paths, host_binding=host_binding),
     )
 
 
@@ -741,7 +752,12 @@ _HANDLERS = {
 }
 
 
-def dispatch_admin(paths: MemoryPaths, request: Any) -> ToolResponse:
+def dispatch_admin(
+    paths: MemoryPaths,
+    request: Any,
+    *,
+    host_binding: HostBindingEvidence | None = None,
+) -> ToolResponse:
     if not isinstance(request, dict):
         return _failed("admin", "invalid_request", "request must be a mapping")
     action = request.get("action")
@@ -752,8 +768,14 @@ def dispatch_admin(paths: MemoryPaths, request: Any) -> ToolResponse:
             "unsupported agc.admin action",
         )
     try:
+        if action == "capture_status":
+            return _handle_capture_status(paths, request, host_binding=host_binding)
         return _HANDLERS[action](paths, request)
-    except (ValueError, KeyError, TypeError, json.JSONDecodeError) as error:
-        return _failed(action, "invalid_request", str(error))
-    except OSError as error:
-        return _failed(action, "admin_failed", str(error))
+    except (ValueError, KeyError, TypeError, json.JSONDecodeError):
+        if action == "capture_status":
+            return _failed(action, "invalid_runtime_config", "runtime configuration is invalid")
+        return _failed(action, "invalid_request", "request is invalid")
+    except OSError:
+        if action == "capture_status":
+            return _failed(action, "invalid_runtime_config", "runtime configuration is invalid")
+        return _failed(action, "admin_failed", "admin operation failed")

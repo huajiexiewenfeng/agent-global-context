@@ -61,6 +61,8 @@ def test_init_creates_v2_layout_and_runtime_config(tmp_path: Path):
     assert "enabled: false" in config
     assert "mode: off" in config
     assert paths.migrations.is_dir()
+    assert paths.capture.cursor_hmac_key.is_file()
+    assert len(paths.capture.cursor_hmac_key.read_bytes()) == 32
 
 
 def test_validate_reports_invalid_memory_without_cataloging_it(tmp_path: Path):
@@ -117,6 +119,7 @@ def test_backup_is_deterministic_and_excludes_runtime_noise(tmp_path: Path):
         ".runtime/locks" not in item["path"]
         and not item["path"].endswith(".tmp")
         and ".runtime/backups" not in item["path"]
+        and item["path"] != ".runtime/capture/cursor-hmac-key"
         for item in first.data["manifest"]["files"]
     )
 
@@ -156,6 +159,7 @@ def test_restore_rejects_corrupted_backup_before_changes(tmp_path: Path):
 def test_restore_recovers_memory_from_verified_backup(tmp_path: Path):
     paths = MemoryPaths.from_root(tmp_path / "memory")
     dispatch_admin(paths, {"action": "init"})
+    cursor_key_before = paths.capture.cursor_hmac_key.read_bytes()
     MemoryStore(paths).create_memory(
         principle(), SourceKey("codex-task:t1", "r1", "a" * 64)
     )
@@ -172,6 +176,7 @@ def test_restore_recovers_memory_from_verified_backup(tmp_path: Path):
     )
 
     assert response.status == "accepted"
+    assert paths.capture.cursor_hmac_key.read_bytes() == cursor_key_before
     assert dispatch_read(
         paths, {"action": "get", "id": "difficult-but-correct"}
     ).status == "accepted"

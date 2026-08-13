@@ -2,7 +2,7 @@ import json
 from typing import Any
 
 from agc_runtime.catalog import catalog_counts, load_catalog
-from agc_runtime.capture_read_service import capture_get, capture_overview, capture_search
+from agc_runtime.capture_read_service import CaptureReadError, capture_get, capture_overview, capture_search
 from agc_runtime.contracts import ToolResponse
 from agc_runtime.models import MemoryItem
 from agc_runtime.paths import MemoryPaths
@@ -272,13 +272,19 @@ def dispatch_read(paths: MemoryPaths, request: Any) -> ToolResponse:
         )
     try:
         return _HANDLERS[action](paths, request)
-    except LookupError as error:
-        if str(error) == "id_required":
+    except CaptureReadError as error:
+        if error.code == "capture_integrity_degraded":
+            return _failed(action, error.code, "Capture object integrity is degraded")
+        return _failed(action, "capture_not_found", "Capture object is not available")
+    except LookupError:
+        if action in {"get", "history", "evidence"} and (
+            not isinstance(request.get("id"), str) or not request.get("id")
+        ):
             return _failed(action, "id_required", "explicit memory id is required")
-        return _failed(action, "not_found", str(error))
-    except FileNotFoundError as error:
-        return _failed(action, "not_found", str(error))
-    except (ValueError, TypeError, KeyError, json.JSONDecodeError) as error:
-        return _failed(action, "invalid_request", str(error))
-    except OSError as error:
-        return _failed(action, "read_failed", str(error))
+        return _failed(action, "not_found", "requested memory object is not available")
+    except FileNotFoundError:
+        return _failed(action, "not_found", "requested memory object is not available")
+    except (ValueError, TypeError, KeyError, json.JSONDecodeError):
+        return _failed(action, "invalid_request", "request is invalid")
+    except OSError:
+        return _failed(action, "read_failed", "read operation failed")

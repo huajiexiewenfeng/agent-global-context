@@ -2,14 +2,28 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import hashlib
 from pathlib import Path
 from typing import Any
 
 from agc_runtime import __version__
+from agc_runtime.capture_store import CaptureStore, root_fingerprint
 from agc_runtime.paths import MemoryPaths
-from agc_runtime.runtime_config import load_runtime_config
+from agc_runtime.runtime_config import default_config_text, load_runtime_config
 from agc_runtime.utf8_io import strict_read_text
+
+
+@dataclass(frozen=True)
+class HostBindingEvidence:
+    """Explicit evidence supplied only by a host that bound MemoryRoot."""
+
+    kind: str
+    root_fingerprint: str
+
+    @classmethod
+    def mcp_memory_root(cls, paths: MemoryPaths) -> "HostBindingEvidence":
+        return cls("mcp_memory_root", root_fingerprint(paths))
 
 
 def _paths(value: MemoryPaths | Path) -> MemoryPaths:
@@ -20,26 +34,75 @@ def _fingerprint(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
-def capture_status(value: MemoryPaths | Path) -> dict[str, Any]:
+def capture_status(
+    value: MemoryPaths | Path,
+    *,
+    host_binding: HostBindingEvidence | None = None,
+) -> dict[str, Any]:
     paths = _paths(value)
     config_path = paths.root / "config.yaml"
-    config_text = strict_read_text(config_path) if config_path.exists() else ""
+    config_exists = config_path.exists()
+    config_text = strict_read_text(config_path) if config_exists else default_config_text()
     config = load_runtime_config(paths)
     capture = config.capture
-    # Source paths are intentionally converted to opaque IDs; no absolute source
-    # path is returned by this diagnostic surface.
-    source_root_ids = tuple(sorted({_fingerprint(item) for item in capture.sources}))
-    enabled = capture.enabled
-    scanner_only = capture.mode == "scanner_only"
-    route_conflicts: list[dict[str, str]] = []
+    memory_fingerprint = root_fingerprint(paths)
+    binding_matches = (
+        host_binding is not None
+        and host_binding.root_fingerprint == memory_fingerprint
+        and host_binding.kind == "mcp_memory_root"
+    )
+    memory_assessment = "verified" if host_binding is not None else "not_assessed"
+    reasons: list[str] = []
+    if not capture.enabled:
+        reasons.append("capture_disabled")
+    if capture.mode == "off":
+        reasons.append("capture_mode_off")
+    reasons.extend((
+        "source_roots_unavailable",
+        "extractor_capability_not_assessed",
+        "route_not_assessed",
+    ))
+    if host_binding is None:
+        reasons.append("memory_root_binding_not_assessed")
+    elif not binding_matches:
+        reasons.append("memory_root_binding_mismatch")
     return {
-        "config_source": {"kind": "memory_root_config", "fingerprint": _fingerprint(config_text)},
+        "config_source": {
+            "kind": "memory_root_config" if config_exists else "runtime_default",
+            "sha256": _fingerprint(config_text),
+        },
         "runtime": {"version": __version__},
-        "memory_root": {"fingerprint": _fingerprint(str(paths.root)), "matches_host_binding": True},
-        "configured_source_root_ids": list(source_root_ids),
-        "extractor_boundary": {"kind": capture.extractor.kind, "model_configured": capture.extractor.model is not None, "host_binding_present": False},
-        "budgets": {"backfill_window_days": capture.budgets.backfill_window_days, "backfill_total_tokens": capture.budgets.backfill_total_tokens, "incremental_total_tokens": capture.budgets.incremental_total_tokens, "runner_concurrency": capture.runner.concurrency, "max_attempts": capture.runner.max_attempts},
-        "state": {"enabled": enabled, "paused": capture.paused, "mode": capture.mode, "scanner_only": scanner_only},
-        "route_conflicts": route_conflicts,
+        "memory_root": {
+            "fingerprint": memory_fingerprint,
+            "assessment": memory_assessment,
+            "matches_host_binding": binding_matches if host_binding is not None else None,
+            "evidence": {"kind": host_binding.kind} if host_binding is not None else None,
+        },
+        "source_roots": {
+            "configured_count": len(capture.sources),
+            "assessment": "unavailable",
+            "ids": [],
+        },
+        "extractor_boundary": {
+            "kind": capture.extractor.kind,
+            "model_configured": capture.extractor.model is not None,
+            "capability_assessment": "not_assessed",
+        },
+        "budgets": {
+            "backfill_window_days": capture.budgets.backfill_window_days,
+            "backfill_total_tokens": capture.budgets.backfill_total_tokens,
+            "incremental_total_tokens": capture.budgets.incremental_total_tokens,
+            "runner_concurrency": capture.runner.concurrency,
+            "max_attempts": capture.runner.max_attempts,
+        },
+        "state": {
+            "enabled": capture.enabled,
+            "paused": capture.paused,
+            "mode": capture.mode,
+            "scanner_only": capture.mode == "scanner_only",
+        },
+        "route": {"assessment": "not_assessed", "conflicts": []},
+        "cursor_key": CaptureStore(paths).cursor_key_status(),
         "activation_ready": False,
+        "activation_reasons": reasons,
     }
