@@ -188,6 +188,34 @@ def test_recovery_rejects_transition_journal_with_invalid_filename_binding_or_st
     assert store.read_receipt(receipt.receipt_id).status == "queued"
 
 
+def test_recovery_converges_extraction_manifest_journal_mismatch_in_one_pass(tmp_path: Path):
+    paths = MemoryPaths.from_root(tmp_path / "memory")
+    store = CaptureStore(paths, clock=lambda: "2026-08-13T12:00:00Z")
+    receipt = _receipt()
+    store.register_extraction(receipt)
+    manifest_observation = _observation("User has manifest-bound synthetic work.", 0)
+    journal_observation = _observation("User has journal-bound synthetic work.", 1)
+    atomic_write_json(
+        paths.capture.indexes / f"{receipt.receipt_id}.json",
+        {"schema_version": 1, "receipt_id": receipt.receipt_id, "observation_ids": [manifest_observation.observation_id]},
+    )
+    atomic_write_json(
+        paths.capture.journals / f"{receipt.receipt_id}.json",
+        {"schema_version": 1, "receipt_id": receipt.receipt_id, "observation_ids": [journal_observation.observation_id]},
+    )
+    atomic_write_json(paths.capture.staging / f"{journal_observation.observation_id}.json", journal_observation.to_mapping())
+
+    first = store.recover_transactions(now="2026-08-13T12:01:00Z")
+
+    assert first.partial_count >= 1 and first.corrupt_count >= 1
+    assert store.read_receipt(receipt.receipt_id).status == "retryable"
+    assert store.visible_observations(receipt.receipt_id) == ()
+    assert not (paths.capture.journals / f"{receipt.receipt_id}.json").exists()
+    assert not (paths.capture.staging / f"{journal_observation.observation_id}.json").exists()
+    second = store.recover_transactions(now="2026-08-13T12:02:00Z")
+    assert second.recovered_count == second.orphan_count == second.partial_count == second.duplicate_count == second.corrupt_count == 0
+
+
 @pytest.mark.parametrize(
     "crash_point",
     [

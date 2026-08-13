@@ -503,6 +503,12 @@ class CaptureStore:
                     ids: tuple[str, ...] = ()
                     try:
                         ids = self._read_manifest(receipt.receipt_id)
+                        if has_journal and journal_ids_for_receipt != ids:
+                            # Two safe but divergent extraction bindings cannot
+                            # both be active. Account for the corruption and
+                            # clean both sets below before parking retryable.
+                            corrupt += 1
+                            ids = tuple(dict.fromkeys((*ids, *journal_ids_for_receipt)))
                         if not self._safe_cleanup_bound(receipt.receipt_id, ids, remove_manifest=True):
                             corrupt += 1
                             self._quarantine(self._manifest_path(receipt.receipt_id))
