@@ -200,7 +200,11 @@ def _validate_capture(paths: MemoryPaths, issues: list[dict[str, str]]) -> None:
                 continue
             try:
                 parser(json.loads(strict_read_text(path)))
-            except (ValueError, OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+            except OSError:
+                _capture_issue(
+                    issues, paths, path, "Capture object could not be read"
+                )
+            except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as error:
                 _capture_issue(issues, paths, path, f"invalid Capture object: {error}")
     unsupported_directories = (
         paths.capture.conflicts,

@@ -6,7 +6,7 @@ import hashlib
 import json
 import unicodedata
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 
 CAPTURE_SCHEMA_VERSION = 1
@@ -54,6 +54,17 @@ def _mapping(value: Any, name: str) -> dict[str, Any]:
     return value
 
 
+def _validated_public_mapping(
+    builder: Callable[[], dict[str, Any]],
+    parser: Callable[[Any], Any],
+) -> dict[str, Any]:
+    try:
+        validated = parser(builder())
+        return validated._to_mapping_unchecked()
+    except (AttributeError, TypeError, ValueError, UnicodeError) as error:
+        raise ValueError("Capture contract cannot be serialized") from error
+
+
 @dataclass(frozen=True)
 class CaptureKey:
     adapter_id: str
@@ -68,7 +79,7 @@ class CaptureKey:
         return capture_key_from_mapping(value)
 
     def to_mapping(self) -> dict[str, str]:
-        return self.from_mapping(self._to_mapping_unchecked())._to_mapping_unchecked()
+        return _validated_public_mapping(self._to_mapping_unchecked, self.from_mapping)
 
     def _to_mapping_unchecked(self) -> dict[str, str]:
         return {
@@ -96,7 +107,7 @@ class RevisionRef:
         return revision_ref_from_mapping(value)
 
     def to_mapping(self) -> dict[str, Any]:
-        return self.from_mapping(self._to_mapping_unchecked())._to_mapping_unchecked()
+        return _validated_public_mapping(self._to_mapping_unchecked, self.from_mapping)
 
     def _to_mapping_unchecked(self) -> dict[str, Any]:
         return {
@@ -124,7 +135,7 @@ class TokenUsage:
         return token_usage_from_mapping(value)
 
     def to_mapping(self) -> dict[str, int]:
-        return self.from_mapping(self._to_mapping_unchecked())._to_mapping_unchecked()
+        return _validated_public_mapping(self._to_mapping_unchecked, self.from_mapping)
 
     def _to_mapping_unchecked(self) -> dict[str, int]:
         return {
@@ -147,7 +158,7 @@ class SanitizedError:
         return sanitized_error_from_mapping(value)
 
     def to_mapping(self) -> dict[str, Any]:
-        return self.from_mapping(self._to_mapping_unchecked())._to_mapping_unchecked()
+        return _validated_public_mapping(self._to_mapping_unchecked, self.from_mapping)
 
     def _to_mapping_unchecked(self) -> dict[str, Any]:
         return {"stage": self.stage, "code": self.code, "retryable": self.retryable}
@@ -201,7 +212,7 @@ class CaptureReceipt:
         return CaptureKey(self.adapter_id, self.source_root_id, self.task_id, self.revision_id)
 
     def to_mapping(self) -> dict[str, Any]:
-        return self.from_mapping(self._to_mapping_unchecked())._to_mapping_unchecked()
+        return _validated_public_mapping(self._to_mapping_unchecked, self.from_mapping)
 
     def _to_mapping_unchecked(self) -> dict[str, Any]:
         return {
@@ -257,7 +268,7 @@ class CollectedObservation:
         return collected_observation_from_mapping(value)
 
     def to_mapping(self) -> dict[str, Any]:
-        return self.from_mapping(self._to_mapping_unchecked())._to_mapping_unchecked()
+        return _validated_public_mapping(self._to_mapping_unchecked, self.from_mapping)
 
     def _to_mapping_unchecked(self) -> dict[str, Any]:
         return {
@@ -289,7 +300,7 @@ class LedgerEntry:
         return ledger_entry_from_mapping(value)
 
     def to_mapping(self) -> dict[str, Any]:
-        return self.from_mapping(self._to_mapping_unchecked())._to_mapping_unchecked()
+        return _validated_public_mapping(self._to_mapping_unchecked, self.from_mapping)
 
     def _to_mapping_unchecked(self) -> dict[str, Any]:
         return {"schema_version": self.schema_version, "capture_key": self.capture_key._to_mapping_unchecked(), "receipt_id": self.receipt_id, "discovered_at": self.discovered_at, "processed_at": self.processed_at, "status": self.status}
@@ -311,7 +322,7 @@ class CaptureLease:
         return capture_lease_from_mapping(value)
 
     def to_mapping(self) -> dict[str, Any]:
-        return self.from_mapping(self._to_mapping_unchecked())._to_mapping_unchecked()
+        return _validated_public_mapping(self._to_mapping_unchecked, self.from_mapping)
 
     def _to_mapping_unchecked(self) -> dict[str, Any]:
         return {"schema_version": self.schema_version, "capture_key": self.capture_key._to_mapping_unchecked(), "owner_id": self.owner_id, "fencing_token": self.fencing_token, "acquired_at": self.acquired_at, "expires_at": self.expires_at}
@@ -332,7 +343,7 @@ class SourceQuarantine:
         return source_quarantine_from_mapping(value)
 
     def to_mapping(self) -> dict[str, Any]:
-        return self.from_mapping(self._to_mapping_unchecked())._to_mapping_unchecked()
+        return _validated_public_mapping(self._to_mapping_unchecked, self.from_mapping)
 
     def _to_mapping_unchecked(self) -> dict[str, Any]:
         return {"schema_version": self.schema_version, "adapter_id": self.adapter_id, "source_root_id": self.source_root_id, "created_at": self.created_at, "code": self.code}
@@ -353,7 +364,7 @@ class CaptureSuppressionTombstone:
         return capture_suppression_tombstone_from_mapping(value)
 
     def to_mapping(self) -> dict[str, Any]:
-        return self.from_mapping(self._to_mapping_unchecked())._to_mapping_unchecked()
+        return _validated_public_mapping(self._to_mapping_unchecked, self.from_mapping)
 
     def _to_mapping_unchecked(self) -> dict[str, Any]:
         return {"schema_version": self.schema_version, "tombstone_id": self.tombstone_id, "capture_key": self.capture_key._to_mapping_unchecked(), "created_at": self.created_at, "reason": self.reason}

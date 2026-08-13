@@ -254,6 +254,49 @@ def test_quarantined_receipt_accepts_only_consistent_pre_or_post_extraction_shap
         CaptureReceipt.from_mapping(partial)
 
 
+@pytest.mark.parametrize(
+    "status",
+    ["extracting", "complete", "retryable", "failed", "quarantined"],
+)
+@pytest.mark.parametrize(
+    "missing_fields",
+    [
+        ("source_fingerprint", "source_hash_schema_version"),
+        ("capsule_hash", "capsule_schema_version"),
+    ],
+    ids=["source-hash-pair", "capsule-hash-pair"],
+)
+def test_post_extraction_receipts_require_both_hash_pairs(
+    status: str, missing_fields: tuple[str, str]
+):
+    value = receipt_mapping(status=status)
+    value.update(
+        {
+            "source_fingerprint": "b" * 64,
+            "source_hash_schema_version": "source-v1",
+            "capsule_hash": "c" * 64,
+            "capsule_schema_version": "capsule-v1",
+            "extractor_id": "synthetic_extractor",
+            "extractor_version": "1",
+            "extractor_schema_version": "1",
+            "taxonomy_version": "taxonomy-v1",
+        }
+    )
+    if status in {"retryable", "failed", "quarantined"}:
+        value["sanitized_error"] = {
+            "stage": "extract",
+            "code": "synthetic_failure",
+            "retryable": status == "retryable",
+        }
+    if status == "retryable":
+        value["next_retry_at"] = UTC
+    for field in missing_fields:
+        value[field] = None
+
+    with pytest.raises(ValueError, match="source and capsule hash fields"):
+        CaptureReceipt.from_mapping(value)
+
+
 def test_hard_forget_fields_form_one_consistent_receipt_state():
     forgotten_but_not_redacted = receipt_mapping()
     forgotten_but_not_redacted["forgotten_observation_count"] = 1
@@ -323,6 +366,10 @@ def test_receipt_error_coalescing_and_exclusion_fields_are_status_conditioned():
     retryable["extractor_version"] = "1"
     retryable["extractor_schema_version"] = "1"
     retryable["taxonomy_version"] = "taxonomy-v1"
+    retryable["source_fingerprint"] = "b" * 64
+    retryable["source_hash_schema_version"] = "source-v1"
+    retryable["capsule_hash"] = "c" * 64
+    retryable["capsule_schema_version"] = "capsule-v1"
     assert CaptureReceipt.from_mapping(retryable).sanitized_error.code == "synthetic_failure"
 
     excluded = receipt_mapping(status="excluded")
@@ -362,6 +409,10 @@ def test_receipt_error_retryability_matches_terminal_status():
             "extractor_version": "1",
             "extractor_schema_version": "1",
             "taxonomy_version": "taxonomy-v1",
+            "source_fingerprint": "b" * 64,
+            "source_hash_schema_version": "source-v1",
+            "capsule_hash": "c" * 64,
+            "capsule_schema_version": "capsule-v1",
             "sanitized_error": {
                 "stage": "extract",
                 "code": "synthetic_failure",
@@ -937,8 +988,93 @@ def test_every_public_capture_dataclass_revalidates_before_serialization():
     )
 
     for invalid in invalid_objects:
-        with pytest.raises(ValueError):
+        with pytest.raises(
+            ValueError, match="^Capture contract cannot be serialized$"
+        ):
             invalid.to_mapping()
+
+
+def test_nested_and_container_serialization_failures_use_the_public_value_error_gate():
+    key = CaptureKey.from_mapping(
+        {
+            "adapter_id": "adapter",
+            "source_root_id": SOURCE_ROOT,
+            "task_id": "task-1",
+            "revision_id": "turn-1",
+        }
+    )
+    revision = RevisionRef.from_mapping(
+        {
+            "schema_version": CAPTURE_SCHEMA_VERSION,
+            "capture_key": key.to_mapping(),
+            "rollout_anchor_id": "anchor-1",
+            "completed_at": UTC,
+            "locator": "sessions/opaque-token",
+            "identity_quality": "session_id",
+            "adapter_version": "1.0",
+            "source_schema_version": "1",
+        }
+    )
+    receipt = CaptureReceipt.from_mapping(receipt_mapping())
+    observation = CollectedObservation.from_mapping(observation_mapping())
+    ledger = LedgerEntry.from_mapping(
+        {
+            "schema_version": CAPTURE_SCHEMA_VERSION,
+            "capture_key": key.to_mapping(),
+            "receipt_id": receipt_id_for(key),
+            "discovered_at": UTC,
+            "processed_at": None,
+            "status": "discovered",
+        }
+    )
+    lease = CaptureLease.from_mapping(
+        {
+            "schema_version": CAPTURE_SCHEMA_VERSION,
+            "capture_key": key.to_mapping(),
+            "owner_id": "worker-1",
+            "fencing_token": 1,
+            "acquired_at": UTC,
+            "expires_at": "2026-08-13T12:01:00Z",
+        }
+    )
+    tombstone = CaptureSuppressionTombstone.from_mapping(
+        {
+            "schema_version": CAPTURE_SCHEMA_VERSION,
+            "tombstone_id": tombstone_id_for(key),
+            "capture_key": key.to_mapping(),
+            "created_at": UTC,
+            "reason": "user_forget",
+        }
+    )
+
+    invalid_objects = (
+        replace(revision, key=object()),
+        replace(receipt, token_usage=object()),
+        replace(observation, source=object()),
+        replace(ledger, capture_key=object()),
+        replace(lease, capture_key=object()),
+        replace(tombstone, capture_key=object()),
+    )
+    for invalid in invalid_objects:
+        with pytest.raises(
+            ValueError, match="^Capture contract cannot be serialized$"
+        ):
+            invalid.to_mapping()
+
+
+def test_public_serialization_gate_normalizes_unicode_failures_without_input_text():
+    class UnicodeFailingMapping:
+        def keys(self):
+            raise UnicodeError("private-user-text")
+
+    observation = CollectedObservation.from_mapping(observation_mapping())
+    invalid = replace(observation, source=UnicodeFailingMapping())
+
+    with pytest.raises(
+        ValueError, match="^Capture contract cannot be serialized$"
+    ) as caught:
+        invalid.to_mapping()
+    assert "private-user-text" not in str(caught.value)
 
 
 def test_directly_constructed_observation_cannot_serialize_secret_or_absolute_locator():
@@ -951,7 +1087,7 @@ def test_directly_constructed_observation_cannot_serialize_secret_or_absolute_lo
         }
     )
 
-    with pytest.raises(ValueError, match="sensitivity"):
+    with pytest.raises(ValueError, match="^Capture contract cannot be serialized$"):
         secret.to_mapping()
-    with pytest.raises(ValueError, match="locator"):
+    with pytest.raises(ValueError, match="^Capture contract cannot be serialized$"):
         absolute.to_mapping()

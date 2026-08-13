@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 
+import agc_runtime.admin_service as admin_service
 from agc_runtime.admin_service import _managed_directories, dispatch_admin
 from agc_runtime.capture_contracts import CAPTURE_SCHEMA_VERSION, CaptureKey
 from agc_runtime.paths import MemoryPaths
@@ -102,6 +103,37 @@ def test_admin_validate_reports_invalid_capture_schema_marker_utf8_safely(tmp_pa
     assert response.error["code"] == "validation_failed"
     assert any(
         issue["path"] == ".runtime/capture/schema-version"
+        for issue in response.data["issues"]
+    )
+
+
+def test_admin_validate_sanitizes_capture_object_read_oserrors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    paths = MemoryPaths.from_root(tmp_path / "memory")
+    dispatch_admin(paths, {"action": "init"})
+    receipt_path = paths.capture.receipts / ("cr_" + "a" * 64 + ".json")
+    receipt_path.write_text("{}", encoding="utf-8")
+    private_path = r"C:\private\user-task\secret-transcript.jsonl"
+    private_text = "private-user-content"
+    real_read = admin_service.strict_read_text
+
+    def permission_denied(path: Path) -> str:
+        if path == receipt_path:
+            raise PermissionError(f"{private_text}: {private_path}")
+        return real_read(path)
+
+    monkeypatch.setattr(admin_service, "strict_read_text", permission_denied)
+
+    response = dispatch_admin(paths, {"action": "validate"})
+    rendered = json.dumps(response.to_dict(), ensure_ascii=False)
+
+    assert response.status == "failed"
+    assert response.error["code"] == "validation_failed"
+    assert private_path not in rendered
+    assert private_text not in rendered
+    assert any(
+        issue["message"] == "Capture object could not be read"
         for issue in response.data["issues"]
     )
 

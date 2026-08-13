@@ -249,6 +249,7 @@ def capture_receipt_from_mapping(value: Any) -> CaptureReceipt:
     extraction_metadata = (*extractor_values, taxonomy_version)
     if any(item is None for item in extraction_metadata) and any(item is not None for item in extraction_metadata):
         raise ValueError("extractor fields and taxonomy must all be null or all be present")
+    has_extraction_metadata = all(item is not None for item in extraction_metadata)
     post_extracting = {"extracting", "complete", "retryable", "failed"}
     if status in post_extracting and any(item is None for item in extraction_metadata):
         raise ValueError("extractor fields and taxonomy must be present after extracting")
@@ -276,8 +277,18 @@ def capture_receipt_from_mapping(value: Any) -> CaptureReceipt:
         )
     if redacted and (source_fingerprint is not None or capsule_hash is not None):
         raise ValueError("redacted receipt must clear source and capsule hashes")
-    if status == "complete" and not redacted and (source_fingerprint is None or capsule_hash is None):
-        raise ValueError("complete receipt requires source and capsule hashes unless redacted")
+    if has_extraction_metadata and not redacted and any(
+        item is None
+        for item in (
+            source_fingerprint,
+            source_hash_schema_version,
+            capsule_hash,
+            capsule_schema_version,
+        )
+    ):
+        raise ValueError(
+            "post-extraction source and capsule hash fields must be present unless redacted"
+        )
     zero_reason = root["zero_reason"]
     if status == "complete" and observation_count == 0:
         zero_reason = _enum(zero_reason, "CaptureReceipt.zero_reason", _ZERO_REASONS)
