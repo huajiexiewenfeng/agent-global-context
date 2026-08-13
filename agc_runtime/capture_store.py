@@ -120,6 +120,14 @@ class CaptureStore:
     def _journal_path(self, receipt_id: str) -> Path:
         return self._path(self.capture.journals, receipt_id, _RECEIPT_ID)
 
+    def _transition_journal_path(self, receipt_id: str) -> Path:
+        if not _RECEIPT_ID.fullmatch(receipt_id):
+            raise ValueError("invalid Capture object identifier")
+        path = self.capture.journals / f"tr_{receipt_id}.json"
+        if path.parent.resolve() != self.capture.journals.resolve():
+            raise ValueError("Capture object path escapes its directory")
+        return path
+
     def _manifest_path(self, receipt_id: str) -> Path:
         return self._path(self.capture.indexes, receipt_id, _RECEIPT_ID)
 
@@ -338,8 +346,25 @@ class CaptureStore:
                     taxonomy_version=None,
                 )
             updated = CaptureReceipt.from_mapping(updated.to_mapping())
+            transition_journal = {
+                "schema_version": CAPTURE_SCHEMA_VERSION,
+                "operation": "transition",
+                "receipt_id": current.receipt_id,
+                "expected_status": current.status,
+                "target_status": target,
+            }
+            self._point("before:transition:journal")
+            atomic_write_json(self._transition_journal_path(current.receipt_id), transition_journal)
+            self._point("after:transition:journal")
+            self._point("before:transition:receipt")
             self._write_receipt(updated)
+            self._point("after:transition:receipt")
+            self._point("before:transition:ledger")
             self._write_ledger(updated, status=target, processed_at=None)
+            self._point("after:transition:ledger")
+            self._point("before:transition:cleanup")
+            safe_unlink(self._transition_journal_path(current.receipt_id))
+            self._point("after:transition:cleanup")
             return updated
 
     def visible_observations(self, receipt_id: str) -> tuple[CollectedObservation, ...]:
@@ -367,22 +392,74 @@ class CaptureStore:
         atomic_write_json(self.capture.quarantines / f"corrupt-{digest}.json", {"schema_version": CAPTURE_SCHEMA_VERSION, "code": "corrupt_capture_artifact"})
         safe_unlink(path)
 
+    def _binding_ids(self, value: object, receipt_id: str) -> tuple[str, ...]:
+        if not isinstance(value, dict) or set(value) != {"schema_version", "receipt_id", "observation_ids"}:
+            raise ValueError("invalid Capture transaction journal")
+        if value.get("schema_version") != CAPTURE_SCHEMA_VERSION or value.get("receipt_id") != receipt_id:
+            raise ValueError("invalid Capture transaction journal")
+        return tuple(self._manifest_value(receipt_id, value.get("observation_ids", []))["observation_ids"])
+
+    def _artifact_binds(self, directory: Path, receipt_id: str, observation_id: str) -> bool:
+        path = self._path(directory, observation_id, _OBSERVATION_ID)
+        if not path.exists():
+            return True
+        try:
+            observation = CollectedObservation.from_mapping(read_json(path))
+        except ValueError:
+            return False
+        return observation.observation_id == observation_id and observation.receipt_id == receipt_id
+
+    def _safe_cleanup_bound(self, receipt_id: str, ids: Sequence[str], *, remove_manifest: bool) -> bool:
+        """Delete only artifacts independently proven to belong to ``receipt_id``."""
+        if any(not self._artifact_binds(directory, receipt_id, item) for directory in (self.capture.observations, self.capture.staging) for item in ids):
+            return False
+        for observation_id in ids:
+            safe_unlink(self._stage_path(observation_id))
+            if remove_manifest:
+                safe_unlink(self._observation_path(observation_id))
+        if remove_manifest:
+            safe_unlink(self._manifest_path(receipt_id))
+        return True
+
+    def _recover_transition_journal(self, path: Path) -> tuple[int, int]:
+        try:
+            value = read_json(path)
+            if set(value) != {"schema_version", "operation", "receipt_id", "expected_status", "target_status"} or value.get("schema_version") != CAPTURE_SCHEMA_VERSION or value.get("operation") != "transition" or not isinstance(value.get("receipt_id"), str) or not _RECEIPT_ID.fullmatch(value["receipt_id"]):
+                raise ValueError("invalid transition journal")
+            receipt = self._read_receipt(value["receipt_id"])
+            if receipt.status == value["target_status"]:
+                self._write_ledger(receipt, status=receipt.status, processed_at=None)
+            elif receipt.status != value["expected_status"]:
+                raise ValueError("transition journal state mismatch")
+            safe_unlink(path)
+            return 1, 0
+        except (ValueError, TypeError):
+            self._quarantine(path)
+            return 0, 1
+
     def recover_transactions(self, *, now: str) -> RecoveryReport:
         if not self.capture.root.exists():
             return RecoveryReport()
         recovered = orphan = partial = duplicate = corrupt = 0
         with capture_write_lock(self.paths):
             self._ensure_layout_locked()
-            journal_ids: set[str] = set()
+            journal_ids: dict[str, tuple[str, ...]] = {}
             for path in sorted(self.capture.journals.glob("*.json")):
+                if path.name.startswith("tr_"):
+                    change, bad = self._recover_transition_journal(path)
+                    recovered += change; corrupt += bad
+                    continue
                 if not _RECEIPT_ID.fullmatch(path.stem):
                     corrupt += 1; self._quarantine(path); continue
                 try:
-                    self._read_manifest(path.stem) if False else self._manifest_value(path.stem, read_json(path).get("observation_ids", []))
-                    journal_ids.add(path.stem)
+                    ids = self._binding_ids(read_json(path), path.stem)
+                    if not all(self._artifact_binds(directory, path.stem, item) for directory in (self.capture.observations, self.capture.staging) for item in ids):
+                        raise ValueError("journal references foreign observation")
+                    journal_ids[path.stem] = ids
                 except (ValueError, TypeError):
                     corrupt += 1; self._quarantine(path)
             referenced: set[str] = set()
+            seen_receipts: set[str] = set()
             for receipt_path in sorted(self.capture.receipts.glob("*.json")):
                 if not _RECEIPT_ID.fullmatch(receipt_path.stem):
                     corrupt += 1; self._quarantine(receipt_path); continue
@@ -390,30 +467,61 @@ class CaptureStore:
                     receipt = self._read_receipt(receipt_path.stem)
                 except ValueError:
                     corrupt += 1; self._quarantine(receipt_path); continue
-                has_journal = receipt.receipt_id in journal_ids
+                seen_receipts.add(receipt.receipt_id)
+                journal_ids_for_receipt = journal_ids.get(receipt.receipt_id)
+                has_journal = journal_ids_for_receipt is not None
                 valid = self._manifest_valid(receipt)
                 if receipt.status == "complete" and valid:
                     referenced.update(self._read_manifest(receipt.receipt_id))
                     if has_journal:
-                        self._cleanup_ids(receipt.receipt_id, self._read_manifest(receipt.receipt_id), remove_manifest=False); recovered += 1
+                        manifest_ids = self._read_manifest(receipt.receipt_id)
+                        if journal_ids_for_receipt != manifest_ids:
+                            duplicate += 1
+                            safe_unlink(self._journal_path(receipt.receipt_id))
+                        else:
+                            self._safe_cleanup_bound(receipt.receipt_id, manifest_ids, remove_manifest=False)
+                        recovered += 1
                     continue
                 if has_journal or receipt.status == "extracting" or (receipt.status == "complete" and not valid):
                     partial += 1
                     ids: tuple[str, ...] = ()
                     try:
                         ids = self._read_manifest(receipt.receipt_id)
-                    except ValueError:
-                        try:
-                            ids = tuple(read_json(self._journal_path(receipt.receipt_id)).get("observation_ids", [])) if has_journal else ()
-                        except ValueError:
+                        if not self._safe_cleanup_bound(receipt.receipt_id, ids, remove_manifest=True):
+                            corrupt += 1
+                            self._quarantine(self._manifest_path(receipt.receipt_id))
                             ids = ()
-                    ids = tuple(item for item in ids if isinstance(item, str) and _OBSERVATION_ID.fullmatch(item))
-                    self._cleanup_ids(receipt.receipt_id, ids, remove_manifest=True)
+                    except ValueError:
+                        ids = journal_ids_for_receipt or ()
+                        if not self._safe_cleanup_bound(receipt.receipt_id, ids, remove_manifest=True):
+                            corrupt += 1
+                            ids = ()
+                    if has_journal:
+                        safe_unlink(self._journal_path(receipt.receipt_id))
                     retryable = self._retryable(receipt, now)
                     self._write_receipt(retryable)
                     self._write_ledger(retryable, status="retryable", processed_at=None)
                     recovered += 1
+            for receipt_id, ids in journal_ids.items():
+                if receipt_id in seen_receipts:
+                    continue
+                partial += 1
+                if self._safe_cleanup_bound(receipt_id, ids, remove_manifest=True):
+                    safe_unlink(self._journal_path(receipt_id))
+                    recovered += 1
+                else:
+                    corrupt += 1
+                    self._quarantine(self._journal_path(receipt_id))
             for path in sorted(self.capture.observations.glob("*.json")):
+                if not _OBSERVATION_ID.fullmatch(path.stem):
+                    corrupt += 1; self._quarantine(path); continue
+                try:
+                    observation = CollectedObservation.from_mapping(read_json(path))
+                except ValueError:
+                    corrupt += 1; self._quarantine(path); continue
+                if observation.observation_id not in referenced:
+                    orphan += 1; safe_unlink(path)
+            for path in sorted(self.capture.staging.glob("*.json")):
                 if not _OBSERVATION_ID.fullmatch(path.stem):
                     corrupt += 1; self._quarantine(path); continue
                 try:
