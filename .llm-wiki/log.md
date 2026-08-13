@@ -1,5 +1,18 @@
 # LLM Wiki Log
 
+## 2026-08-13 — agc-capture-coverage-mvp
+
+- Locked the next milestone to provable Codex main-task Revision coverage rather
+  than the complete automatic-learning loop.
+- Revised the written design so Phase 1 stops at truthful Capture Receipt plus
+  zero to eight Recall-isolated Collected Observations; aggregation, Candidate,
+  and Formal Memory mutation remain deferred.
+- Defined active-profile scope, completed-turn Revision identity, Hook/Scanner
+  separation, two-level idempotency, transaction recovery, Source Health,
+  backup/restore, Hard Forget, token accounting, and foreground latency gates.
+- Registered the Change Brief and design for user written-spec review. Planning,
+  production implementation, deployment, and Capture activation have not started.
+
 ## 2026-08-11 — agc-recall-consistency-filter-validation
 
 - Added an explicit Recall trigger for evaluating whether a project, repository,
