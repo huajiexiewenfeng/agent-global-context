@@ -8,6 +8,9 @@ from agc_runtime.capture_contracts import CAPTURE_SCHEMA_VERSION, CaptureKey
 from agc_runtime.paths import MemoryPaths
 
 
+SOURCE_ROOT = "1" * 64
+
+
 def test_capture_paths_are_nested_below_an_isolated_runtime_namespace(tmp_path: Path):
     paths = MemoryPaths.from_root(tmp_path / "memory")
 
@@ -72,12 +75,43 @@ def test_admin_validate_contains_contract_type_errors_as_validation_issues(tmp_p
     assert any("CaptureReceipt" in issue["message"] for issue in response.data["issues"])
 
 
+def test_admin_validate_sanitizes_arbitrary_capture_filenames(tmp_path: Path):
+    paths = MemoryPaths.from_root(tmp_path / "memory")
+    dispatch_admin(paths, {"action": "init"})
+    unsafe_name = "private_sentence_traceback.json"
+    (paths.capture.receipts / unsafe_name).write_text(
+        json.dumps({"schema_version": 1}), encoding="utf-8"
+    )
+
+    response = dispatch_admin(paths, {"action": "validate"})
+
+    assert response.status == "failed"
+    rendered = json.dumps(response.data)
+    assert unsafe_name not in rendered
+    assert "<invalid-name>" in rendered
+
+
+def test_admin_validate_reports_invalid_capture_schema_marker_utf8_safely(tmp_path: Path):
+    paths = MemoryPaths.from_root(tmp_path / "memory")
+    dispatch_admin(paths, {"action": "init"})
+    paths.capture.schema_version.write_bytes(b"\xff")
+
+    response = dispatch_admin(paths, {"action": "validate"})
+
+    assert response.status == "failed"
+    assert response.error["code"] == "validation_failed"
+    assert any(
+        issue["path"] == ".runtime/capture/schema-version"
+        for issue in response.data["issues"]
+    )
+
+
 def test_admin_validate_strictly_decodes_census_revision_refs(tmp_path: Path):
     paths = MemoryPaths.from_root(tmp_path / "memory")
     dispatch_admin(paths, {"action": "init"})
     revision = {
         "schema_version": CAPTURE_SCHEMA_VERSION,
-        "capture_key": CaptureKey("adapter", "root", "task", "revision").to_mapping(),
+        "capture_key": CaptureKey("adapter", SOURCE_ROOT, "task", "revision").to_mapping(),
         "rollout_anchor_id": "turn-anchor",
         "completed_at": "2026-08-13T12:00:00Z",
         "locator": "sessions/opaque-turn-token",

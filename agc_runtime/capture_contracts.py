@@ -33,16 +33,15 @@ _TRANSITIONS = {
 
 def _canonical_json(value: Mapping[str, Any]) -> bytes:
     try:
-        text = json.dumps(
+        return json.dumps(
             value,
             allow_nan=False,
             ensure_ascii=False,
             sort_keys=True,
             separators=(",", ":"),
-        )
-    except (TypeError, ValueError) as error:
+        ).encode("utf-8")
+    except (TypeError, ValueError, UnicodeEncodeError) as error:
         raise ValueError("value is not valid canonical JSON") from error
-    return text.encode("utf-8")
 
 
 def _digest(prefix: str, value: Mapping[str, Any]) -> str:
@@ -69,6 +68,9 @@ class CaptureKey:
         return capture_key_from_mapping(value)
 
     def to_mapping(self) -> dict[str, str]:
+        return self.from_mapping(self._to_mapping_unchecked())._to_mapping_unchecked()
+
+    def _to_mapping_unchecked(self) -> dict[str, str]:
         return {
             "adapter_id": self.adapter_id,
             "source_root_id": self.source_root_id,
@@ -94,9 +96,12 @@ class RevisionRef:
         return revision_ref_from_mapping(value)
 
     def to_mapping(self) -> dict[str, Any]:
+        return self.from_mapping(self._to_mapping_unchecked())._to_mapping_unchecked()
+
+    def _to_mapping_unchecked(self) -> dict[str, Any]:
         return {
             "schema_version": CAPTURE_SCHEMA_VERSION,
-            "capture_key": self.key.to_mapping(),
+            "capture_key": self.key._to_mapping_unchecked(),
             "rollout_anchor_id": self.rollout_anchor_id,
             "completed_at": self.completed_at,
             "locator": self.locator,
@@ -119,6 +124,9 @@ class TokenUsage:
         return token_usage_from_mapping(value)
 
     def to_mapping(self) -> dict[str, int]:
+        return self.from_mapping(self._to_mapping_unchecked())._to_mapping_unchecked()
+
+    def _to_mapping_unchecked(self) -> dict[str, int]:
         return {
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
@@ -139,6 +147,9 @@ class SanitizedError:
         return sanitized_error_from_mapping(value)
 
     def to_mapping(self) -> dict[str, Any]:
+        return self.from_mapping(self._to_mapping_unchecked())._to_mapping_unchecked()
+
+    def _to_mapping_unchecked(self) -> dict[str, Any]:
         return {"stage": self.stage, "code": self.code, "retryable": self.retryable}
 
 
@@ -190,6 +201,9 @@ class CaptureReceipt:
         return CaptureKey(self.adapter_id, self.source_root_id, self.task_id, self.revision_id)
 
     def to_mapping(self) -> dict[str, Any]:
+        return self.from_mapping(self._to_mapping_unchecked())._to_mapping_unchecked()
+
+    def _to_mapping_unchecked(self) -> dict[str, Any]:
         return {
             "schema_version": self.schema_version, "receipt_id": self.receipt_id,
             "adapter_id": self.adapter_id, "adapter_version": self.adapter_version,
@@ -204,11 +218,11 @@ class CaptureReceipt:
             "extractor_schema_version": self.extractor_schema_version, "taxonomy_version": self.taxonomy_version,
             "observation_count": self.observation_count, "filtered_counts": self.filtered_counts,
             "duplicate_suppression_count": self.duplicate_suppression_count,
-            "token_usage": self.token_usage.to_mapping(), "usage_quality": self.usage_quality,
+            "token_usage": self.token_usage._to_mapping_unchecked(), "usage_quality": self.usage_quality,
             "redacted_by_forget": self.redacted_by_forget,
             "forgotten_observation_count": self.forgotten_observation_count,
             "zero_reason": self.zero_reason,
-            "sanitized_error": self.sanitized_error.to_mapping() if self.sanitized_error else None,
+            "sanitized_error": self.sanitized_error._to_mapping_unchecked() if self.sanitized_error else None,
             "coalesced_to": self.coalesced_to, "exclusion_reason": self.exclusion_reason,
         }
 
@@ -243,6 +257,9 @@ class CollectedObservation:
         return collected_observation_from_mapping(value)
 
     def to_mapping(self) -> dict[str, Any]:
+        return self.from_mapping(self._to_mapping_unchecked())._to_mapping_unchecked()
+
+    def _to_mapping_unchecked(self) -> dict[str, Any]:
         return {
             "schema_version": self.schema_version, "observation_id": self.observation_id,
             "receipt_id": self.receipt_id, "source": dict(self.source), "ordinal": self.ordinal,
@@ -272,7 +289,10 @@ class LedgerEntry:
         return ledger_entry_from_mapping(value)
 
     def to_mapping(self) -> dict[str, Any]:
-        return {"schema_version": self.schema_version, "capture_key": self.capture_key.to_mapping(), "receipt_id": self.receipt_id, "discovered_at": self.discovered_at, "processed_at": self.processed_at, "status": self.status}
+        return self.from_mapping(self._to_mapping_unchecked())._to_mapping_unchecked()
+
+    def _to_mapping_unchecked(self) -> dict[str, Any]:
+        return {"schema_version": self.schema_version, "capture_key": self.capture_key._to_mapping_unchecked(), "receipt_id": self.receipt_id, "discovered_at": self.discovered_at, "processed_at": self.processed_at, "status": self.status}
 
 
 @dataclass(frozen=True)
@@ -291,7 +311,10 @@ class CaptureLease:
         return capture_lease_from_mapping(value)
 
     def to_mapping(self) -> dict[str, Any]:
-        return {"schema_version": self.schema_version, "capture_key": self.capture_key.to_mapping(), "owner_id": self.owner_id, "fencing_token": self.fencing_token, "acquired_at": self.acquired_at, "expires_at": self.expires_at}
+        return self.from_mapping(self._to_mapping_unchecked())._to_mapping_unchecked()
+
+    def _to_mapping_unchecked(self) -> dict[str, Any]:
+        return {"schema_version": self.schema_version, "capture_key": self.capture_key._to_mapping_unchecked(), "owner_id": self.owner_id, "fencing_token": self.fencing_token, "acquired_at": self.acquired_at, "expires_at": self.expires_at}
 
 
 @dataclass(frozen=True)
@@ -309,6 +332,9 @@ class SourceQuarantine:
         return source_quarantine_from_mapping(value)
 
     def to_mapping(self) -> dict[str, Any]:
+        return self.from_mapping(self._to_mapping_unchecked())._to_mapping_unchecked()
+
+    def _to_mapping_unchecked(self) -> dict[str, Any]:
         return {"schema_version": self.schema_version, "adapter_id": self.adapter_id, "source_root_id": self.source_root_id, "created_at": self.created_at, "code": self.code}
 
 
@@ -327,41 +353,42 @@ class CaptureSuppressionTombstone:
         return capture_suppression_tombstone_from_mapping(value)
 
     def to_mapping(self) -> dict[str, Any]:
-        return {"schema_version": self.schema_version, "tombstone_id": self.tombstone_id, "capture_key": self.capture_key.to_mapping(), "created_at": self.created_at, "reason": self.reason}
+        return self.from_mapping(self._to_mapping_unchecked())._to_mapping_unchecked()
+
+    def _to_mapping_unchecked(self) -> dict[str, Any]:
+        return {"schema_version": self.schema_version, "tombstone_id": self.tombstone_id, "capture_key": self.capture_key._to_mapping_unchecked(), "created_at": self.created_at, "reason": self.reason}
 
 
 def receipt_id_for(key: CaptureKey) -> str:
-    return _digest("cr_", {"schema_version": CAPTURE_SCHEMA_VERSION, "capture_key": key.to_mapping()})
+    if not isinstance(key, CaptureKey):
+        raise ValueError("receipt_id key must be a CaptureKey")
+    validated = CaptureKey.from_mapping(key._to_mapping_unchecked())
+    return _digest("cr_", {"schema_version": CAPTURE_SCHEMA_VERSION, "capture_key": validated._to_mapping_unchecked()})
 
 
 def observation_fingerprint_for(value: Mapping[str, Any] | CollectedObservation) -> str:
-    mapping = value.to_mapping() if isinstance(value, CollectedObservation) else _mapping(value, "observation")
-    assertion = _mapping(mapping.get("assertion"), "observation.assertion")
-    statement = mapping.get("statement")
-    scopes = mapping.get("scopes")
-    if (
-        not isinstance(statement, str)
-        or not isinstance(scopes, list)
-        or any(not isinstance(item, str) for item in scopes)
-    ):
-        raise ValueError("value is not valid canonical JSON for an observation fingerprint")
-    payload = {
-        "schema_version": CAPTURE_SCHEMA_VERSION,
-        "statement": unicodedata.normalize("NFC", " ".join(statement.split())),
-        "assertion": {name: assertion.get(name) for name in ("subject", "mode", "modality")},
-        "primary_category": mapping.get("primary_category"), "kind": mapping.get("kind"),
-        "scopes": sorted({unicodedata.normalize("NFC", item) for item in scopes}),
-        "project_scope": mapping.get("project_scope"), "signal_type": mapping.get("signal_type"),
-    }
+    mapping = value._to_mapping_unchecked() if isinstance(value, CollectedObservation) else _mapping(value, "observation")
+    from agc_runtime.capture_schema import observation_fingerprint_payload
+
+    payload = observation_fingerprint_payload(mapping)
     return hashlib.sha256(_canonical_json(payload)).hexdigest()
 
 
 def observation_id_for(receipt_id: str, observation_fingerprint: str) -> str:
+    from agc_runtime.capture_schema import validate_capture_id, validate_sha256
+
+    receipt_id = validate_capture_id(receipt_id, "receipt_id", "cr_")
+    observation_fingerprint = validate_sha256(
+        observation_fingerprint, "observation_fingerprint"
+    )
     return _digest("co_", {"schema_version": CAPTURE_SCHEMA_VERSION, "receipt_id": receipt_id, "observation_fingerprint": observation_fingerprint})
 
 
 def tombstone_id_for(key: CaptureKey) -> str:
-    return _digest("ct_", {"schema_version": CAPTURE_SCHEMA_VERSION, "capture_key": key.to_mapping()})
+    if not isinstance(key, CaptureKey):
+        raise ValueError("tombstone_id key must be a CaptureKey")
+    validated = CaptureKey.from_mapping(key._to_mapping_unchecked())
+    return _digest("ct_", {"schema_version": CAPTURE_SCHEMA_VERSION, "capture_key": validated._to_mapping_unchecked()})
 
 
 def validate_capture_transition(

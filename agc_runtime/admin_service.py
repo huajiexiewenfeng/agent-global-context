@@ -2,6 +2,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import tempfile
 import zipfile
 from pathlib import Path, PurePosixPath
@@ -43,6 +44,7 @@ _TEXT_SUFFIXES = {
     ".yml",
     ".toml",
 }
+_SAFE_CAPTURE_FILENAME = re.compile(r"^(?:cr|co|ct)_[0-9a-f]{64}\.json$")
 
 
 def _failed(action: str, code: str, message: str, **data: Any) -> ToolResponse:
@@ -169,7 +171,14 @@ def _validate_capture(paths: MemoryPaths, issues: list[dict[str, str]]) -> None:
     try:
         if strict_read_text(paths.capture.schema_version) != "1\n":
             _capture_issue(issues, paths, paths.capture.schema_version, "Capture schema-version must be 1")
-    except OSError as error:
+    except UnicodeDecodeError:
+        _capture_issue(
+            issues,
+            paths,
+            paths.capture.schema_version,
+            "Capture schema-version is not valid UTF-8",
+        )
+    except OSError:
         _capture_issue(issues, paths, paths.capture.schema_version, "Capture schema-version is missing")
     parsers = {
         paths.capture.receipts: CaptureReceipt.from_mapping,
@@ -215,8 +224,21 @@ def _validate_capture(paths: MemoryPaths, issues: list[dict[str, str]]) -> None:
 def _capture_issue(
     issues: list[dict[str, str]], paths: MemoryPaths, path: Path, message: str
 ) -> None:
-    relative = path.relative_to(paths.capture.root).as_posix()
-    issues.append({"path": f".runtime/capture/{relative}", "message": message})
+    relative = path.relative_to(paths.capture.root)
+    if relative.as_posix() == "schema-version":
+        safe_relative = "schema-version"
+    else:
+        directory = relative.parts[0] if len(relative.parts) > 1 else "objects"
+        filename = relative.name
+        safe_name = (
+            filename
+            if _SAFE_CAPTURE_FILENAME.fullmatch(filename)
+            else "<invalid-name>"
+        )
+        safe_relative = f"{directory}/{safe_name}"
+    issues.append(
+        {"path": f".runtime/capture/{safe_relative}", "message": message}
+    )
 
 
 def _validate_events(paths: MemoryPaths, issues: list[dict[str, str]]) -> None:
