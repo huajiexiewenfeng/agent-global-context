@@ -1,3 +1,4 @@
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,10 @@ class _Yaml12SafeLoader(yaml.SafeLoader):
     pass
 
 
+_Yaml12SafeLoader.yaml_implicit_resolvers = {
+    key: list(resolvers)
+    for key, resolvers in yaml.SafeLoader.yaml_implicit_resolvers.items()
+}
 for _key, _resolvers in list(_Yaml12SafeLoader.yaml_implicit_resolvers.items()):
     _Yaml12SafeLoader.yaml_implicit_resolvers[_key] = [
         (tag, expression)
@@ -20,8 +25,41 @@ for _key, _resolvers in list(_Yaml12SafeLoader.yaml_implicit_resolvers.items()):
     ]
 _Yaml12SafeLoader.add_implicit_resolver(
     "tag:yaml.org,2002:bool",
-    __import__("re").compile(r"^(?:true|false)$", __import__("re").IGNORECASE),
+    re.compile(r"^(?:true|false)$", re.IGNORECASE),
     list("tTfF"),
+)
+
+
+def _construct_unique_mapping(
+    loader: _Yaml12SafeLoader, node: yaml.MappingNode, deep: bool = False
+) -> dict[Any, Any]:
+    loader.flatten_mapping(node)
+    mapping: dict[Any, Any] = {}
+    for key_node, value_node in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        try:
+            duplicate = key in mapping
+        except TypeError as error:
+            raise yaml.constructor.ConstructorError(
+                "while constructing a mapping",
+                node.start_mark,
+                "found an unhashable key",
+                key_node.start_mark,
+            ) from error
+        if duplicate:
+            raise yaml.constructor.ConstructorError(
+                "while constructing a mapping",
+                node.start_mark,
+                f"duplicate YAML key: {key}",
+                key_node.start_mark,
+            )
+        mapping[key] = loader.construct_object(value_node, deep=deep)
+    return mapping
+
+
+_Yaml12SafeLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
+    _construct_unique_mapping,
 )
 
 

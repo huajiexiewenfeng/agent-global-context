@@ -20,6 +20,9 @@ agc-mcp = "agc_runtime.mcp_server:main"
 [tool.setuptools.packages.find]
 include = ["agc_runtime*"]
 
+[tool.setuptools.package-data]
+agc_runtime = ["default_config.yaml"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
