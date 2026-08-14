@@ -555,6 +555,78 @@ def test_restore_rejects_noncanonical_archive_aliases_before_mutation(
     assert not (paths.root / "ordinary" / "value.txt").exists()
 
 
+@pytest.mark.parametrize(
+    "crafted_name",
+    [
+        ".runtime./capture/cursor-hmac-key",
+        ".runtime /Queue/stale.json",
+        "ordinary/name:stream.txt",
+        "ordinary/CON",
+        "ordinary/prn.txt",
+        "ordinary/AuX.json",
+        "ordinary/nUl.log",
+        "ordinary/COM1.ext",
+        "ordinary/com9",
+        "ordinary/LPT1.data",
+        "ordinary/lpt9",
+        "RUNTIM~1/capture/cursor-hmac-key",
+        ".runtime/CAPTUR~1/cursor-hmac-key",
+        ".runtime/BACKUP~1/old.zip",
+    ],
+)
+def test_restore_rejects_windows_filesystem_aliases_before_clear(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    crafted_name: str,
+):
+    paths, _store, _observation_value = _populated(tmp_path)
+    cursor_before = b"existing-cursor-key"
+    paths.capture.cursor_hmac_key.write_bytes(cursor_before)
+    valid = Path(dispatch_admin(paths, {"action": "backup"}).data["backup_path"])
+    with zipfile.ZipFile(valid) as archive:
+        entries = [
+            (name, archive.read(name))
+            for name in archive.namelist()
+            if name != "manifest.json"
+        ]
+    entries.append((crafted_name, b"crafted\n"))
+    digest = hashlib.sha256(crafted_name.encode("utf-8")).hexdigest()[:12]
+    malicious = tmp_path / f"windows-alias-{digest}.zip"
+    _write_archive(malicious, entries)
+    marker = paths.root / "pre-restore-marker.txt"
+    marker.write_bytes(b"unchanged")
+    clear_called = False
+    original_clear = admin_service._clear_replaceable_files
+
+    def track_clear(current_paths: MemoryPaths) -> None:
+        nonlocal clear_called
+        clear_called = True
+        original_clear(current_paths)
+
+    monkeypatch.setattr(admin_service, "_clear_replaceable_files", track_clear)
+
+    response = dispatch_admin(
+        paths, {"action": "restore", "backup_path": str(malicious)}
+    )
+
+    assert response.status == "failed"
+    assert response.error["code"] == "backup_verification_failed"
+    assert clear_called is False
+    assert marker.read_bytes() == b"unchanged"
+    assert paths.capture.cursor_hmac_key.read_bytes() == cursor_before
+    assert not (paths.queue / "stale.json").exists()
+
+
+def test_archive_writer_preserves_nonprotected_posix_tilde_name():
+    files = [("contexts/draft~1.md", b"ordinary managed content\n")]
+    value = managed_backup.manifest(files)
+
+    archive_data = managed_backup.archive_bytes(files, value)
+
+    with zipfile.ZipFile(io.BytesIO(archive_data)) as archive:
+        assert archive.read("contexts/draft~1.md") == files[0][1]
+
+
 def test_archive_writer_rejects_high_compression_ratio_output():
     files = [("highly-compressible.bin", b"0" * (1024 * 1024))]
     value = managed_backup.manifest(files)

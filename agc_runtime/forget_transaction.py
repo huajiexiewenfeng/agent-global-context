@@ -127,7 +127,10 @@ def _rewritten_backup_bytes(
 ) -> bytes:
     retained: dict[str, bytes] = {}
     with zipfile.ZipFile(path, "r") as archive:
-        for info in archive.infolist():
+        infos = archive.infolist()
+        for info in infos:
+            managed_backup.validate_archive_name(info.filename)
+        for info in infos:
             if info.is_dir() or info.filename == "manifest.json":
                 continue
             data = archive.read(info.filename)

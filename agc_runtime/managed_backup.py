@@ -48,6 +48,15 @@ _MAX_ARCHIVE_SIZE = _MAX_TOTAL_SIZE + _MAX_MANIFEST_SIZE + (2 * 1024 * 1024)
 _RUNTIME_EXCLUDED_ROOTS = frozenset({
     ".runtime/locks", ".runtime/backups", ".runtime/queue", ".runtime/cache",
 })
+_WINDOWS_RESERVED_BASENAMES = frozenset({
+    "con", "prn", "aux", "nul",
+    *(f"com{number}" for number in range(1, 10)),
+    *(f"lpt{number}" for number in range(1, 10)),
+})
+_WINDOWS_SHORT_ALIAS = re.compile(
+    r"^[^ .]{1,6}~[0-9]+(?:\.[^.]*)?$", re.IGNORECASE
+)
+_WINDOWS_PROTECTED_SHORT_STEMS = frozenset({"captur", "backup"})
 
 
 def _zip_info(name: str) -> zipfile.ZipInfo:
@@ -184,8 +193,31 @@ def _safe_archive_name(name: str) -> None:
     pure = PurePosixPath(name)
     if pure.as_posix() != name:
         raise ValueError("backup uses a non-canonical archive path")
-    if not name or pure.is_absolute() or ".." in pure.parts or not pure.parts or ":" in pure.parts[0]:
+    if not name or pure.is_absolute() or ".." in pure.parts or not pure.parts:
         raise ValueError("unsafe archive path")
+    for part in pure.parts:
+        if part.endswith((".", " ")):
+            raise ValueError("backup uses a Windows-aliased archive path")
+        if ":" in part:
+            raise ValueError("backup uses a Windows alternate-data-stream path")
+        basename = part.split(".", 1)[0].rstrip(" .").casefold()
+        if basename in _WINDOWS_RESERVED_BASENAMES:
+            raise ValueError("backup uses a Windows reserved device path")
+    first_short = _WINDOWS_SHORT_ALIAS.fullmatch(pure.parts[0])
+    if first_short and pure.parts[0].split("~", 1)[0].casefold() == "runtim":
+        raise ValueError("backup aliases the protected Windows runtime path")
+    if len(pure.parts) > 1 and pure.parts[0].casefold() == ".runtime":
+        second_short = _WINDOWS_SHORT_ALIAS.fullmatch(pure.parts[1])
+        if (
+            second_short
+            and pure.parts[1].split("~", 1)[0].casefold()
+            in _WINDOWS_PROTECTED_SHORT_STEMS
+        ):
+            raise ValueError("backup aliases a protected Windows runtime namespace")
+
+
+def validate_archive_name(name: str) -> None:
+    _safe_archive_name(name)
 
 
 def _json(entries: dict[str, bytes], name: str) -> dict[str, Any]:

@@ -309,6 +309,34 @@ def test_formal_forget_never_deletes_casefolded_capture_archive_path(populated):
     assert MemoryStore(paths).get_memory("family-structure") == family_memory()
 
 
+@pytest.mark.parametrize(
+    "source_name",
+    [
+        "../memories/identity/family-structure.md",
+        "memories/identity/../identity/family-structure.md",
+        "memories//identity/family-structure.md",
+        ".runtime./capture/dirty/strict-copy.json",
+    ],
+)
+def test_formal_forget_validates_every_source_archive_name_before_filtering(
+    populated, source_name: str
+):
+    paths, _source_task = populated
+    digest = hashlib.sha256(source_name.encode("utf-8")).hexdigest()[:12]
+    backup_zip = paths.backups / f"invalid-source-name-{digest}.zip"
+    with zipfile.ZipFile(backup_zip, "w") as archive:
+        archive.writestr(source_name, family_memory().to_markdown())
+        archive.writestr("config.yaml", "sensitive_storage: disabled\n")
+    before = backup_zip.read_bytes()
+
+    response = forget(paths, authorized_request())
+
+    assert response.status == "failed"
+    assert response.error["code"] == "forget_failed"
+    assert backup_zip.read_bytes() == before
+    assert MemoryStore(paths).get_memory("family-structure") == family_memory()
+
+
 @pytest.mark.parametrize("resource", ["compression_ratio", "manifest_size"])
 def test_formal_forget_rejects_unrestorable_rebuilt_archive_before_mutation(
     populated, resource: str

@@ -410,6 +410,109 @@ Result: both passed. The strict UTF-8/no-BOM/LF byte scan passed for every
 changed Python, test, and report file. All tests used `C:\tmp` roots; no live
 deployed AGC profile or original Codex source task was accessed or changed.
 
+## Windows alias and source-name correctness fixes (2026-08-14)
+
+- The shared archive-name validator now rejects Windows filesystem aliases in
+  every component: trailing dots/spaces, alternate-data-stream colons, `CON`,
+  `PRN`, `AUX`, `NUL`, `COM1` through `COM9`, and `LPT1` through `LPT9`,
+  case-insensitively and with extensions. Standard DOS short-name aliases for
+  `.runtime`, `.runtime/capture`, and `.runtime/backups` are also rejected,
+  while an ordinary nonprotected POSIX name such as `contexts/draft~1.md`
+  remains valid.
+- Formal forget now validates the complete source ZIP name set in a first pass
+  through the shared validator. Only after every name succeeds does it read,
+  classify, or filter an entry. Parent traversal, dot segments, repeated
+  separators, and Windows aliases therefore fail with the original backup and
+  live Memory remaining byte-exact and untouched.
+
+### Windows-alias RED evidence
+
+```powershell
+& '.\.venv\Scripts\python.exe' -m pytest `
+  tests/test_capture_backup_restore.py::test_restore_rejects_windows_filesystem_aliases_before_clear `
+  tests/test_forget_service.py::test_formal_forget_validates_every_source_archive_name_before_filtering `
+  -q --basetemp 'C:\tmp\agc-task5-windows-alias-red'
+```
+
+Result: `16 failed in 13.97s`. Restore reached clear/mutation for trailing
+dot/space, nested colon, reserved-device, and runtime short-name spellings;
+formal forget accepted and filtered all four invalid source entry names.
+
+The first minimal component validator produced `16 passed in 6.27s` with
+`--basetemp C:\tmp\agc-task5-windows-alias-green`. A preservation regression
+then proved its generic short-name rule was too broad:
+
+```powershell
+& '.\.venv\Scripts\python.exe' -m pytest `
+  tests/test_capture_backup_restore.py::test_archive_writer_preserves_nonprotected_posix_tilde_name `
+  -q --basetemp 'C:\tmp\agc-task5-posix-tilde-red'
+```
+
+Result: `1 failed in 0.41s` because `contexts/draft~1.md` was rejected. With
+the generic short-name rejection removed and three protected standard aliases
+added, the contextual RED run produced `3 failed, 12 passed in 7.13s` using
+`--basetemp C:\tmp\agc-task5-short-alias-red`. Narrowing short-name rejection
+to `RUNTIM~N`, `.runtime/CAPTUR~N`, and `.runtime/BACKUP~N` produced
+`15 passed in 6.25s` with
+`--basetemp C:\tmp\agc-task5-short-alias-green`.
+
+### Windows-alias final verification
+
+```powershell
+& '.\.venv\Scripts\python.exe' -m pytest `
+  tests/test_capture_backup_restore.py::test_restore_rejects_windows_filesystem_aliases_before_clear `
+  tests/test_capture_backup_restore.py::test_archive_writer_preserves_nonprotected_posix_tilde_name `
+  tests/test_forget_service.py::test_formal_forget_validates_every_source_archive_name_before_filtering `
+  -q --basetemp 'C:\tmp\agc-task5-windows-alias-targeted-final'
+```
+
+Result: `19 passed in 7.34s`.
+
+```powershell
+& '.\.venv\Scripts\python.exe' -m pytest tests/test_forget_service.py -q `
+  --basetemp 'C:\tmp\agc-task5-windows-alias-formal-final-2'
+```
+
+Result: `32 passed in 12.71s`.
+
+```powershell
+& '.\.venv\Scripts\python.exe' -m pytest `
+  tests/test_capture_backup_restore.py tests/test_capture_forget.py `
+  tests/test_admin_service.py tests/test_forget_service.py -q `
+  --basetemp 'C:\tmp\agc-task5-windows-alias-focused-final-2'
+```
+
+Result: `123 passed, 1 warning in 59.54s`.
+
+```powershell
+& '.\.venv\Scripts\python.exe' -m pytest `
+  tests/test_capture_contracts.py tests/test_capture_paths.py `
+  tests/test_capture_store.py tests/test_capture_transaction.py `
+  tests/test_capture_read_service.py tests/test_capture_status.py -q `
+  --basetemp 'C:\tmp\agc-task5-windows-alias-adjacent-final-2'
+```
+
+Result: `197 passed in 19.78s`.
+
+```powershell
+& '.\.venv\Scripts\python.exe' -m pytest tests `
+  --ignore=tests/test_local_install.py `
+  --deselect=tests/test_runtime_config.py::test_built_wheel_contains_default_and_installed_admin_init_works `
+  -q --basetemp 'C:\tmp\agc-task5-windows-alias-broad-final-2'
+```
+
+Result: `463 passed, 1 deselected, 1 warning in 102.92s`. The warning is the
+intentional duplicate-ZIP-entry attack regression.
+
+```powershell
+& '.\.venv\Scripts\python.exe' -m compileall -q agc_runtime tests
+git diff --check
+```
+
+Result: both passed. The strict UTF-8/no-BOM/LF byte scan passed for every
+changed Python, test, and report file. All tests used `C:\tmp` roots; no live
+deployed AGC profile or original Codex source task was accessed or changed.
+
 ## Remaining review fixes (2026-08-14)
 
 - Archive names must now equal their exact `PurePosixPath.as_posix()` spelling
