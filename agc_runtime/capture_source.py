@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import os
-import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -296,7 +295,7 @@ def canonical_source_root(path: Path) -> Path:
         raise ValueError("source root must be an existing directory") from error
     if not resolved.is_dir():
         raise ValueError("source root must be an existing directory")
-    normalized = unicodedata.normalize("NFC", os.path.normcase(os.path.realpath(resolved)))
+    normalized = os.path.normcase(os.path.realpath(resolved))
     return Path(normalized)
 
 

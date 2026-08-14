@@ -113,6 +113,18 @@ def test_windows_distinct_non_ascii_physical_roots_do_not_casefold_collide(tmp_p
     assert source.source_root_id_for(sharp_s) != source.source_root_id_for(double_s)
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows canonical path identity")
+def test_windows_distinct_unicode_normalization_roots_do_not_collide(tmp_path: Path):
+    source, _ = _identity_contracts()
+    composed = tmp_path / "caf\u00e9"
+    decomposed = tmp_path / "cafe\u0301"
+    composed.mkdir()
+    decomposed.mkdir()
+
+    assert not composed.samefile(decomposed)
+    assert source.source_root_id_for(composed) != source.source_root_id_for(decomposed)
+
+
 def test_canonical_source_root_requires_an_existing_directory(tmp_path: Path):
     source, _ = _identity_contracts()
     with pytest.raises(ValueError, match="existing directory"):
