@@ -99,14 +99,55 @@ The already-installed local build backend was selected through `PYTHONPATH`,
 and `--no-isolation` prevented dependency resolution during the build:
 
 ```powershell
+$ErrorActionPreference='Stop'
+$repository=(Get-Location).Path
+$proof=Join-Path ([System.IO.Path]::GetTempPath()) `
+  ('agc-core6-doc-proof-' + [guid]::NewGuid().ToString('N'))
+$source=Join-Path $proof 'source'
+$wheelDir=Join-Path $proof 'wheel'
+New-Item -ItemType Directory -Path $source,$wheelDir -Force | Out-Null
+$tracked=@(git ls-files)
+foreach($relative in $tracked){
+  $destination=Join-Path $source $relative
+  $parent=Split-Path -Parent $destination
+  if($parent){
+    New-Item -ItemType Directory -Path $parent -Force | Out-Null
+  }
+  Copy-Item -LiteralPath (Join-Path $repository $relative) `
+    -Destination $destination
+}
+$worktreeCliHash=(Get-FileHash -Algorithm SHA256 -LiteralPath `
+  (Join-Path $repository 'agc_runtime\cli.py')).Hash
+$sourceCliHash=(Get-FileHash -Algorithm SHA256 -LiteralPath `
+  (Join-Path $source 'agc_runtime\cli.py')).Hash
+if($sourceCliHash -ne $worktreeCliHash){
+  throw 'clean source does not contain current tracked CLI bytes'
+}
+$env:PYTHONPATH="$repository\.venv\Lib\site-packages;C:\Users\admin\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\site-packages"
+Remove-Item Env:PIP_NO_INDEX -ErrorAction SilentlyContinue
+Remove-Item Env:PIP_NO_INPUT -ErrorAction SilentlyContinue
+Remove-Item Env:PIP_DISABLE_PIP_VERSION_CHECK -ErrorAction SilentlyContinue
 & '.\.venv\Scripts\python.exe' -m build --wheel --no-isolation `
-  --outdir '<new-temporary-root>\wheel' `
-  '<new-temporary-root>\source'
+  --outdir $wheelDir $source
+if($LASTEXITCODE -ne 0){throw "wheel build failed: $LASTEXITCODE"}
+$wheel=(Get-ChildItem -LiteralPath $wheelDir -Filter '*.whl' |
+  Select-Object -First 1).FullName
+Write-Output 'CLEAN_SOURCE_COPY_EXIT=0'
+Write-Output "TRACKED_FILES=$($tracked.Count)"
+Write-Output "SOURCE_CLI_SHA256=$sourceCliHash"
+Write-Output "WORKTREE_CLI_SHA256=$worktreeCliHash"
+Write-Output 'WHEEL_BUILD_EXIT=0'
+Write-Output "WHEEL=$wheel"
 ```
 
-Exit `0`; `agent_global_context_runtime-0.2.0-py3-none-any.whl` was built and
-contained `agc_runtime/default_config.yaml` through the same package-data path
-covered by the full suite.
+Exit `0`; the fresh run reported `TRACKED_FILES=135`, matching source/worktree
+CLI SHA-256 values
+`320C49AC36A0CF5AE80BB72FE4788DDE91766BA1275A24A08051CF16D6AA60CB`,
+and `WHEEL_BUILD_EXIT=0`. This proves the disposable input contained the
+current tracked CLI bytes. The resulting
+`agent_global_context_runtime-0.2.0-py3-none-any.whl` also contained
+`agc_runtime/default_config.yaml` through the package-data path covered by the
+full suite.
 
 ```powershell
 & '<temporary-venv>\Scripts\python.exe' -m pip install --no-deps '<wheel>'
@@ -203,3 +244,34 @@ pre-Capture 0.2.0 binary. This task does not claim Capture is usable or active.
 
 The Capture Core exit gate is satisfied. Capture is still inert and does not
 become usable until the separately planned Source/Census stages are delivered.
+
+## Exact text-integrity command
+
+The following is the complete command used for the strict UTF-8 decoder and
+BOM rejection over every tracked text file:
+
+```powershell
+$ErrorActionPreference='Stop'
+$tracked=git ls-files
+$decoder=[System.Text.UTF8Encoding]::new($false, $true)
+$checked=0
+foreach($relative in $tracked){
+  $extension=[System.IO.Path]::GetExtension($relative).ToLowerInvariant()
+  if($extension -notin `
+    @('.py','.md','.yaml','.yml','.toml','.json','.txt','.ps1')){
+    continue
+  }
+  $bytes=[System.IO.File]::ReadAllBytes((Join-Path (Get-Location) $relative))
+  if($bytes.Length -ge 3 -and
+    $bytes[0] -eq 0xEF -and
+    $bytes[1] -eq 0xBB -and
+    $bytes[2] -eq 0xBF){
+    throw "UTF-8 BOM: $relative"
+  }
+  [void]$decoder.GetString($bytes)
+  $checked++
+}
+Write-Output "STRICT_UTF8_NO_BOM_EXIT=0 FILES=$checked"
+```
+
+Exit `0`; output was `STRICT_UTF8_NO_BOM_EXIT=0 FILES=132`.
