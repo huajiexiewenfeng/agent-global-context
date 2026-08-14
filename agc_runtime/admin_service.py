@@ -25,7 +25,7 @@ from agc_runtime.capture_contracts import (
 from agc_runtime.capture_status_service import capture_status
 from agc_runtime.capture_store import CaptureStore
 from agc_runtime.contracts import ToolResponse
-from agc_runtime.locking import root_write_lock
+from agc_runtime.locking import capture_write_lock, root_write_lock
 from agc_runtime import managed_backup
 from agc_runtime.migration_service import migrate_v1
 from agc_runtime.models import MemoryItem
@@ -169,7 +169,12 @@ def _validate_receipts(
         _issue(issues, receipt_file, f"invalid source receipt registry: {error}")
 
 
-def _validate_capture(paths: MemoryPaths, issues: list[dict[str, str]]) -> None:
+def _validate_capture(
+    paths: MemoryPaths,
+    issues: list[dict[str, str]],
+    *,
+    reject_runtime_payloads: bool = True,
+) -> None:
     if not paths.capture.root.exists():
         return
     try:
@@ -216,7 +221,38 @@ def _validate_capture(paths: MemoryPaths, issues: list[dict[str, str]]) -> None:
                 if set(value) != {"schema_version", "code", "created_at"} or value.get("schema_version") != 1 or value.get("code") != "source_conflict" or not isinstance(value.get("created_at"), str):
                     raise ValueError("invalid conflict")
             except (ValueError, OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
-                _capture_issue(issues, paths, path, f"invalid Capture conflict: {error}")
+                _capture_issue(issues, paths, path, "unsupported Capture payload")
+    if paths.capture.indexes.exists():
+        for path in sorted(paths.capture.indexes.rglob("*")):
+            if not path.is_file():
+                continue
+            try:
+                value = json.loads(strict_read_text(path))
+                object_id = path.stem
+                if (
+                    path.suffix.lower() != ".json"
+                    or not re.fullmatch(r"cr_[0-9a-f]{64}", object_id)
+                    or set(value) != {"schema_version", "receipt_id", "observation_ids"}
+                    or value.get("schema_version") != 1
+                    or value.get("receipt_id") != object_id
+                    or not isinstance(value.get("observation_ids"), list)
+                ):
+                    raise ValueError("invalid Capture immutable manifest")
+            except (ValueError, OSError, UnicodeDecodeError, json.JSONDecodeError):
+                _capture_issue(issues, paths, path, "unsupported Capture payload")
+    if reject_runtime_payloads:
+        for directory in (
+            paths.capture.dirty,
+            paths.capture.journals,
+            paths.capture.staging,
+            paths.capture.scan_state,
+            paths.capture.budgets,
+        ):
+            if not directory.exists():
+                continue
+            for path in sorted(directory.rglob("*")):
+                if path.is_file():
+                    _capture_issue(issues, paths, path, "unsupported Capture payload")
 
 
 def _capture_issue(
@@ -318,13 +354,15 @@ def _validate_fixed_config(
         _issue(issues, config_file, f"config.yaml is missing: {error}")
 
 
-def _validate_root(paths: MemoryPaths) -> list[dict[str, str]]:
+def _validate_root(
+    paths: MemoryPaths, *, reject_capture_runtime: bool = True
+) -> list[dict[str, str]]:
     issues: list[dict[str, str]] = []
     _strict_decode_managed(paths, issues)
     _validate_fixed_config(paths, issues)
     _validate_memories(paths, issues)
     _validate_receipts(paths, issues)
-    _validate_capture(paths, issues)
+    _validate_capture(paths, issues, reject_runtime_payloads=reject_capture_runtime)
     _validate_events(paths, issues)
     _validate_catalog(paths, issues)
     return issues
@@ -428,18 +466,30 @@ def _atomic_write_bytes(path: Path, data: bytes) -> None:
 
 
 def _handle_backup(paths: MemoryPaths, _request: dict[str, Any]) -> ToolResponse:
-    issues = _validate_root(paths)
-    if issues:
-        return _failed(
-            "backup",
-            "validation_failed",
-            "refusing to back up an invalid memory root",
-            invalid_count=len(issues),
-            issues=issues,
-        )
     with root_write_lock(paths):
+      with capture_write_lock(paths):
+        issues = _validate_root(paths, reject_capture_runtime=False)
+        if issues:
+            return _failed(
+                "backup",
+                "validation_failed",
+                "refusing to back up an invalid memory root",
+                invalid_count=len(issues),
+                issues=issues,
+            )
         files = managed_backup.backup_files(paths)
         manifest = managed_backup.manifest(files)
+        # Capture's immutable graph must be coherent in the locked snapshot;
+        # otherwise a backup would preserve a silently unusable receipt set.
+        try:
+            managed_backup._validate_capture_entries(dict(files), manifest)
+        except ValueError:
+            return _failed(
+                "backup",
+                "validation_failed",
+                "refusing to back up an invalid Capture graph",
+                invalid_count=1,
+            )
         manifest_id = hashlib.sha256(
             json.dumps(
                 manifest, sort_keys=True, separators=(",", ":")
@@ -638,50 +688,51 @@ def _handle_restore(paths: MemoryPaths, request: dict[str, Any]) -> ToolResponse
             str(error),
         )
 
-    current_tombstones = _read_current_tombstones(paths)
     archive_tombstones = _read_tombstones_from_files(entries)
-    tombstones = {**archive_tombstones, **current_tombstones}
-    suppressed = set(tombstones)
 
     with root_write_lock(paths):
-        snapshot = _current_replaceable_files(paths)
-        try:
-            _clear_replaceable_files(paths)
-            for name, data in sorted(entries.items()):
-                if name.startswith(".runtime/locks/") or name.startswith(
-                    ".runtime/backups/"
-                ) or name == ".runtime/capture/cursor-hmac-key":
-                    continue
-                pure = PurePosixPath(name)
-                if (
-                    len(pure.parts) >= 3
-                    and pure.parts[0] == "memories"
-                    and pure.stem in suppressed
-                ):
-                    continue
-                target = paths.resolve_managed(Path(*pure.parts))
-                try:
-                    text = data.decode("utf-8", errors="strict")
-                except UnicodeDecodeError as error:
-                    raise ValueError(
-                        f"non-UTF-8 managed backup entry: {name}"
-                    ) from error
-                atomic_write_text(target, text)
-            for value in tombstones.values():
-                memory_id = value["memory_id"]
-                digest = hashlib.sha256(memory_id.encode("utf-8")).hexdigest()
-                atomic_write_text(
-                    paths.tombstones / f"{digest}.json",
-                    json.dumps(
-                        value, ensure_ascii=False, sort_keys=True, indent=2
+        with capture_write_lock(paths):
+            current_tombstones = _read_current_tombstones(paths)
+            tombstones = {**archive_tombstones, **current_tombstones}
+            suppressed = set(tombstones)
+            snapshot = _current_replaceable_files(paths)
+            try:
+                _clear_replaceable_files(paths)
+                for name, data in sorted(entries.items()):
+                    if name.startswith(".runtime/locks/") or name.startswith(
+                        ".runtime/backups/"
+                    ) or name == ".runtime/capture/cursor-hmac-key":
+                        continue
+                    pure = PurePosixPath(name)
+                    if (
+                        len(pure.parts) >= 3
+                        and pure.parts[0] == "memories"
+                        and pure.stem in suppressed
+                    ):
+                        continue
+                    target = paths.resolve_managed(Path(*pure.parts))
+                    try:
+                        text = data.decode("utf-8", errors="strict")
+                    except UnicodeDecodeError as error:
+                        raise ValueError(
+                            f"non-UTF-8 managed backup entry: {name}"
+                        ) from error
+                    atomic_write_text(target, text)
+                for value in tombstones.values():
+                    memory_id = value["memory_id"]
+                    digest = hashlib.sha256(memory_id.encode("utf-8")).hexdigest()
+                    atomic_write_text(
+                        paths.tombstones / f"{digest}.json",
+                        json.dumps(
+                            value, ensure_ascii=False, sort_keys=True, indent=2
+                        )
+                        + "\n",
                     )
-                    + "\n",
-                )
-            _suppress_restored_ids(paths, suppressed)
-            catalog = rebuild_catalog(paths, acquire_lock=False)
-        except BaseException:
-            _restore_file_snapshot(paths, snapshot)
-            raise
+                _suppress_restored_ids(paths, suppressed)
+                catalog = rebuild_catalog(paths, acquire_lock=False)
+            except BaseException:
+                _restore_file_snapshot(paths, snapshot)
+                raise
 
     return ToolResponse(
         tool="agc.admin",
@@ -758,3 +809,5 @@ def dispatch_admin(paths: MemoryPaths, request: Any) -> ToolResponse:
         if action == "capture_status":
             return _failed(action, "invalid_runtime_config", "runtime configuration is invalid")
         return _failed(action, "admin_failed", "admin operation failed")
+    except RuntimeError:
+        return _failed(action, "admin_busy", "admin operation is temporarily unavailable")

@@ -1,14 +1,19 @@
 from __future__ import annotations
 
 import json
+import shutil
 import zipfile
 from dataclasses import replace
 from pathlib import Path
 
+import pytest
+
+from agc_runtime import managed_backup
 from agc_runtime.admin_service import dispatch_admin
 from agc_runtime.capture_contracts import CaptureKey, CaptureReceipt, CollectedObservation, TokenUsage, observation_fingerprint_for, observation_id_for, receipt_id_for, tombstone_id_for
 from agc_runtime.capture_store import CaptureStore
 from agc_runtime.capture_forget_transaction import CaptureForgetTransaction
+from agc_runtime.locking import capture_write_lock
 from agc_runtime.paths import MemoryPaths
 from agc_runtime.write_service import dispatch_write
 
@@ -81,6 +86,36 @@ def test_capture_forget_requires_exact_authorized_union(tmp_path: Path):
     assert broad.error["code"] == "invalid_request"
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {
+            "action": "capture_forget",
+            "authorization": "explicit_user_request",
+            "target": {"type": "observation", "observation_id": "co_" + "g" * 64},
+        },
+        {
+            "action": "capture_forget",
+            "authorization": "explicit_user_request",
+            "target": {"type": "revision", **_key().to_mapping()},
+            "unexpected": True,
+        },
+    ],
+)
+def test_capture_forget_rejects_nonhex_ids_and_unknown_top_level_fields_before_mutation(
+    tmp_path: Path, payload: dict
+):
+    paths, _store, _receipt_value, observations = _populated(tmp_path)
+    observation_path = paths.capture.observations / f"{observations[0].observation_id}.json"
+    before = observation_path.read_bytes()
+
+    response = dispatch_write(paths, payload)
+
+    assert response.status == "failed"
+    assert response.error["code"] == "invalid_request"
+    assert observation_path.read_bytes() == before
+
+
 def test_observation_capture_forget_rewrites_backups_and_clears_receipt_hashes(tmp_path: Path):
     paths, store, receipt, observations = _populated(tmp_path)
     backup = dispatch_admin(paths, {"action": "backup"}).data["backup_path"]
@@ -123,6 +158,22 @@ def test_revision_suppression_tombstone_blocks_future_capture_registration(tmp_p
     assert not (paths.capture.receipts / f"{receipt.receipt_id}.json").exists()
 
 
+def test_capture_forget_fails_content_safely_while_capture_writer_is_active(tmp_path: Path):
+    paths, _store, _receipt_value, observations = _populated(tmp_path)
+    target = paths.capture.observations / f"{observations[0].observation_id}.json"
+    before = target.read_bytes()
+
+    with capture_write_lock(paths):
+        response = dispatch_write(
+            paths,
+            _request({"type": "observation", "observation_id": observations[0].observation_id}),
+        )
+
+    assert response.status == "failed"
+    assert response.error == {"code": "capture_forget_busy", "message": "Capture hard forget is busy"}
+    assert target.read_bytes() == before
+
+
 def test_capture_forget_recovers_interrupted_primary_before_exact_retry(tmp_path: Path):
     paths, store, receipt, observations = _populated(tmp_path)
     receipt_path = paths.capture.receipts / f"{receipt.receipt_id}.json"
@@ -135,3 +186,214 @@ def test_capture_forget_recovers_interrupted_primary_before_exact_retry(tmp_path
     assert not list(paths.capture.journals.glob("capture-forget-*.json"))
     assert receipt_path.read_bytes() != original
     assert not (paths.capture.observations / f"{observations[0].observation_id}.json").exists()
+
+
+def _archive_text(path: Path) -> str:
+    with zipfile.ZipFile(path) as archive:
+        return b"".join(archive.read(name) for name in archive.namelist()).decode("utf-8")
+
+
+def test_revision_forget_scans_full_capture_tree_without_manifest_and_nested_backups(tmp_path: Path):
+    paths, store, receipt, observations = _populated(tmp_path)
+    backup = Path(dispatch_admin(paths, {"action": "backup"}).data["backup_path"])
+    nested = paths.backups / "year" / "month" / "copy.zip"
+    nested.parent.mkdir(parents=True)
+    shutil.copy2(backup, nested)
+
+    # The primary graph is intentionally incomplete. Hard forget must identify
+    # the target from every strict Observation.source rather than an index.
+    (paths.capture.indexes / f"{receipt.receipt_id}.json").unlink()
+    orphan = _observation("Orphan target statement must also vanish.", 7)
+    (paths.capture.observations / f"{orphan.observation_id}.json").write_text(
+        json.dumps(orphan.to_mapping()), encoding="utf-8"
+    )
+    for directory, name in (
+        (paths.capture.leases, f"{receipt.receipt_id}.json"),
+        (paths.capture.dirty, "target.json"),
+        (paths.capture.staging, "target.json"),
+        (paths.capture.scan_state, "target.json"),
+        (paths.capture.budgets, "target.json"),
+    ):
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / name).write_text(
+            json.dumps({"schema_version": 1, "capture_key": _key().to_mapping(), "receipt_id": receipt.receipt_id}),
+            encoding="utf-8",
+        )
+    source_task = tmp_path / "source-task.json"
+    source_task.write_text(json.dumps({"task_id": _key().task_id, "text": observations[0].statement}), encoding="utf-8")
+
+    response = dispatch_write(paths, _request({"type": "revision", **_key().to_mapping()}))
+
+    assert response.status == "accepted", response
+    tombstone = paths.capture.tombstones / f"{tombstone_id_for(_key())}.json"
+    assert tombstone.is_file()
+    needles = (receipt.receipt_id, observations[0].observation_id, orphan.observation_id,
+               observations[0].statement, orphan.statement, "a" * 64, "b" * 64)
+    for path in paths.capture.root.rglob("*"):
+        if path.is_file() and path != tombstone:
+            text = path.read_bytes().decode("utf-8", errors="ignore")
+            assert all(needle not in text for needle in needles), path
+    for archive in paths.backups.rglob("*.zip"):
+        text = _archive_text(archive)
+        assert all(needle not in text for needle in needles), archive
+    assert source_task.read_text(encoding="utf-8") == json.dumps(
+        {"task_id": _key().task_id, "text": observations[0].statement}
+    )
+    assert store.register_extraction(_receipt()).status == "suppressed"
+
+
+def test_observation_forget_reaches_zero_across_all_nested_backups_and_repeat_is_stable(tmp_path: Path):
+    paths, store, receipt, observations = _populated(tmp_path)
+    first_backup = Path(dispatch_admin(paths, {"action": "backup"}).data["backup_path"])
+    nested = paths.backups / "nested" / "deeper" / "second.zip"
+    nested.parent.mkdir(parents=True)
+    shutil.copy2(first_backup, nested)
+
+    first = dispatch_write(paths, _request({"type": "observation", "observation_id": observations[0].observation_id}))
+    second = dispatch_write(paths, _request({"type": "observation", "observation_id": observations[1].observation_id}))
+
+    assert first.status == second.status == "accepted"
+    updated = store.read_receipt(receipt.receipt_id)
+    assert updated.observation_count == 0
+    assert updated.forgotten_observation_count == 2
+    assert updated.zero_reason == "user_forget"
+    assert updated.redacted_by_forget is True
+    assert updated.source_fingerprint is updated.source_hash_schema_version is None
+    assert updated.capsule_hash is updated.capsule_schema_version is None
+    assert list(store.iter_visible_observations()) == []
+    manifest = json.loads((paths.capture.indexes / f"{receipt.receipt_id}.json").read_text(encoding="utf-8"))
+    assert manifest["observation_ids"] == []
+    for archive in paths.backups.rglob("*.zip"):
+        text = _archive_text(archive)
+        for observation in observations:
+            assert observation.observation_id not in text
+            assert observation.statement not in text
+        managed_backup_entries, managed_backup_manifest = managed_backup.read_verified_archive(archive)
+        assert managed_backup_manifest["schema_version"] == 2
+        assert managed_backup_entries
+    before = {path: path.read_bytes() for path in paths.capture.root.rglob("*") if path.is_file()}
+    repeat = dispatch_write(paths, _request({"type": "observation", "observation_id": observations[1].observation_id}))
+    after = {path: path.read_bytes() for path in paths.capture.root.rglob("*") if path.is_file()}
+    assert repeat.status == "accepted"
+    assert before == after
+
+
+def test_foreign_forget_journal_target_is_quarantined_without_mutating_config(tmp_path: Path):
+    paths, _store, _receipt_value, observations = _populated(tmp_path)
+    token = "f" * 32
+    images = paths.capture.root / "forget-staging" / f"capture-forget-{token}"
+    images.mkdir(parents=True)
+    (images / "0001.before").write_bytes(b"attacker replacement")
+    journal = paths.capture.journals / f"capture-forget-{token}.json"
+    journal.write_text(
+        json.dumps({
+            "schema_version": 1,
+            "operation": "capture_forget",
+            "state": "active",
+            "operation_count": 1,
+            "before_images": [
+                {"target": "config.yaml", "image": "0001.before", "existed": True}
+            ],
+        }),
+        encoding="utf-8",
+    )
+    before = (paths.root / "config.yaml").read_bytes()
+
+    response = dispatch_write(
+        paths,
+        _request({"type": "observation", "observation_id": observations[0].observation_id}),
+    )
+
+    assert response.error["code"] == "invalid_capture_forget_journal"
+    assert (paths.root / "config.yaml").read_bytes() == before
+    assert not journal.exists()
+    records = list(paths.capture.quarantines.glob("invalid-forget-journal-*.json"))
+    assert len(records) == 1
+    assert json.loads(records[0].read_text(encoding="utf-8")) == {
+        "schema_version": 1,
+        "code": "corrupt_capture_artifact",
+    }
+
+
+def test_forget_commit_keeps_journal_when_staging_cleanup_fails(tmp_path: Path, monkeypatch):
+    paths, _store, _receipt_value, _observations = _populated(tmp_path)
+    transaction = CaptureForgetTransaction(paths)
+    transaction.begin(0)
+    journal = transaction._journal
+    images = transaction._images
+
+    def fail_cleanup(path, *args, **kwargs):
+        if Path(path) == images:
+            raise OSError("injected cleanup failure")
+        return shutil.rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr("agc_runtime.capture_forget_transaction.shutil.rmtree", fail_cleanup)
+
+    with pytest.raises(OSError, match="injected cleanup failure"):
+        transaction.commit()
+
+    assert journal.is_file()
+    assert images.is_dir()
+
+
+@pytest.mark.parametrize(
+    ("boundary", "occurrence"),
+    [
+        ("before:primary", 1),
+        ("after:primary", 1),
+        ("before:backup", 1),
+        ("after:backup", 1),
+        ("before:backup", 2),
+        ("after:backup", 2),
+        ("before:commit", 1),
+    ],
+)
+def test_forget_transaction_failure_boundaries_rollback_byte_exact(
+    tmp_path: Path, boundary: str, occurrence: int
+):
+    paths, _store, receipt, observations = _populated(tmp_path)
+    backup = Path(dispatch_admin(paths, {"action": "backup"}).data["backup_path"])
+    nested = paths.backups / "nested" / "second.zip"
+    nested.parent.mkdir(parents=True)
+    shutil.copy2(backup, nested)
+    primary = paths.capture.observations / f"{observations[0].observation_id}.json"
+    before = {path: path.read_bytes() for path in (primary, backup, nested)}
+    counts: dict[str, int] = {}
+
+    def inject(name: str) -> None:
+        counts[name] = counts.get(name, 0) + 1
+        if name == boundary and counts[name] == occurrence:
+            raise RuntimeError("injected transaction failure")
+
+    transaction = CaptureForgetTransaction(paths, point=inject)
+    with pytest.raises(RuntimeError, match="injected transaction failure"):
+        try:
+            transaction.begin(3)
+            transaction.write(primary, b"changed primary", boundary="primary")
+            transaction.write(backup, b"changed backup one", boundary="backup")
+            transaction.write(nested, b"changed backup two", boundary="backup")
+            transaction.commit()
+        except Exception:
+            transaction.rollback()
+            raise
+
+    assert {path: path.read_bytes() for path in before} == before
+    assert not list(paths.capture.journals.glob("capture-forget-*.json"))
+
+
+def test_after_cleanup_is_a_committed_observation_point(tmp_path: Path):
+    paths, _store, _receipt_value, observations = _populated(tmp_path)
+    primary = paths.capture.observations / f"{observations[0].observation_id}.json"
+
+    def inject(name: str) -> None:
+        if name == "after:cleanup":
+            raise RuntimeError("post-commit observer failure")
+
+    transaction = CaptureForgetTransaction(paths, point=inject)
+    transaction.begin(1)
+    transaction.write(primary, b"committed bytes", boundary="primary")
+    transaction.commit()
+
+    assert primary.read_bytes() == b"committed bytes"
+    assert not transaction._journal.exists()
+    assert not transaction._images.exists()

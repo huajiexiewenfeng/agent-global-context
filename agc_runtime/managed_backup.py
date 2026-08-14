@@ -9,6 +9,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import tempfile
 import zipfile
 from pathlib import Path, PurePosixPath
@@ -29,6 +30,18 @@ _CAPTURE_ALLOWLIST = frozenset({
     "schema-version", "receipts", "observations", "ledger", "census",
     "tombstones", "quarantines", "conflicts", "indexes",
 })
+_SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_RECEIPT_ID = re.compile(r"^cr_[0-9a-f]{64}$")
+_OBSERVATION_ID = re.compile(r"^co_[0-9a-f]{64}$")
+_TOMBSTONE_ID = re.compile(r"^ct_[0-9a-f]{64}$")
+_CENSUS_NAME = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
+_CONFLICT_NAME = re.compile(r"^source-[0-9a-f]{64}$")
+_DIAGNOSTIC_NAME = re.compile(r"^[A-Za-z0-9._-]{1,160}$")
+_MAX_ARCHIVE_FILES = 4096
+_MAX_FILE_SIZE = 16 * 1024 * 1024
+_MAX_TOTAL_SIZE = 64 * 1024 * 1024
+_MAX_MANIFEST_SIZE = 1024 * 1024
+_MAX_COMPRESSION_RATIO = 200
 
 
 def _zip_info(name: str) -> zipfile.ZipInfo:
@@ -101,8 +114,10 @@ def archive_bytes(files: list[tuple[str, bytes]], value: dict[str, Any]) -> byte
 
 
 def _safe_archive_name(name: str) -> None:
-    pure = PurePosixPath(name.replace("\\", "/"))
-    if pure.is_absolute() or ".." in pure.parts or not pure.parts:
+    if "\\" in name:
+        raise ValueError("backup uses non-canonical path separators")
+    pure = PurePosixPath(name)
+    if not name or pure.is_absolute() or ".." in pure.parts or "." in pure.parts or not pure.parts or ":" in pure.parts[0]:
         raise ValueError("unsafe archive path")
 
 
@@ -135,44 +150,63 @@ def _validate_capture_entries(entries: dict[str, bytes], value: dict[str, Any]) 
     observations: dict[str, CollectedObservation] = {}
     ledgers: dict[str, LedgerEntry] = {}
     manifests: dict[str, tuple[str, ...]] = {}
+    census_keys: set[tuple[str, str, str, str]] = set()
     for name in names:
         parts = PurePosixPath(name).parts
-        if len(parts) < 4 or parts[:3] != (".runtime", "capture", parts[2]):
+        if name == ".runtime/capture/schema-version":
             continue
-        namespace = parts[2]
-        if namespace == "schema-version":
-            continue
-        if len(parts) != 4 or not name.endswith(".json"):
+        if len(parts) != 4 or parts[:2] != (".runtime", "capture") or not name.endswith(".json"):
             raise ValueError("invalid Capture archive path")
+        namespace = parts[2]
         object_id = parts[3][:-5]
         payload = _json(entries, name)
         if namespace == "receipts":
+            if not _RECEIPT_ID.fullmatch(object_id):
+                raise ValueError("invalid Capture receipt filename")
             item = CaptureReceipt.from_mapping(payload)
             if item.receipt_id != object_id:
                 raise ValueError("Capture receipt filename binding is invalid")
             receipts[item.receipt_id] = item
         elif namespace == "observations":
+            if not _OBSERVATION_ID.fullmatch(object_id):
+                raise ValueError("invalid Capture observation filename")
             item = CollectedObservation.from_mapping(payload)
             if item.observation_id != object_id:
                 raise ValueError("Capture observation filename binding is invalid")
             observations[item.observation_id] = item
         elif namespace == "ledger":
+            if not _RECEIPT_ID.fullmatch(object_id):
+                raise ValueError("invalid Capture ledger filename")
             item = LedgerEntry.from_mapping(payload)
             if item.receipt_id != object_id:
                 raise ValueError("Capture ledger filename binding is invalid")
             ledgers[item.receipt_id] = item
         elif namespace == "census":
-            RevisionRef.from_mapping(payload)
+            if not _CENSUS_NAME.fullmatch(object_id):
+                raise ValueError("invalid Capture census filename")
+            revision = RevisionRef.from_mapping(payload)
+            key_id = (revision.key.adapter_id, revision.key.source_root_id, revision.key.task_id, revision.key.revision_id)
+            if key_id in census_keys:
+                raise ValueError("duplicate Capture census key")
+            census_keys.add(key_id)
         elif namespace == "tombstones":
+            if not _TOMBSTONE_ID.fullmatch(object_id):
+                raise ValueError("invalid Capture tombstone filename")
             item = CaptureSuppressionTombstone.from_mapping(payload)
             if item.tombstone_id != object_id:
                 raise ValueError("Capture tombstone filename binding is invalid")
         elif namespace == "quarantines":
+            if not _DIAGNOSTIC_NAME.fullmatch(object_id):
+                raise ValueError("invalid Capture quarantine filename")
             SourceQuarantine.from_mapping(payload)
         elif namespace == "conflicts":
+            if not _CONFLICT_NAME.fullmatch(object_id):
+                raise ValueError("invalid Capture conflict filename")
             if set(payload) != {"schema_version", "code", "created_at"} or payload.get("schema_version") != CAPTURE_SCHEMA_VERSION or payload.get("code") != "source_conflict" or not isinstance(payload.get("created_at"), str):
                 raise ValueError("invalid Capture conflict diagnostic")
         elif namespace == "indexes":
+            if not _RECEIPT_ID.fullmatch(object_id):
+                raise ValueError("invalid Capture manifest filename")
             if set(payload) != {"schema_version", "receipt_id", "observation_ids"} or payload.get("schema_version") != CAPTURE_SCHEMA_VERSION or payload.get("receipt_id") != object_id or not isinstance(payload.get("observation_ids"), list):
                 raise ValueError("invalid Capture immutable manifest")
             ids = payload["observation_ids"]
@@ -181,7 +215,13 @@ def _validate_capture_entries(entries: dict[str, bytes], value: dict[str, Any]) 
             manifests[object_id] = tuple(ids)
         else:
             raise ValueError("unsupported Capture archive path")
+    receipt_keys: set[tuple[str, str, str, str]] = set()
+    referenced: set[str] = set()
     for receipt_id, receipt in receipts.items():
+        key_id = (receipt.adapter_id, receipt.source_root_id, receipt.task_id, receipt.revision_id)
+        if key_id in receipt_keys:
+            raise ValueError("duplicate Capture receipt key")
+        receipt_keys.add(key_id)
         ledger = ledgers.get(receipt_id)
         if ledger is None or ledger.capture_key != receipt.key or ledger.status != receipt.status:
             raise ValueError("Capture ledger does not match receipt")
@@ -191,32 +231,83 @@ def _validate_capture_entries(entries: dict[str, bytes], value: dict[str, Any]) 
                 raise ValueError("Capture receipt manifest does not match")
             if any(item not in observations or observations[item].receipt_id != receipt_id for item in ids):
                 raise ValueError("Capture receipt observation reference is invalid")
+            referenced.update(ids)
     if any(item.receipt_id not in receipts for item in observations.values()):
         raise ValueError("orphan Capture observation")
+    if set(observations) != referenced:
+        raise ValueError("unreferenced Capture observation")
+    if set(manifests) - set(receipts) or set(ledgers) - set(receipts):
+        raise ValueError("orphan Capture graph object")
+
+
+def _validate_manifest(value: Any, entries: dict[str, bytes]) -> None:
+    if not isinstance(value, dict):
+        raise ValueError("backup manifest must be a mapping")
+    capture_present = any(name.startswith(_CAPTURE_PREFIX) for name in entries)
+    expected_fields = {"schema_version", "files"}
+    if capture_present:
+        expected_fields.update({"capture_schema_version", "capabilities"})
+    if set(value) != expected_fields or value.get("schema_version") != ARCHIVE_SCHEMA_VERSION:
+        raise ValueError("unsupported backup schema")
+    files = value.get("files")
+    if not isinstance(files, list) or len(files) > _MAX_ARCHIVE_FILES:
+        raise ValueError("backup manifest files are invalid")
+    paths: list[str] = []
+    total = 0
+    for item in files:
+        if not isinstance(item, dict) or set(item) != {"path", "sha256", "size"}:
+            raise ValueError("backup manifest file entry is invalid")
+        path = item.get("path")
+        digest = item.get("sha256")
+        size = item.get("size")
+        if not isinstance(path, str) or path == "manifest.json":
+            raise ValueError("backup manifest path is invalid")
+        _safe_archive_name(path)
+        if not isinstance(digest, str) or not _SHA256.fullmatch(digest):
+            raise ValueError("backup manifest checksum is invalid")
+        if type(size) is not int or not 0 <= size <= _MAX_FILE_SIZE:
+            raise ValueError("backup manifest size is invalid")
+        total += size
+        paths.append(path)
+    if total > _MAX_TOTAL_SIZE:
+        raise ValueError("backup manifest exceeds safe limits")
+    if len(paths) != len(set(paths)) or len(paths) != len({path.casefold() for path in paths}):
+        raise ValueError("backup manifest contains duplicate paths")
+    if set(paths) != set(entries) or len(paths) != len(entries):
+        raise ValueError("backup manifest file set does not match archive")
+    for item in files:
+        data = entries[item["path"]]
+        if item["size"] != len(data) or item["sha256"] != hashlib.sha256(data).hexdigest():
+            raise ValueError("backup checksum mismatch")
 
 
 def read_verified_archive(backup_path: Path) -> tuple[dict[str, bytes], dict[str, Any]]:
     archive_data = backup_path.read_bytes()
     with zipfile.ZipFile(io.BytesIO(archive_data), "r") as archive:
-        names = [info.filename for info in archive.infolist() if not info.is_dir()]
-        if len(names) != len(set(names)):
+        infos = archive.infolist()
+        if any(info.is_dir() for info in infos):
+            raise ValueError("backup contains unexpected directory entries")
+        names = [info.filename for info in infos]
+        if len(names) > _MAX_ARCHIVE_FILES + 1 or len(names) != len(set(names)) or len({name.casefold() for name in names}) != len(names):
             raise ValueError("backup contains duplicate paths")
         for name in names:
             _safe_archive_name(name)
+        if any(((info.external_attr >> 16) & 0o170000) == 0o120000 for info in infos):
+            raise ValueError("backup contains a symbolic link")
+        if any(
+            info.file_size > _MAX_FILE_SIZE
+            or (info.file_size > 0 and info.compress_size == 0)
+            or (info.compress_size > 0 and info.file_size / info.compress_size > _MAX_COMPRESSION_RATIO)
+            for info in infos
+        ) or sum(info.file_size for info in infos) > _MAX_TOTAL_SIZE + _MAX_MANIFEST_SIZE:
+            raise ValueError("backup exceeds safe archive limits")
         if "manifest.json" not in names:
             raise ValueError("backup manifest is missing")
+        manifest_info = archive.getinfo("manifest.json")
+        if manifest_info.file_size > _MAX_MANIFEST_SIZE:
+            raise ValueError("backup manifest exceeds safe limit")
         value = json.loads(archive.read("manifest.json").decode("utf-8"))
-        if not isinstance(value, dict) or value.get("schema_version") != ARCHIVE_SCHEMA_VERSION:
-            raise ValueError("unsupported backup schema")
         entries = {name: archive.read(name) for name in names if name != "manifest.json"}
-    expected = value.get("files")
-    if not isinstance(expected, list):
-        raise ValueError("backup manifest files are invalid")
-    expected_names = [item.get("path") if isinstance(item, dict) else None for item in expected]
-    if set(expected_names) != set(entries) or len(expected_names) != len(entries):
-        raise ValueError("backup manifest file set does not match archive")
-    for item in expected:
-        if not isinstance(item, dict) or item.get("size") != len(entries[item["path"]]) or item.get("sha256") != hashlib.sha256(entries[item["path"]]).hexdigest():
-            raise ValueError("backup checksum mismatch")
+    _validate_manifest(value, entries)
     _validate_capture_entries(entries, value)
     return entries, value

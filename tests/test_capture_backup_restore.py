@@ -2,13 +2,18 @@ from __future__ import annotations
 
 import json
 import io
+import hashlib
 import zipfile
 from dataclasses import replace
 from pathlib import Path
 
+import pytest
+
+from agc_runtime import managed_backup
 from agc_runtime.admin_service import dispatch_admin
 from agc_runtime.capture_contracts import CaptureKey, CaptureReceipt, CollectedObservation, TokenUsage, observation_fingerprint_for, observation_id_for, receipt_id_for
 from agc_runtime.capture_store import CaptureStore
+from agc_runtime.locking import capture_write_lock
 from agc_runtime.paths import MemoryPaths
 
 
@@ -112,3 +117,116 @@ def test_restore_rejects_unknown_capture_versions_before_mutation(tmp_path: Path
     response = dispatch_admin(paths, {"action": "restore", "backup_path": backup})
     assert response.error["code"] == "backup_verification_failed"
     assert paths.capture.schema_version.read_bytes() == before
+
+
+def _write_archive(path: Path, entries: list[tuple[str, bytes]], *, manifest_value=None) -> None:
+    value = manifest_value or managed_backup.manifest(entries)
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for name, data in entries:
+            archive.writestr(name, data)
+        archive.writestr("manifest.json", json.dumps(value, sort_keys=True))
+
+
+@pytest.mark.parametrize(
+    "attack",
+    [
+        "backslash_cursor_key", "casefold_duplicate", "schema_child", "zip_bomb", "duplicate_name",
+        "manifest_unknown", "manifest_files_type", "manifest_capability", "manifest_hash", "manifest_size_bool",
+    ],
+)
+def test_restore_rejects_noncanonical_or_resource_abusive_zip_before_mutation(tmp_path: Path, attack: str):
+    paths, _store, _observation_value = _populated(tmp_path)
+    valid = dispatch_admin(paths, {"action": "backup"})
+    assert valid.status == "accepted"
+    with zipfile.ZipFile(valid.data["backup_path"]) as archive:
+        entries = [(name, archive.read(name)) for name in archive.namelist() if name != "manifest.json"]
+    malicious = tmp_path / f"{attack}.zip"
+    if attack == "backslash_cursor_key":
+        entries.append((r".runtime\capture\cursor-hmac-key", b"x" * 32))
+        _write_archive(malicious, entries)
+    elif attack == "casefold_duplicate":
+        entries.extend((("case.txt", b"a"), ("CASE.txt", b"b")))
+        _write_archive(malicious, entries)
+    elif attack == "schema_child":
+        entries.append((".runtime/capture/schema-version/child.json", b"{}"))
+        _write_archive(malicious, entries)
+    elif attack == "zip_bomb":
+        entries.append(("bomb.txt", b"0" * (2 * 1024 * 1024)))
+        _write_archive(malicious, entries)
+    elif attack == "duplicate_name":
+        manifest_value = managed_backup.manifest(entries)
+        with zipfile.ZipFile(malicious, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            for name, data in entries:
+                archive.writestr(name, data)
+            archive.writestr(entries[0][0], entries[0][1])
+            archive.writestr("manifest.json", json.dumps(manifest_value, sort_keys=True))
+    else:
+        manifest_value = managed_backup.manifest(entries)
+        if attack == "manifest_unknown":
+            manifest_value["unexpected"] = True
+        elif attack == "manifest_files_type":
+            manifest_value["files"] = {"not": "a list"}
+        elif attack == "manifest_capability":
+            manifest_value["capabilities"] = ["capture-backup-v1", "unknown"]
+        elif attack == "manifest_hash":
+            manifest_value["files"][0]["sha256"] = "A" * 64
+        else:
+            manifest_value["files"][0]["size"] = True
+        _write_archive(malicious, entries, manifest_value=manifest_value)
+    marker = paths.root / "pre-restore-marker.txt"
+    marker.write_bytes(b"unchanged")
+
+    response = dispatch_admin(paths, {"action": "restore", "backup_path": str(malicious)})
+
+    assert response.status == "failed"
+    assert response.error["code"] == "backup_verification_failed"
+    assert marker.read_bytes() == b"unchanged"
+
+
+@pytest.mark.parametrize("corruption", ["orphan_observation", "orphan_manifest", "ledger_filename"])
+def test_backup_rejects_inconsistent_live_capture_graph(tmp_path: Path, corruption: str):
+    paths, _store, observation = _populated(tmp_path)
+    receipt_id = receipt_id_for(_key())
+    if corruption == "orphan_observation":
+        value = _observation("Orphan backup content must fail closed.").to_mapping()
+        value["observation_id"] = "co_" + "f" * 64
+        (paths.capture.observations / f"{value['observation_id']}.json").write_text(
+            json.dumps(value), encoding="utf-8"
+        )
+    elif corruption == "orphan_manifest":
+        source = paths.capture.indexes / f"{receipt_id}.json"
+        (paths.capture.indexes / ("cr_" + "f" * 64 + ".json")).write_bytes(source.read_bytes())
+    else:
+        source = paths.capture.ledger / f"{receipt_id}.json"
+        (paths.capture.ledger / ("cr_" + "f" * 64 + ".json")).write_bytes(source.read_bytes())
+
+    response = dispatch_admin(paths, {"action": "backup"})
+
+    assert response.status == "failed"
+    assert response.error["code"] in {"validation_failed", "admin_failed"}
+
+
+def test_restore_uses_capture_lock_and_preserves_existing_cursor_key(tmp_path: Path):
+    source_paths, _source_store, _observation_value = _populated(tmp_path / "source")
+    backup = dispatch_admin(source_paths, {"action": "backup"})
+    assert backup.status == "accepted"
+    paths, _store, _target_observation = _populated(tmp_path / "target")
+    paths.capture.cursor_hmac_key.write_bytes(b"K" * 32)
+    before = {
+        path.relative_to(paths.root).as_posix(): path.read_bytes()
+        for path in paths.root.rglob("*") if path.is_file()
+    }
+
+    with capture_write_lock(paths):
+        busy = dispatch_admin(paths, {"action": "restore", "backup_path": backup.data["backup_path"]})
+
+    assert busy.status == "failed"
+    assert busy.error == {"code": "admin_busy", "message": "admin operation is temporarily unavailable"}
+    assert {
+        path.relative_to(paths.root).as_posix(): path.read_bytes()
+        for path in paths.root.rglob("*") if path.is_file()
+    } == before
+
+    restored = dispatch_admin(paths, {"action": "restore", "backup_path": backup.data["backup_path"]})
+    assert restored.status == "accepted"
+    assert paths.capture.cursor_hmac_key.read_bytes() == b"K" * 32

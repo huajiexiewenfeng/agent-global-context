@@ -2,17 +2,26 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from agc_runtime.capture_contracts import CaptureKey, CaptureSuppressionTombstone, receipt_id_for, tombstone_id_for
+from agc_runtime.capture_contracts import (
+    CaptureKey,
+    CaptureReceipt,
+    CaptureSuppressionTombstone,
+    CollectedObservation,
+    LedgerEntry,
+    RevisionRef,
+    receipt_id_for,
+    tombstone_id_for,
+)
 from agc_runtime.capture_forget_transaction import CaptureForgetTransaction
 from agc_runtime.capture_schema import capture_key_from_mapping
-from agc_runtime.capture_store import CaptureStore
-from agc_runtime.capture_transaction import canonical_json_bytes, read_json
+from agc_runtime.capture_transaction import canonical_json_bytes
 from agc_runtime.contracts import ToolResponse
-from agc_runtime.locking import root_write_lock
+from agc_runtime.locking import capture_write_lock, root_write_lock
 from agc_runtime import managed_backup
 from agc_runtime.paths import MemoryPaths
 
@@ -28,12 +37,14 @@ def _now() -> str:
 def _target(request: dict[str, Any]) -> tuple[str, str | CaptureKey]:
     if request.get("authorization") != "explicit_user_request":
         raise PermissionError("explicit_user_request authorization is required")
+    if set(request) != {"action", "authorization", "target"} or request.get("action") != "capture_forget":
+        raise ValueError("request must be the exact Capture forget request")
     value = request.get("target")
     if not isinstance(value, dict) or not isinstance(value.get("type"), str):
         raise ValueError("target must be an exact Capture forget union")
     if value["type"] == "observation" and set(value) == {"type", "observation_id"}:
         observation_id = value["observation_id"]
-        if not isinstance(observation_id, str) or not observation_id.startswith("co_") or len(observation_id) != 67:
+        if not isinstance(observation_id, str) or re.fullmatch(r"co_[0-9a-f]{64}", observation_id) is None:
             raise ValueError("observation_id must be an exact Capture observation id")
         return "observation", observation_id
     if value["type"] == "revision" and set(value) == {"type", "adapter_id", "source_root_id", "task_id", "revision_id"}:
@@ -46,7 +57,72 @@ def _entry_name(path: Path, paths: MemoryPaths) -> str:
 
 
 def _read_primary(paths: MemoryPaths) -> dict[str, bytes]:
-    return {path.relative_to(paths.root).as_posix(): path.read_bytes() for path in paths.capture.root.rglob("*") if path.is_file() and managed_backup._capture_name_allowed(path.relative_to(paths.root).as_posix())}
+    """Read the complete managed Capture tree, excluding local capabilities.
+
+    Hard forget must not depend on the backup allowlist: worker/runtime objects
+    can retain a revision after its immutable manifest is missing.  The writer
+    lock, cursor secret and this transaction's private before-images are never
+    part of the deletion set.
+    """
+    result: dict[str, bytes] = {}
+    capture_root = paths.capture.root.resolve()
+    for path in paths.capture.root.rglob("*"):
+        if path.is_symlink():
+            raise ValueError("Capture artifact must not be a symbolic link")
+        if not path.is_file():
+            continue
+        resolved = path.resolve()
+        if not resolved.is_relative_to(capture_root):
+            raise ValueError("Capture artifact escapes the managed root")
+        relative_capture = resolved.relative_to(capture_root).as_posix()
+        if relative_capture in {".writer.lock", "cursor-hmac-key", "schema-version"}:
+            continue
+        if relative_capture.startswith("forget-staging/"):
+            continue
+        result[_entry_name(resolved, paths)] = resolved.read_bytes()
+    return result
+
+
+def _strict_json(data: bytes) -> dict[str, Any]:
+    value = json.loads(data.decode("utf-8"))
+    if not isinstance(value, dict):
+        raise ValueError("Capture artifact must be a mapping")
+    return value
+
+
+def _manifest(value: dict[str, Any], receipt_id: str) -> tuple[str, ...]:
+    if set(value) != {"schema_version", "receipt_id", "observation_ids"}:
+        raise ValueError("invalid Capture immutable manifest")
+    ids = value.get("observation_ids")
+    if value.get("schema_version") != 1 or value.get("receipt_id") != receipt_id or not isinstance(ids, list):
+        raise ValueError("invalid Capture immutable manifest")
+    if len(ids) > 8 or len(ids) != len(set(ids)) or any(
+        not isinstance(item, str) or re.fullmatch(r"co_[0-9a-f]{64}", item) is None for item in ids
+    ):
+        raise ValueError("invalid Capture immutable manifest")
+    return tuple(ids)
+
+
+def _source_key(observation: CollectedObservation) -> CaptureKey:
+    return capture_key_from_mapping({
+        name: observation.source[name]
+        for name in ("adapter_id", "source_root_id", "task_id", "revision_id")
+    })
+
+
+def _runtime_artifact_matches(value: dict[str, Any], key: CaptureKey, receipt_id: str, observation_ids: set[str]) -> bool:
+    """Match only explicit, exact identity fields in private runtime objects."""
+    if value.get("capture_key") == key.to_mapping() or value.get("receipt_id") == receipt_id:
+        return True
+    for field in ("observation_id", "staged_observation_id"):
+        if value.get(field) in observation_ids:
+            return True
+    ids = value.get("observation_ids")
+    return isinstance(ids, list) and any(item in observation_ids for item in ids)
+
+
+def _backup_projection(entries: dict[str, bytes]) -> dict[str, bytes]:
+    return {name: data for name, data in entries.items() if managed_backup._capture_name_allowed(name)}
 
 
 def _updated_observation(entries: dict[str, bytes], observation_id: str) -> tuple[dict[str, bytes], str]:
@@ -84,25 +160,89 @@ def _updated_revision(entries: dict[str, bytes], key: CaptureKey) -> dict[str, b
     receipt_id = receipt_id_for(key)
     result = dict(entries)
     tombstone_name = f".runtime/capture/tombstones/{tombstone_id_for(key)}.json"
-    # Exact retry is a no-op once only the durable suppression decision remains.
-    if tombstone_name in result and f".runtime/capture/receipts/{receipt_id}.json" not in result:
-        return result
-    manifest_name = f".runtime/capture/indexes/{receipt_id}.json"
-    if manifest_name in result:
-        manifest = json.loads(result[manifest_name].decode("utf-8"))
-        for observation_id in manifest.get("observation_ids", []):
-            result.pop(f".runtime/capture/observations/{observation_id}.json", None)
-    for name in list(result):
-        if name in {f".runtime/capture/receipts/{receipt_id}.json", f".runtime/capture/ledger/{receipt_id}.json", manifest_name, f".runtime/capture/leases/{receipt_id}.json", f".runtime/capture/leases/{receipt_id}.epoch"}:
-            result.pop(name, None)
+    target_observations: set[str] = set()
+    needles: set[bytes] = {receipt_id.encode("ascii")}
+
+    # Discover observations from their strict source identity rather than from
+    # a possibly missing or damaged private manifest.
+    for name, data in entries.items():
+        if not name.startswith(".runtime/capture/observations/"):
             continue
-        if name.startswith(".runtime/capture/census/"):
+        observation = CollectedObservation.from_mapping(_strict_json(data))
+        if name != f".runtime/capture/observations/{observation.observation_id}.json":
+            raise ValueError("Capture observation filename binding is invalid")
+        if _source_key(observation) == key:
+            target_observations.add(observation.observation_id)
+            needles.update({
+                observation.observation_id.encode("ascii"),
+                observation.statement.encode("utf-8"),
+                observation.observation_fingerprint.encode("ascii"),
+            })
+
+    for name, data in entries.items():
+        if name.startswith(".runtime/capture/receipts/"):
+            receipt = CaptureReceipt.from_mapping(_strict_json(data))
+            if name != f".runtime/capture/receipts/{receipt.receipt_id}.json":
+                raise ValueError("Capture receipt filename binding is invalid")
+            if receipt.key == key:
+                for value in (receipt.source_fingerprint, receipt.capsule_hash):
+                    if value:
+                        needles.add(value.encode("ascii"))
+                result.pop(name, None)
+        elif name.startswith(".runtime/capture/ledger/"):
+            ledger = LedgerEntry.from_mapping(_strict_json(data))
+            if name != f".runtime/capture/ledger/{ledger.receipt_id}.json":
+                raise ValueError("Capture ledger filename binding is invalid")
+            if ledger.capture_key == key:
+                result.pop(name, None)
+        elif name.startswith(".runtime/capture/census/"):
+            revision = RevisionRef.from_mapping(_strict_json(data))
+            if revision.key == key:
+                result.pop(name, None)
+        elif name.startswith(".runtime/capture/tombstones/"):
+            tombstone = CaptureSuppressionTombstone.from_mapping(_strict_json(data))
+            if name != f".runtime/capture/tombstones/{tombstone.tombstone_id}.json":
+                raise ValueError("Capture tombstone filename binding is invalid")
+            if tombstone.capture_key == key:
+                result.pop(name, None)
+        elif name.startswith(".runtime/capture/indexes/"):
+            value = _strict_json(data)
+            object_id = Path(name).stem
+            ids = _manifest(value, object_id)
+            if object_id == receipt_id:
+                target_observations.update(ids)
+                result.pop(name, None)
+
+    for observation_id in target_observations:
+        result.pop(f".runtime/capture/observations/{observation_id}.json", None)
+
+    known_prefixes = (
+        ".runtime/capture/dirty/", ".runtime/capture/journals/",
+        ".runtime/capture/staging/", ".runtime/capture/leases/",
+        ".runtime/capture/scan-state/", ".runtime/capture/budgets/",
+    )
+    for name, data in tuple(result.items()):
+        if name.startswith(known_prefixes):
+            if Path(name).stem in {receipt_id, *target_observations}:
+                result.pop(name, None)
+                continue
             try:
-                value = json.loads(result[name].decode("utf-8"))
-                if value.get("capture_key") == key.to_mapping():
-                    result.pop(name)
-            except (UnicodeDecodeError, json.JSONDecodeError):
-                pass
+                value = _strict_json(data)
+            except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+                if any(needle in data for needle in needles):
+                    raise ValueError("unparseable Capture artifact may retain target data")
+                continue
+            if _runtime_artifact_matches(value, key, receipt_id, target_observations):
+                result.pop(name, None)
+
+    # Fail closed if an object that could not be attributed still contains a
+    # target identifier or content needle.  No mutation has occurred yet.
+    for name, data in result.items():
+        if name == tombstone_name:
+            continue
+        if any(needle and needle in data for needle in needles):
+            raise ValueError("Capture artifact retains target data")
+
     tombstone = CaptureSuppressionTombstone.from_mapping({"schema_version": 1, "tombstone_id": tombstone_id_for(key), "capture_key": key.to_mapping(), "created_at": _now(), "reason": "user_forget"})
     result[tombstone_name] = canonical_json_bytes(tombstone.to_mapping())
     return result
@@ -133,38 +273,52 @@ def capture_forget(paths: MemoryPaths, request: dict[str, Any]) -> ToolResponse:
         return _failed("capture_forget_authorization_required", str(error))
     except ValueError as error:
         return _failed("invalid_request", str(error))
-    with root_write_lock(paths):
-        try:
-            CaptureForgetTransaction.recover(paths)
-        except ValueError:
-            return _failed("invalid_capture_forget_journal", "Capture hard forget recovery journal is invalid")
-        before = _read_primary(paths)
-        try:
-            after, receipt_id = _rewrite_backup(before, kind, target)
-        except (KeyError, ValueError, UnicodeDecodeError, json.JSONDecodeError) as error:
-            return _failed("capture_forget_target_not_found", "exact Capture target is unavailable")
-        backup_updates: list[tuple[Path, bytes]] = []
-        try:
-            for backup in sorted(paths.backups.glob("*.zip"), key=lambda item: item.name.encode("utf-8")):
-                entries, _manifest = managed_backup.read_verified_archive(backup)
-                changed, _ = _rewrite_backup(entries, kind, target)
-                if changed != entries:
-                    files = sorted(changed.items(), key=lambda item: item[0].encode("utf-8"))
-                    backup_updates.append((backup, managed_backup.archive_bytes(files, managed_backup.manifest(files))))
-        except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
-            return _failed("capture_forget_backup_verification_failed", "managed backup verification failed")
-        tx = CaptureForgetTransaction(paths)
-        try:
-            tx.begin(len(set(before) | set(after)) + len(backup_updates))
-            _apply_files(tx, paths, before, after)
-            for backup, data in backup_updates:
-                tx.write(backup, data, boundary="backup")
-            # Validate the rewritten primary before publishing the transaction.
-            managed_backup._validate_capture_entries(after, managed_backup.manifest(sorted(after.items())))
-            tx.commit()
-        except Exception:
-            tx.rollback()
-            return _failed("capture_forget_failed", "Capture hard forget did not complete")
+    try:
+        with root_write_lock(paths):
+            with capture_write_lock(paths):
+                try:
+                    CaptureForgetTransaction.recover(paths)
+                except ValueError:
+                    return _failed("invalid_capture_forget_journal", "Capture hard forget recovery journal is invalid")
+                try:
+                    before = _read_primary(paths)
+                    after, receipt_id = _rewrite_backup(before, kind, target)
+                except (KeyError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
+                    return _failed("capture_forget_target_not_found", "exact Capture target is unavailable")
+                backup_updates: list[tuple[Path, bytes]] = []
+                try:
+                    for backup in sorted(
+                        (item for item in paths.backups.rglob("*.zip")
+                         if not item.is_symlink() and item.resolve().is_relative_to(paths.backups.resolve())
+                         and ".tmp" not in item.parts),
+                        key=lambda item: item.relative_to(paths.backups).as_posix().encode("utf-8"),
+                    ):
+                        entries, _manifest_value = managed_backup.read_verified_archive(backup)
+                        changed, _ = _rewrite_backup(entries, kind, target)
+                        if changed != entries:
+                            files = sorted(changed.items(), key=lambda item: item[0].encode("utf-8"))
+                            backup_updates.append((backup, managed_backup.archive_bytes(files, managed_backup.manifest(files))))
+                except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+                    return _failed("capture_forget_backup_verification_failed", "managed backup verification failed")
+                tx = CaptureForgetTransaction(paths)
+                try:
+                    tx.begin(len(set(before) | set(after)) + len(backup_updates))
+                    _apply_files(tx, paths, before, after)
+                    for backup, data in backup_updates:
+                        tx.write(backup, data, boundary="backup")
+                    # Runtime-only artifacts are intentionally outside backup
+                    # schema. Validate the durable projection before commit.
+                    projection = _backup_projection(after)
+                    projection[".runtime/capture/schema-version"] = paths.capture.schema_version.read_bytes()
+                    managed_backup._validate_capture_entries(
+                        projection, managed_backup.manifest(sorted(projection.items()))
+                    )
+                    tx.commit()
+                except Exception:
+                    tx.rollback()
+                    return _failed("capture_forget_failed", "Capture hard forget did not complete")
+    except RuntimeError:
+        return _failed("capture_forget_busy", "Capture hard forget is busy")
     data: dict[str, Any] = {"code": "capture_forgotten", "source_task_deleted": False}
     if kind == "revision":
         data["tombstone_id"] = tombstone_id_for(target)
