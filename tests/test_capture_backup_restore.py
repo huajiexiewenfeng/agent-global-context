@@ -463,3 +463,96 @@ def test_backup_creation_fails_before_archive_when_writer_limit_is_exceeded(
     assert response.status == "failed"
     assert response.error["code"] == "validation_failed"
     assert not list(paths.backups.glob("*.zip"))
+
+
+@pytest.mark.parametrize(
+    "crafted_name",
+    [
+        ".RUNTIME/capture/cursor-hmac-key",
+        ".runtime/Queue/stale.json",
+    ],
+)
+def test_restore_rejects_case_variant_protected_runtime_paths_before_mutation(
+    tmp_path: Path, crafted_name: str
+):
+    paths, _store, _observation_value = _populated(tmp_path)
+    cursor_before = b"existing-cursor-key"
+    paths.capture.cursor_hmac_key.write_bytes(cursor_before)
+    valid = Path(dispatch_admin(paths, {"action": "backup"}).data["backup_path"])
+    with zipfile.ZipFile(valid) as archive:
+        entries = [
+            (name, archive.read(name))
+            for name in archive.namelist()
+            if name != "manifest.json"
+        ]
+    entries.append((crafted_name, b"crafted\n"))
+    malicious = tmp_path / f"case-variant-{len(crafted_name)}.zip"
+    _write_archive(malicious, entries)
+    marker = paths.root / "pre-restore-marker.txt"
+    marker.write_bytes(b"unchanged")
+
+    response = dispatch_admin(
+        paths, {"action": "restore", "backup_path": str(malicious)}
+    )
+
+    assert response.status == "failed"
+    assert response.error["code"] == "backup_verification_failed"
+    assert marker.read_bytes() == b"unchanged"
+    assert paths.capture.cursor_hmac_key.read_bytes() == cursor_before
+    assert not (paths.queue / "stale.json").exists()
+
+
+def test_archive_writer_rejects_high_compression_ratio_output():
+    files = [("highly-compressible.bin", b"0" * (1024 * 1024))]
+    value = managed_backup.manifest(files)
+
+    with pytest.raises(ValueError, match="archive|compression|limit"):
+        managed_backup.archive_bytes(files, value)
+
+
+def test_backup_creation_rejects_high_compression_ratio_before_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    paths, _store, _observation_value = _populated(tmp_path)
+    monkeypatch.setattr(
+        managed_backup,
+        "backup_files",
+        lambda _paths: [("highly-compressible.bin", b"0" * (1024 * 1024))],
+    )
+
+    response = dispatch_admin(paths, {"action": "backup"})
+
+    assert response.status == "failed"
+    assert response.error["code"] == "validation_failed"
+    assert not list(paths.backups.glob("*.zip"))
+
+
+def test_archive_writer_rejects_oversize_encoded_manifest():
+    suffix = "x" * 220
+    files = [
+        (f"contexts/{index:04d}-{suffix}.txt", b"")
+        for index in range(managed_backup._MAX_ARCHIVE_FILES)
+    ]
+    value = managed_backup.manifest(files)
+    encoded = (
+        json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2).encode("utf-8")
+        + b"\n"
+    )
+    assert len(encoded) > managed_backup._MAX_MANIFEST_SIZE
+
+    with pytest.raises(ValueError, match="manifest|archive|limit"):
+        managed_backup.archive_bytes(files, value)
+
+
+def test_admin_service_has_no_unused_legacy_backup_helpers():
+    legacy = {
+        "_zip_info",
+        "_backup_files",
+        "_manifest",
+        "_archive_bytes",
+        "_atomic_write_bytes",
+        "_safe_archive_name",
+        "_read_verified_archive",
+    }
+
+    assert not legacy.intersection(vars(admin_service))

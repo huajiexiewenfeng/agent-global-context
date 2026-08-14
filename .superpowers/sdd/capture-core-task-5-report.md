@@ -302,3 +302,110 @@ rejected byte `0D`; result: `UTF-8 strict/no-BOM/LF: passed`.
 
 Every test used a temporary root under `C:\tmp`; no deployed AGC profile or
 original Codex source task was accessed, rewritten, or deleted.
+
+## Final re-review fixes (2026-08-14)
+
+- Protected managed-runtime classification is now case-insensitive for
+  `.runtime/capture`, locks, backups, queue, cache, temporary files, and the
+  Capture cursor key. Noncanonical case variants are rejected before restore
+  mutation; manifest paths, file-set equality, sizes, and hashes remain exact.
+- Backup generation verifies the completed ZIP bytes with the same validator
+  used by restore before returning them for publication. This enforces the
+  compression-ratio, encoded-manifest, archive-size, entry-count, exact
+  manifest, and Capture graph constraints symmetrically.
+- Seven unused legacy private backup/archive helpers and their now-unused
+  imports were removed from `admin_service` after a repository-wide caller
+  search found only their definitions and one internal legacy-helper call.
+
+### Final re-review RED evidence
+
+```powershell
+& '.\.venv\Scripts\python.exe' -m pytest `
+  tests/test_capture_backup_restore.py -q `
+  -k 'case_variant_protected_runtime_paths or archive_writer_rejects or unused_legacy_backup_helpers' `
+  --basetemp 'C:\tmp\agc-task5-final-rereview-red'
+```
+
+Result: `5 failed, 27 deselected in 4.49s`. Both case-variant protected paths
+were accepted by restore, both writer outputs escaped the reader-only limits,
+and all seven dead helpers were still present.
+
+### Final re-review targeted GREEN
+
+The same command with
+`--basetemp C:\tmp\agc-task5-final-rereview-green` produced
+`5 passed, 27 deselected in 0.67s`.
+
+An initial filesystem fixture for publication safety was rejected by ordinary
+root validation before reaching the archive writer, so it was narrowed to
+inject the exact collected file list into the real backup handler. With shared
+writer verification temporarily reverted, the corrected regression was:
+
+```powershell
+& '.\.venv\Scripts\python.exe' -m pytest `
+  tests/test_capture_backup_restore.py::test_backup_creation_rejects_high_compression_ratio_before_publication `
+  -q --basetemp 'C:\tmp\agc-task5-final-publication-red-3'
+```
+
+Result: `1 failed in 4.38s` because backup returned `accepted` and published
+the reader-incompatible ZIP. Restoring writer verification changed the failure
+to the generic `invalid_request` code (`1 failed in 1.16s`); the minimal handler
+mapping then produced `1 passed in 0.46s` with
+`--basetemp C:\tmp\agc-task5-final-publication-green-2`.
+
+```powershell
+& '.\.venv\Scripts\python.exe' -m pytest `
+  tests/test_capture_backup_restore.py -q `
+  -k 'case_variant_protected_runtime_paths or archive_writer_rejects or backup_creation_rejects_high_compression_ratio or unused_legacy_backup_helpers' `
+  --basetemp 'C:\tmp\agc-task5-final-rereview-targeted-final'
+```
+
+Result: `6 passed, 27 deselected in 4.02s`.
+
+```powershell
+& '.\.venv\Scripts\python.exe' -m pytest `
+  tests/test_capture_backup_restore.py -q `
+  --basetemp 'C:\tmp\agc-task5-final-rereview-backup-green'
+```
+
+Result: `32 passed, 1 warning in 12.59s`.
+
+### Final re-review verification
+
+```powershell
+& '.\.venv\Scripts\python.exe' -m pytest `
+  tests/test_capture_backup_restore.py tests/test_capture_forget.py `
+  tests/test_admin_service.py tests/test_forget_service.py -q `
+  --basetemp 'C:\tmp\agc-task5-final-rereview-focused-final'
+```
+
+Result: `98 passed, 1 warning in 49.68s`.
+
+```powershell
+& '.\.venv\Scripts\python.exe' -m pytest `
+  tests/test_capture_contracts.py tests/test_capture_paths.py `
+  tests/test_capture_store.py tests/test_capture_transaction.py `
+  tests/test_capture_read_service.py tests/test_capture_status.py -q `
+  --basetemp 'C:\tmp\agc-task5-final-rereview-adjacent-final'
+```
+
+Result: `197 passed in 23.18s`.
+
+```powershell
+& '.\.venv\Scripts\python.exe' -m pytest tests `
+  --ignore=tests/test_local_install.py `
+  --deselect=tests/test_runtime_config.py::test_built_wheel_contains_default_and_installed_admin_init_works `
+  -q --basetemp 'C:\tmp\agc-task5-final-rereview-broad-final'
+```
+
+Result: `438 passed, 1 deselected, 1 warning in 82.43s`. The warning is the
+intentional duplicate-ZIP-entry attack regression.
+
+```powershell
+& '.\.venv\Scripts\python.exe' -m compileall -q agc_runtime tests
+git diff --check
+```
+
+Result: both passed. The strict UTF-8/no-BOM/LF byte scan passed for every
+changed Python, test, and report file. All tests used `C:\tmp` roots; no live
+deployed AGC profile or original Codex source task was accessed or changed.

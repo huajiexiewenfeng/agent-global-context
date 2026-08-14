@@ -26,7 +26,8 @@ from agc_runtime.paths import MemoryPaths
 
 ARCHIVE_SCHEMA_VERSION = 2
 CAPTURE_BACKUP_CAPABILITY = "capture-backup-v1"
-_CAPTURE_PREFIX = ".runtime/capture/"
+_CAPTURE_ROOT = ".runtime/capture"
+_CAPTURE_PREFIX = f"{_CAPTURE_ROOT}/"
 _CAPTURE_ALLOWLIST = frozenset({
     "schema-version", "receipts", "observations", "ledger", "census",
     "tombstones", "quarantines", "conflicts", "indexes",
@@ -44,7 +45,9 @@ _MAX_TOTAL_SIZE = 64 * 1024 * 1024
 _MAX_MANIFEST_SIZE = 1024 * 1024
 _MAX_COMPRESSION_RATIO = 200
 _MAX_ARCHIVE_SIZE = _MAX_TOTAL_SIZE + _MAX_MANIFEST_SIZE + (2 * 1024 * 1024)
-_RUNTIME_NOISE_PREFIXES = (".runtime/queue/", ".runtime/cache/")
+_RUNTIME_EXCLUDED_ROOTS = frozenset({
+    ".runtime/locks", ".runtime/backups", ".runtime/queue", ".runtime/cache",
+})
 
 
 def _zip_info(name: str) -> zipfile.ZipInfo:
@@ -69,8 +72,11 @@ def atomic_write_bytes(path: Path, data: bytes) -> None:
 
 
 def _capture_name_allowed(relative: str) -> bool:
-    if not relative.startswith(_CAPTURE_PREFIX):
+    folded = relative.casefold()
+    if folded != _CAPTURE_ROOT and not folded.startswith(_CAPTURE_PREFIX):
         return True
+    if not relative.startswith(_CAPTURE_PREFIX):
+        return False
     tail = relative[len(_CAPTURE_PREFIX):]
     return bool(tail) and tail.split("/", 1)[0] in _CAPTURE_ALLOWLIST
 
@@ -84,8 +90,10 @@ def _is_link_or_reparse(path: Path) -> bool:
 
 
 def _runtime_name_excluded(name: str) -> bool:
-    return name in {".runtime/queue", ".runtime/cache"} or name.startswith(
-        _RUNTIME_NOISE_PREFIXES
+    folded = name.casefold()
+    return any(
+        folded == root or folded.startswith(f"{root}/")
+        for root in _RUNTIME_EXCLUDED_ROOTS
     )
 
 
@@ -117,9 +125,7 @@ def backup_files(paths: MemoryPaths) -> list[tuple[str, bytes]]:
         if resolved == root or not resolved.is_relative_to(root):
             raise ValueError("managed backup path escapes the memory root")
         relative = resolved.relative_to(root).as_posix()
-        if (relative.startswith(".runtime/locks/") or relative.startswith(".runtime/backups/")
-                or _runtime_name_excluded(relative)
-                or relative.endswith(".tmp") or relative == ".runtime/capture/cursor-hmac-key"):
+        if _runtime_name_excluded(relative) or relative.casefold().endswith(".tmp"):
             continue
         if not _capture_name_allowed(relative):
             continue
@@ -142,7 +148,11 @@ def backup_files(paths: MemoryPaths) -> list[tuple[str, bytes]]:
 
 def manifest(files: list[tuple[str, bytes]]) -> dict[str, Any]:
     _validate_backup_files_for_write(files)
-    capture_present = any(name.startswith(_CAPTURE_PREFIX) for name, _ in files)
+    capture_present = any(
+        name.casefold() == _CAPTURE_ROOT
+        or name.casefold().startswith(_CAPTURE_PREFIX)
+        for name, _ in files
+    )
     value: dict[str, Any] = {
         "schema_version": ARCHIVE_SCHEMA_VERSION,
         "files": [{"path": name, "sha256": hashlib.sha256(data).hexdigest(), "size": len(data)} for name, data in files],
@@ -163,7 +173,9 @@ def archive_bytes(files: list[tuple[str, bytes]], value: dict[str, Any]) -> byte
         for name, data in files:
             archive.writestr(_zip_info(name), data)
         archive.writestr(_zip_info("manifest.json"), encoded)
-    return output.getvalue()
+    data = output.getvalue()
+    _read_verified_archive_bytes(data)
+    return data
 
 
 def _safe_archive_name(name: str) -> None:
@@ -185,7 +197,11 @@ def _json(entries: dict[str, bytes], name: str) -> dict[str, Any]:
 
 
 def _validate_capture_entries(entries: dict[str, bytes], value: dict[str, Any]) -> None:
-    names = [name for name in entries if name.startswith(_CAPTURE_PREFIX)]
+    names = [
+        name for name in entries
+        if name.casefold() == _CAPTURE_ROOT
+        or name.casefold().startswith(_CAPTURE_PREFIX)
+    ]
     if not names:
         return
     if value.get("capture_schema_version") != CAPTURE_SCHEMA_VERSION:
@@ -296,7 +312,11 @@ def _validate_capture_entries(entries: dict[str, bytes], value: dict[str, Any]) 
 def _validate_manifest(value: Any, entries: dict[str, bytes]) -> None:
     if not isinstance(value, dict):
         raise ValueError("backup manifest must be a mapping")
-    capture_present = any(name.startswith(_CAPTURE_PREFIX) for name in entries)
+    capture_present = any(
+        name.casefold() == _CAPTURE_ROOT
+        or name.casefold().startswith(_CAPTURE_PREFIX)
+        for name in entries
+    )
     expected_fields = {"schema_version", "files"}
     if capture_present:
         expected_fields.update({"capture_schema_version", "capabilities"})
@@ -318,6 +338,10 @@ def _validate_manifest(value: Any, entries: dict[str, bytes]) -> None:
         _safe_archive_name(path)
         if _runtime_name_excluded(path):
             raise ValueError("backup contains excluded transient runtime namespace")
+        if not _capture_name_allowed(path):
+            raise ValueError("backup contains protected or non-canonical Capture path")
+        if path.casefold().endswith(".tmp"):
+            raise ValueError("backup contains excluded temporary path")
         if not isinstance(digest, str) or not _SHA256.fullmatch(digest):
             raise ValueError("backup manifest checksum is invalid")
         if type(size) is not int or not 0 <= size <= _MAX_FILE_SIZE:
@@ -336,12 +360,11 @@ def _validate_manifest(value: Any, entries: dict[str, bytes]) -> None:
             raise ValueError("backup checksum mismatch")
 
 
-def read_verified_archive(backup_path: Path) -> tuple[dict[str, bytes], dict[str, Any]]:
-    if backup_path.stat().st_size > _MAX_ARCHIVE_SIZE:
+def _read_verified_archive_bytes(
+    archive_data: bytes,
+) -> tuple[dict[str, bytes], dict[str, Any]]:
+    if len(archive_data) > _MAX_ARCHIVE_SIZE:
         raise ValueError("backup archive exceeds safe size limit")
-    if _is_link_or_reparse(backup_path):
-        raise ValueError("backup archive is a symbolic link or reparse point")
-    archive_data = backup_path.read_bytes()
     with zipfile.ZipFile(io.BytesIO(archive_data), "r") as archive:
         infos = archive.infolist()
         if any(info.is_dir() for info in infos):
@@ -370,3 +393,11 @@ def read_verified_archive(backup_path: Path) -> tuple[dict[str, bytes], dict[str
     _validate_manifest(value, entries)
     _validate_capture_entries(entries, value)
     return entries, value
+
+
+def read_verified_archive(backup_path: Path) -> tuple[dict[str, bytes], dict[str, Any]]:
+    if backup_path.stat().st_size > _MAX_ARCHIVE_SIZE:
+        raise ValueError("backup archive exceeds safe size limit")
+    if _is_link_or_reparse(backup_path):
+        raise ValueError("backup archive is a symbolic link or reparse point")
+    return _read_verified_archive_bytes(backup_path.read_bytes())

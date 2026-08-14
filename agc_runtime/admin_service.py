@@ -1,9 +1,7 @@
 import hashlib
-import io
 import json
 import os
 import re
-import tempfile
 import zipfile
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -393,79 +391,6 @@ def _handle_validate(
     )
 
 
-def _zip_info(name: str) -> zipfile.ZipInfo:
-    info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
-    info.compress_type = zipfile.ZIP_DEFLATED
-    info.external_attr = 0o600 << 16
-    return info
-
-
-def _backup_files(paths: MemoryPaths) -> list[tuple[str, bytes]]:
-    files = []
-    if not paths.root.exists():
-        return files
-    for path in paths.root.rglob("*"):
-        if not path.is_file():
-            continue
-        relative = str(path.relative_to(paths.root)).replace("\\", "/")
-        if (
-            relative.startswith(".runtime/locks/")
-            or relative.startswith(".runtime/backups/")
-            or relative == ".runtime/capture/cursor-hmac-key"
-            or relative.endswith(".tmp")
-        ):
-            continue
-        files.append((relative, path.read_bytes()))
-    return sorted(files, key=lambda item: item[0].encode("utf-8"))
-
-
-def _manifest(files: list[tuple[str, bytes]]) -> dict[str, Any]:
-    return {
-        "schema_version": 2,
-        "files": [
-            {
-                "path": name,
-                "sha256": hashlib.sha256(data).hexdigest(),
-                "size": len(data),
-            }
-            for name, data in files
-        ],
-    }
-
-
-def _archive_bytes(
-    files: list[tuple[str, bytes]], manifest: dict[str, Any]
-) -> bytes:
-    output = io.BytesIO()
-    manifest_bytes = (
-        json.dumps(manifest, ensure_ascii=False, sort_keys=True, indent=2).encode(
-            "utf-8"
-        )
-        + b"\n"
-    )
-    with zipfile.ZipFile(output, "w") as archive:
-        for name, data in files:
-            archive.writestr(_zip_info(name), data)
-        archive.writestr(_zip_info("manifest.json"), manifest_bytes)
-    return output.getvalue()
-
-
-def _atomic_write_bytes(path: Path, data: bytes) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary = tempfile.mkstemp(
-        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
-    )
-    try:
-        with os.fdopen(descriptor, "wb") as stream:
-            stream.write(data)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, path)
-    except BaseException:
-        Path(temporary).unlink(missing_ok=True)
-        raise
-
-
 def _handle_backup(paths: MemoryPaths, _request: dict[str, Any]) -> ToolResponse:
     with root_write_lock(paths):
       with capture_write_lock(paths):
@@ -499,12 +424,20 @@ def _handle_backup(paths: MemoryPaths, _request: dict[str, Any]) -> ToolResponse
                 "refusing to back up an invalid Capture graph",
                 invalid_count=1,
             )
+        try:
+            archive_data = managed_backup.archive_bytes(files, manifest)
+        except ValueError:
+            return _failed(
+                "backup",
+                "validation_failed",
+                "refusing to create a backup outside safe archive limits",
+                invalid_count=1,
+            )
         manifest_id = hashlib.sha256(
             json.dumps(
                 manifest, sort_keys=True, separators=(",", ":")
             ).encode("utf-8")
         ).hexdigest()
-        archive_data = managed_backup.archive_bytes(files, manifest)
         archive_path = paths.backups / f"agc-backup-{manifest_id}.zip"
         managed_backup.atomic_write_bytes(archive_path, archive_data)
     return ToolResponse(
@@ -518,40 +451,6 @@ def _handle_backup(paths: MemoryPaths, _request: dict[str, Any]) -> ToolResponse
             "manifest": manifest,
         },
     )
-
-
-def _safe_archive_name(name: str) -> None:
-    pure = PurePosixPath(name.replace("\\", "/"))
-    if pure.is_absolute() or ".." in pure.parts or not pure.parts:
-        raise ValueError(f"unsafe archive path: {name}")
-
-
-def _read_verified_archive(
-    backup_path: Path,
-) -> tuple[dict[str, bytes], dict[str, Any]]:
-    archive_data = backup_path.read_bytes()
-    with zipfile.ZipFile(io.BytesIO(archive_data), "r") as archive:
-        names = [info.filename for info in archive.infolist() if not info.is_dir()]
-        if len(names) != len(set(names)):
-            raise ValueError("backup contains duplicate paths")
-        for name in names:
-            _safe_archive_name(name)
-        if "manifest.json" not in names:
-            raise ValueError("backup manifest is missing")
-        manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
-        entries = {
-            name: archive.read(name) for name in names if name != "manifest.json"
-        }
-    expected_names = [item["path"] for item in manifest.get("files", [])]
-    if set(expected_names) != set(entries) or len(expected_names) != len(entries):
-        raise ValueError("backup manifest file set does not match archive")
-    for item in manifest["files"]:
-        data = entries[item["path"]]
-        if item.get("size") != len(data) or item.get("sha256") != hashlib.sha256(
-            data
-        ).hexdigest():
-            raise ValueError(f"backup checksum mismatch: {item['path']}")
-    return entries, manifest
 
 
 def _read_tombstones_from_files(
