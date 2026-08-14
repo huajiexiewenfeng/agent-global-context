@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import shutil
 from pathlib import Path
 
@@ -45,6 +46,7 @@ def test_ac_04_only_completed_main_turns_are_revisions(tmp_path: Path):
     assert identities == {
         ("task-main", "turn-1", "session_id", "sessions/main-multiple-turns.jsonl"),
         ("task-main", "turn-2", "session_id", "sessions/main-multiple-turns.jsonl"),
+        ("task-content", "turn-content", "session_id", "sessions/content-sentinel.jsonl"),
         ("rollout-legacy", "turn-legacy", "legacy_rollout_id", "sessions/legacy-main.jsonl"),
     }
     assert all("sub" not in ref.key.task_id for ref in batch.revisions)
@@ -158,3 +160,153 @@ def test_probe_and_target_turn_iterator_validate_locator_and_completion(tmp_path
         tuple(adapter._iter_target_turn_records(escaped))
     with pytest.raises(CapabilityUnavailable, match="semantic_capture_not_installed"):
         adapter.load_capsule(ref, object())
+
+
+def test_discovery_streams_metadata_without_retaining_content_records(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    import agc_runtime.codex_source_adapter as module
+
+    root = _profile(tmp_path)
+    content_file = root / "sessions" / "content-sentinel.jsonl"
+    lines = content_file.read_text(encoding="utf-8").splitlines()
+    content_file.write_text(
+        "\n".join((lines[0], *(lines[1] for _ in range(256)), lines[-1])) + "\n",
+        encoding="utf-8",
+    )
+    original_loads = module.json.loads
+    counts = {"live": 0, "maximum": 0}
+
+    class TrackedRecord(dict):
+        def __init__(self, value):
+            super().__init__(value)
+            counts["live"] += 1
+            counts["maximum"] = max(counts["maximum"], counts["live"])
+
+        def __del__(self):
+            counts["live"] -= 1
+
+    monkeypatch.setattr(module.json, "loads", lambda value: TrackedRecord(original_loads(value)))
+    adapter = module.CodexSourceAdapter(root)
+    batch = adapter.discover(None, _window())
+
+    assert ("task-content", "turn-content") in {
+        (ref.key.task_id, ref.key.revision_id) for ref in batch.revisions
+    }
+    assert counts == {"live": 0, "maximum": 1}
+    assert "CENSUS_CONTENT_MUST_NOT_BE_RETAINED" not in repr(batch.to_mapping())
+    assert "CENSUS_CONTENT_MUST_NOT_BE_RETAINED" not in repr(adapter.__dict__)
+
+
+def test_internal_parse_or_critical_uncertainty_invalidates_the_whole_source(tmp_path: Path):
+    from agc_runtime.codex_source_adapter import CodexSourceAdapter
+
+    root = _profile(tmp_path)
+    malformed = root / "sessions" / "internal-malformed.jsonl"
+    malformed.write_text(
+        "\n".join(
+            (
+                '{"timestamp":"2026-08-16T10:00:00Z","type":"session_meta","payload":{"id":"rollout-malformed","session_id":"task-malformed","source":"cli"}}',
+                '{"timestamp":"2026-08-16T10:00:10Z","type":"response_item",BROKEN}',
+                '{"timestamp":"2026-08-16T10:01:00Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-malformed"}}',
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    critical = root / "sessions" / "critical-drift.jsonl"
+    critical.write_text(
+        "\n".join(
+            (
+                '{"timestamp":"2026-08-16T11:00:00Z","type":"session_meta","payload":{"id":"rollout-critical","session_id":"task-critical","source":"cli"}}',
+                '{"timestamp":"2026-08-16T11:00:10Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-good"}}',
+                '{"timestamp":"2026-08-16T11:00:20Z","type":"event_msg","payload":{"type":"task_complete","turn_id":""}}',
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    invalid_utf8 = root / "sessions" / "invalid-utf8.jsonl"
+    invalid_utf8.write_bytes(
+        b'{"timestamp":"2026-08-16T12:00:00Z","type":"session_meta","payload":{"id":"rollout-utf8","session_id":"task-utf8","source":"cli"}}\n'
+        b'{"type":"response_item","payload":{"content":"\xff"}}\n'
+        b'{"timestamp":"2026-08-16T12:01:00Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-utf8"}}\n'
+    )
+
+    batch = CodexSourceAdapter(root).discover(None, _window())
+    keys = {(ref.key.task_id, ref.key.revision_id) for ref in batch.revisions}
+
+    assert not ({("task-malformed", "turn-malformed"), ("task-critical", "turn-good"), ("task-utf8", "turn-utf8")} & keys)
+    assert {"source_malformed", "unknown_completion_shape", "source_unreadable"} <= set(
+        batch.diagnostic_codes
+    )
+
+
+def test_probe_revalidates_repeated_metadata_and_identity_ignores_path_hints(tmp_path: Path):
+    from agc_runtime.codex_source_adapter import CodexSourceAdapter
+
+    root = _profile(tmp_path)
+    adapter = CodexSourceAdapter(root)
+    before = next(
+        ref for ref in adapter.discover(None, _window()).revisions if ref.key.revision_id == "turn-2"
+    )
+    source = root / before.locator
+    original_stat = source.stat()
+    os.utime(source, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns + 10_000_000))
+    after_mtime = next(
+        ref for ref in adapter.discover(None, _window()).revisions if ref.key.revision_id == "turn-2"
+    )
+    assert after_mtime.key == before.key
+
+    with source.open("a", encoding="utf-8", newline="") as handle:
+        handle.write(
+            '{"timestamp":"2026-08-10T10:07:00Z","type":"response_item","payload":{"content":"changed last message"}}\n'
+        )
+    after_message = next(
+        ref for ref in adapter.discover(None, _window()).revisions if ref.key.revision_id == "turn-2"
+    )
+    assert after_message.key == before.key
+
+    with source.open("a", encoding="utf-8", newline="") as handle:
+        handle.write(
+            '{"timestamp":"2026-08-10T10:08:00Z","type":"session_meta","payload":{"id":"rollout-main","session_id":"different-task","source":"cli"}}\n'
+        )
+    probe = adapter.probe(before)
+    assert (probe.source_kind, probe.completion_state, probe.diagnostic_code) == (
+        "unknown",
+        "unreadable",
+        "source_identity_mismatch",
+    )
+    with pytest.raises(ValueError, match="identity"):
+        tuple(adapter._iter_target_turn_records(before))
+
+
+def test_target_iterator_fails_closed_on_critical_drift_between_validation_and_load(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from agc_runtime.codex_source_adapter import CodexSourceAdapter
+
+    root = _profile(tmp_path)
+    adapter = CodexSourceAdapter(root)
+    ref = next(
+        item for item in adapter.discover(None, _window()).revisions if item.key.revision_id == "turn-2"
+    )
+    source = root / ref.locator
+    original_scan = adapter._scan_file
+
+    def scan_then_drift(path: Path):
+        result = original_scan(path)
+        with source.open("a", encoding="utf-8", newline="") as handle:
+            handle.write(
+                '{"timestamp":"2026-08-10T10:09:00Z","type":"event_msg","payload":{"type":"task_complete","turn_id":""}}\n'
+            )
+        return result
+
+    monkeypatch.setattr(adapter, "_scan_file", scan_then_drift)
+
+    probe = adapter.probe(ref)
+    assert (probe.source_kind, probe.completion_state, probe.diagnostic_code) == (
+        "unknown",
+        "unreadable",
+        "source_unreadable",
+    )

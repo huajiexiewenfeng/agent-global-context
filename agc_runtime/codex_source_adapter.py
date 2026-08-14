@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterator
@@ -32,6 +33,13 @@ class CapabilityUnavailable(RuntimeError):
 
 class _SourceIdentityMismatch(ValueError):
     pass
+
+
+@dataclass(frozen=True)
+class _FileScan:
+    identity: tuple[str, str, str, str] | None
+    completions: tuple[tuple[str, str], ...]
+    diagnostic_code: str | None
 
 
 def compare_source_fingerprints(
@@ -110,13 +118,38 @@ class CodexSourceAdapter:
         diagnostics: set[str] = set()
 
         for locator, path in self._source_files(diagnostics):
-            records, read_diagnostics = self._read_records(path)
-            diagnostics.update(read_diagnostics)
-            if records is None:
+            scan = self._scan_file(path)
+            if scan.diagnostic_code is not None:
+                diagnostics.add(scan.diagnostic_code)
                 continue
-            discovered, parse_diagnostics = self._discover_records(records, locator, window)
-            diagnostics.update(parse_diagnostics)
-            for revision in discovered:
+            if scan.identity is None or scan.identity[3] != "main":
+                continue
+            task_id, rollout_id, identity_quality, _source_kind = scan.identity
+            start = _utc(window.start_at)
+            end = _utc(window.end_at)
+            assert start is not None and end is not None
+            for revision_id, completed_at in scan.completions:
+                completed = _utc(completed_at)
+                assert completed is not None
+                if not start <= completed < end:
+                    continue
+                revision = RevisionRef.from_mapping(
+                    {
+                        "schema_version": CAPTURE_SCHEMA_VERSION,
+                        "capture_key": {
+                            "adapter_id": self.adapter_id,
+                            "source_root_id": self._source_root_id,
+                            "task_id": task_id,
+                            "revision_id": revision_id,
+                        },
+                        "rollout_anchor_id": rollout_id,
+                        "completed_at": completed_at,
+                        "locator": locator,
+                        "identity_quality": identity_quality,
+                        "adapter_version": self.adapter_version,
+                        "source_schema_version": self.source_schema_version,
+                    }
+                )
                 identity = (revision.key.task_id, revision.key.revision_id)
                 # sessions is enumerated before archived_sessions, so an archive move
                 # is an exact replay and retains the active relative locator.
@@ -210,114 +243,78 @@ class CodexSourceAdapter:
                     continue
                 yield locator, resolved
 
-    def _read_records(
-        self, path: Path
-    ) -> tuple[list[dict[str, Any]] | None, set[str]]:
-        diagnostics: set[str] = set()
-        records: list[dict[str, Any]] = []
+    def _scan_file(self, path: Path) -> _FileScan:
+        identity: tuple[str, str, str, str] | None = None
+        completions: dict[str, str] = {}
         try:
             with path.open("r", encoding="utf-8", newline="") as handle:
-                pending: str | None = None
-                for line in handle:
-                    if pending is not None:
-                        self._parse_source_line(pending, records, diagnostics, final=False)
-                    pending = line
-                if pending is not None:
-                    self._parse_source_line(pending, records, diagnostics, final=True)
+                for line, final in self._source_lines(handle):
+                    record, diagnostic = self._decode_source_line(line, final=final)
+                    if diagnostic is not None:
+                        return _FileScan(None, (), diagnostic)
+                    if record is None:
+                        continue
+                    record_type = record.get("type")
+                    if record_type == "session_meta":
+                        current = self._source_identity(record)
+                        if current is None or current[3] == "unknown":
+                            return _FileScan(None, (), "unknown_source_shape")
+                        if identity is None:
+                            identity = current
+                        elif current != identity:
+                            return _FileScan(None, (), "conflicting_source_identity")
+                    elif record_type == "event_msg":
+                        payload = record.get("payload")
+                        if not isinstance(payload, dict):
+                            return _FileScan(None, (), "unknown_completion_shape")
+                        event_type = payload.get("type")
+                        if event_type == "task_complete":
+                            if identity is None:
+                                return _FileScan(None, (), "unknown_source_shape")
+                            revision_id = _identifier(payload.get("turn_id"))
+                            completed_at = record.get("timestamp")
+                            if revision_id is None or _utc(completed_at) is None:
+                                return _FileScan(None, (), "unknown_completion_shape")
+                            prior = completions.setdefault(revision_id, completed_at)
+                            if prior != completed_at:
+                                return _FileScan(None, (), "unknown_completion_shape")
+                        elif event_type not in {"task_started", "task_aborted"} and self._has_turn_identity(payload):
+                            return _FileScan(None, (), "unknown_completion_shape")
+                    del record
         except PermissionError:
-            return None, {"source_locked"}
+            return _FileScan(None, (), "source_locked")
         except (OSError, UnicodeError):
-            return None, {"source_unreadable"}
-        return records, diagnostics
+            return _FileScan(None, (), "source_unreadable")
+        if identity is None:
+            return _FileScan(None, (), "unknown_source_shape")
+        return _FileScan(identity, tuple(completions.items()), None)
 
     @staticmethod
-    def _parse_source_line(
-        line: str,
-        records: list[dict[str, Any]],
-        diagnostics: set[str],
-        *,
-        final: bool,
-    ) -> None:
+    def _source_lines(handle: Any) -> Iterator[tuple[str, bool]]:
+        pending: str | None = None
+        for line in handle:
+            if pending is not None:
+                yield pending, False
+            pending = line
+        if pending is not None:
+            yield pending, True
+
+    @staticmethod
+    def _decode_source_line(
+        line: str, *, final: bool
+    ) -> tuple[dict[str, Any] | None, str | None]:
         if final and not line.endswith(("\n", "\r")):
-            diagnostics.add("partial_tail")
-            return
+            return None, "partial_tail"
         stripped = line.strip()
         if not stripped:
-            return
+            return None, None
         try:
             value = json.loads(stripped)
         except json.JSONDecodeError:
-            diagnostics.add("partial_tail" if final else "source_malformed")
-            return
+            return None, "partial_tail" if final else "source_malformed"
         if not isinstance(value, dict):
-            diagnostics.add("source_malformed")
-            return
-        records.append(value)
-
-    def _discover_records(
-        self,
-        records: list[dict[str, Any]],
-        locator: str,
-        window: TimeWindow,
-    ) -> tuple[list[RevisionRef], set[str]]:
-        diagnostics: set[str] = set()
-        metadata = [record for record in records if record.get("type") == "session_meta"]
-        if not metadata:
-            return [], {"unknown_source_shape"}
-        identity = self._source_identity(metadata[0])
-        if identity is None:
-            return [], {"unknown_source_shape"}
-        task_id, rollout_id, identity_quality, source_kind = identity
-        if source_kind == "subagent":
-            return [], set()
-        if source_kind != "main":
-            return [], {"unknown_source_shape"}
-        if any(self._source_identity(record) != identity for record in metadata[1:]):
-            return [], {"conflicting_source_identity"}
-
-        start = _utc(window.start_at)
-        end = _utc(window.end_at)
-        assert start is not None and end is not None
-        revisions: dict[str, RevisionRef] = {}
-        for record in records:
-            if record.get("type") != "event_msg":
-                continue
-            payload = record.get("payload")
-            if not isinstance(payload, dict):
-                diagnostics.add("unknown_completion_shape")
-                continue
-            event_type = payload.get("type")
-            if event_type == "task_complete":
-                revision_id = _identifier(payload.get("turn_id"))
-                completed_at = record.get("timestamp")
-                completed = _utc(completed_at)
-                if revision_id is None or completed is None:
-                    diagnostics.add("unknown_completion_shape")
-                    continue
-                if start <= completed < end:
-                    revisions.setdefault(
-                        revision_id,
-                        RevisionRef.from_mapping(
-                            {
-                                "schema_version": CAPTURE_SCHEMA_VERSION,
-                                "capture_key": {
-                                    "adapter_id": self.adapter_id,
-                                    "source_root_id": self._source_root_id,
-                                    "task_id": task_id,
-                                    "revision_id": revision_id,
-                                },
-                                "rollout_anchor_id": rollout_id,
-                                "completed_at": completed_at,
-                                "locator": locator,
-                                "identity_quality": identity_quality,
-                                "adapter_version": self.adapter_version,
-                                "source_schema_version": self.source_schema_version,
-                            }
-                        ),
-                    )
-            elif event_type not in {"task_started", "task_aborted"} and self._has_turn_identity(payload):
-                diagnostics.add("unknown_completion_shape")
-        return list(revisions.values()), diagnostics
+            return None, "source_malformed"
+        return value, None
 
     @staticmethod
     def _has_turn_identity(payload: dict[str, Any]) -> bool:
@@ -383,46 +380,80 @@ class CodexSourceAdapter:
 
         self._validate_ref(ref)
         path = self._path_for_locator(ref.locator)
-        records, diagnostics = self._read_records(path)
-        if records is None or diagnostics:
+        scan = self._scan_file(path)
+        if scan.diagnostic_code in {"unknown_source_shape", "conflicting_source_identity"}:
+            raise _SourceIdentityMismatch("source identity does not match revision")
+        if scan.diagnostic_code is not None or scan.identity is None:
             raise ValueError("source is not settled and readable")
-        metadata = next(
-            (record for record in records if record.get("type") == "session_meta"), None
-        )
-        identity = self._source_identity(metadata) if metadata is not None else None
         expected_identity = (
             ref.key.task_id,
             ref.rollout_anchor_id,
             ref.identity_quality,
             "main",
         )
-        if identity != expected_identity:
+        if scan.identity != expected_identity:
             raise _SourceIdentityMismatch("source identity does not match revision")
+        if (ref.key.revision_id, ref.completed_at) not in scan.completions:
+            raise _SourceIdentityMismatch("completion identity does not match revision")
+
+        target_records: list[dict[str, Any]] = []
         target_active = False
         completed = False
-        for record in records:
-            if record.get("type") == "session_meta":
-                yield record
-                continue
-            payload = record.get("payload")
-            if not isinstance(payload, dict):
-                continue
-            turn_id = payload.get("turn_id")
-            if turn_id == ref.key.revision_id:
-                target_active = True
-            if target_active:
-                yield record
-            if (
-                record.get("type") == "event_msg"
-                and payload.get("type") == "task_complete"
-                and turn_id == ref.key.revision_id
-            ):
-                if record.get("timestamp") != ref.completed_at:
-                    raise _SourceIdentityMismatch("completion identity does not match revision")
-                completed = True
-                break
+        seen_metadata = False
+        try:
+            with path.open("r", encoding="utf-8", newline="") as handle:
+                for line, final in self._source_lines(handle):
+                    record, diagnostic = self._decode_source_line(line, final=final)
+                    if diagnostic is not None:
+                        raise ValueError("source changed during target load")
+                    if record is None:
+                        continue
+                    if record.get("type") == "session_meta":
+                        if self._source_identity(record) != expected_identity:
+                            raise _SourceIdentityMismatch("source identity does not match revision")
+                        if not seen_metadata:
+                            target_records.append(record)
+                            seen_metadata = True
+                        continue
+                    payload = record.get("payload")
+                    if record.get("type") == "event_msg":
+                        if not isinstance(payload, dict):
+                            raise ValueError("critical source record changed during target load")
+                        event_type = payload.get("type")
+                        if event_type == "task_complete" and (
+                            _identifier(payload.get("turn_id")) is None
+                            or _utc(record.get("timestamp")) is None
+                        ):
+                            raise ValueError("critical source record changed during target load")
+                        if (
+                            event_type not in {"task_complete", "task_started", "task_aborted"}
+                            and self._has_turn_identity(payload)
+                        ):
+                            raise ValueError("critical source record changed during target load")
+                    elif not isinstance(payload, dict):
+                        continue
+                    assert isinstance(payload, dict)
+                    turn_id = payload.get("turn_id")
+                    if turn_id == ref.key.revision_id and not completed:
+                        target_active = True
+                    if target_active and not completed:
+                        target_records.append(record)
+                    if (
+                        record.get("type") == "event_msg"
+                        and payload.get("type") == "task_complete"
+                        and turn_id == ref.key.revision_id
+                    ):
+                        if record.get("timestamp") != ref.completed_at:
+                            raise _SourceIdentityMismatch("completion identity does not match revision")
+                        completed = True
+                        target_active = False
+        except PermissionError as error:
+            raise ValueError("source is locked") from error
+        except (OSError, UnicodeError, json.JSONDecodeError) as error:
+            raise ValueError("source is unreadable") from error
         if not completed:
             raise ValueError("target turn is not complete")
+        yield from target_records
 
 
 __all__ = [

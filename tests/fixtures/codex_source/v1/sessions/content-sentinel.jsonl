@@ -1,0 +1,5 @@
+{"timestamp":"2026-08-15T10:00:00Z","type":"session_meta","payload":{"id":"rollout-content","session_id":"task-content","source":"cli"}}
+{"timestamp":"2026-08-15T10:00:10Z","type":"response_item","payload":{"role":"user","content":"CENSUS_CONTENT_MUST_NOT_BE_RETAINED"}}
+{"timestamp":"2026-08-15T10:00:20Z","type":"response_item","payload":{"role":"assistant","content":"CENSUS_CONTENT_MUST_NOT_BE_RETAINED"}}
+{"timestamp":"2026-08-15T10:00:30Z","type":"tool_result","payload":{"output":"CENSUS_CONTENT_MUST_NOT_BE_RETAINED"}}
+{"timestamp":"2026-08-15T10:01:00Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-content"}}
