@@ -35,7 +35,7 @@
 - excluded_scope:
   - production and test edits before plan confirmation
   - Observation aggregation, Candidate/Formal Memory mutation, semantic Recall changes, Trace/Eval/Loop, external memory engines, and full-history replay
-- current_gate: Capture Core Task 1 implementation
+- current_gate: Capture Core Task 6 package-gate review
 - requested_stage_or_bridge: Subagent-Driven Development directly on `main`, with per-task TDD and independent review
 - constraints:
   - current task behavior remains failure-open
@@ -70,6 +70,90 @@
 - requirement: planned
 - written_spec: approved
 - implementation_plan: confirmed
-- development: active on Capture Core Task 1
-- testing: not started
-- next_gate: Capture Core Task 1 RED/GREEN, task review, and focused commit
+- development: Capture Core Task 6 test/docs implementation complete; no production delta
+- testing: focused and complete suites pass; installed wheel behavior passes except the literal `agc --version` spelling required by the Task 6 brief
+- next_gate: resolve or explicitly accept the existing `agc --version` versus `agc version` contract mismatch before entering the Codex Source Census plan
+
+## Capture Core Task 6 Verification
+
+### Exact test commands and results
+
+```powershell
+& '.\.venv\Scripts\python.exe' -m pytest `
+  tests/test_capture_core_end_to_end.py -q `
+  --basetemp '<temporary-root>\agc-capture-core-e2e-red'
+# exit 1; 1 failed
+
+& '.\.venv\Scripts\python.exe' -m pytest `
+  tests/test_capture_core_end_to_end.py tests/test_runtime_end_to_end.py -q `
+  --basetemp '<temporary-root>\agc-capture-core-e2e-green'
+# exit 0; 6 passed in 8.81s
+
+$env:PYTHONPATH='<repository-venv-site-packages>;<bundled-backend-site-packages>'
+& '.\.venv\Scripts\python.exe' -m pytest -q `
+  --basetemp '<temporary-root>\agc-capture-core-full-clean'
+# exit 0; 513 passed, 1 warning in 330.29s
+```
+
+The final full run orders the repository venv before the bundled backend. An
+earlier diagnostic run put the bundled path first and produced `505 passed, 8
+failed`; seven MCP failures came from a mismatched compiled `pydantic_core`, and
+one installer failure came from an inherited offline flag. The exact affected
+subset plus the wheel test then passed `12 passed in 167.71s`, followed by the
+clean complete-suite result above. No product code was changed for these test
+environment failures.
+
+### Clean package and installed artifact
+
+```powershell
+$env:PYTHONPATH='<repository-venv-site-packages>;<bundled-backend-site-packages>'
+$env:PIP_NO_INDEX='1'
+$env:PIP_NO_INPUT='1'
+$env:PIP_DISABLE_PIP_VERSION_CHECK='1'
+& '.\.venv\Scripts\python.exe' -m build --wheel --no-isolation `
+  --outdir '<temporary-root>\wheel' '<temporary-clean-source-copy>'
+# exit 0; wheel built
+
+& '<temporary-venv>\Scripts\python.exe' -m pip install --no-deps '<wheel>'
+# exit 0; installed agent-global-context-runtime 0.2.0
+
+& '<temporary-venv>\Scripts\agc.exe' --version
+# exit 1; existing invalid_tool envelope
+
+& '<temporary-venv>\Scripts\agc.exe' version
+# exit 0; accepted, runtime_version 0.2.0
+
+'{"action":"validate"}' | & '<temporary-venv>\Scripts\agc.exe' admin `
+  --root '<temporary-memory-root>' --input -
+# exit 0; accepted
+```
+
+An installed-artifact MCP probe from outside the repository returned exactly
+three tools: `agc.admin`, `agc.read`, and `agc.write`.
+
+### Production, tests, mocks, assertions, actual behavior
+
+- Production: no changed production files. Capture remains disabled by default
+  with mode `off`, configured source count `0`, and no configured model.
+- Tests: one new disabled-core E2E and stronger ordinary Recall lifecycle,
+  budget, and post-forget validation assertions.
+- Mocks: only boundary tripwires for subprocess calls and deferred Capture
+  Source/Scanner/Runner/Hook imports. Real store, transactions, dispatchers,
+  catalog, backup/restore, and forget paths run end to end.
+- Assertions: init/validate, two-level replay idempotency, explicit read
+  isolation, backup/restore, both exact forget unions, suppression tombstone,
+  source-task preservation, zero external behavior, and unchanged Formal
+  Catalog byte hash/memory count at every step.
+- Actual behavior: all assertions pass on a synthetic temporary root without a
+  profile, transcript, provider, network, or deployed AGC data.
+
+### Residual risk and gate
+
+The current Capture-capable Runtime rejects unsupported Capture schema and
+backup manifests carry Capture schema `1`, but the package version is still
+`0.2.0`. A pre-Capture 0.2.0 binary cannot be distinguished by semantic version
+alone and cannot safely restore post-Capture data. Host rollout must retain a
+Capture-capable Runtime and block that binary downgrade. Capture remains inert
+and is not yet usable. The Codex Source Census exit gate is held on the literal
+CLI-version mismatch unless the user accepts `agc version` as the intended
+installed-version check or separately authorizes a production CLI change.

@@ -93,9 +93,55 @@
 | source | done | confirmed v2 North Star, current Runtime evidence, and 2026-08-13 user decisions | 2026-08-13 |
 | design | done | approved written specification in `docs/superpowers/specs/2026-08-13-agent-global-context-high-coverage-capture-design.md` | 2026-08-13 |
 | plan | done | four dependency-ordered TDD plans with AC-01 through AC-20 traceability | 2026-08-13 |
-| development | active | user selected Subagent-Driven Development and explicitly authorized direct work on `main` | 2026-08-13 |
-| testing | pending |  | 2026-08-13 |
+| development | active | Capture Core Tasks 1-6 implemented on `main`; Task 6 adds only the disabled-core release proof and ordinary Recall E2E assertions, with no Source/model/Runner/Hook behavior | 2026-08-14 |
+| testing | active | Task 6 focused: `6 passed`; complete suite: `513 passed`, one intentional duplicate-ZIP warning; clean wheel build/install, supported installed version action, admin validation, and exactly three MCP tools passed; literal `agc --version` remains an existing CLI-contract mismatch | 2026-08-14 |
 | archive | pending |  | 2026-08-13 |
+
+## Capture Core Task 6 Evidence
+
+- Scope: `tests/test_capture_core_end_to_end.py` and
+  `tests/test_runtime_end_to_end.py`; no production, Source, model, Runner,
+  Hook, provider, network, scheduler, host, or deployed-profile file changed.
+- RED: the new E2E scaffold was run before its proof was implemented and
+  failed with exit `1`, `1 failed`, at the intentional
+  `disabled Capture core E2E proof is not implemented` assertion.
+- Focused GREEN: the disabled-core and ordinary Runtime E2E command exited
+  `0` with `6 passed in 8.81s`.
+- Complete suite: the final venv-first run with the documented bundled build
+  backend available only as fallback exited `0` with `513 passed, 1 warning in
+  330.29s`. The warning is the intentional duplicate-name ZIP attack case.
+- Production/test/mocks: production delta is zero. The new test uses the real
+  `CaptureStore`, admin/read/write dispatchers, filesystem backup/restore, and
+  both hard-forget transactions. Monkeypatching is limited to fail-fast guards
+  for subprocess APIs and deferred Source/Scanner/Runner/Hook imports; no
+  persistence, hashing, read routing, backup, restore, or forget behavior is
+  mocked.
+- Assertions/actual behavior: a synthetic root initializes and validates;
+  Capture is disabled with configured source count `0` and no configured
+  model; two synthetic observations commit once and exact replay creates `0`
+  duplicates; only explicit Capture actions can read them; backup/restore,
+  exact Observation forget, and exact Revision forget succeed; the revision
+  forget leaves one content-free suppression tombstone and does not delete the
+  source task. The Formal Catalog byte hash and memory count `0` remain
+  identical at every boundary. The guard records `0` subprocess calls and `0`
+  deferred-runtime imports.
+- Ordinary Recall: the Runtime E2E now proves the overview stays at or below
+  the configured `250`-token default, only active lifecycle items appear, and
+  validate succeeds both before and after formal forget.
+- Package evidence: a clean disposable source copy built a wheel offline with
+  the documented no-isolation backend and installed it into a disposable
+  environment. Installed `agc version` reported Runtime `0.2.0`, installed
+  admin validation returned `accepted`, and the installed artifact exposed
+  exactly `agc.admin`, `agc.read`, and `agc.write`.
+- Package concern: the brief's literal `agc --version` command exited `1` with
+  the existing machine-readable `invalid_tool` response because Runtime 0.2.0
+  implements `agc version`. Task 6 did not expand its locked test/docs scope to
+  change the CLI contract.
+- Backward-restore residual risk: Capture archives declare Capture schema `1`
+  and the current Runtime rejects unknown Capture schema, but the package still
+  reports `0.2.0`. A pre-Capture binary with the same version cannot safely
+  restore or govern Capture data, and host-level binary downgrade prevention
+  remains deferred. Capture is not usable or activated by this evidence.
 
 ## Open Questions
 

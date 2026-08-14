@@ -67,11 +67,17 @@ def test_init_write_read_forget_keeps_catalog_valid(tmp_path: Path, cli):
     assert cli("admin", root, {"action": "init"})["status"] == "accepted"
     assert cli("write", root, direct_preference_request())["status"] == "accepted"
     assert cli("admin", root, {"action": "validate"})["status"] == "accepted"
-    assert cli(
+    overview = cli("read", root, {"action": "overview"})
+    assert overview["data"]["memory_count"] == 1
+    assert overview["data"]["estimated_tokens"] <= 250
+    assert {card["lifecycle"] for card in overview["data"]["cards"]} <= {"active"}
+    search = cli(
         "read",
         root,
         {"action": "search", "filters": {"kind": ["preference"]}},
-    )["data"]["items"][0]["id"] == "implementation-plan-first"
+    )
+    assert search["data"]["items"][0]["id"] == "implementation-plan-first"
+    assert {item["lifecycle"] for item in search["data"]["items"]} <= {"active"}
     removed = cli(
         "write",
         root,
@@ -85,6 +91,7 @@ def test_init_write_read_forget_keeps_catalog_valid(tmp_path: Path, cli):
     )
 
     assert removed["status"] == "accepted"
+    assert cli("admin", root, {"action": "validate"})["status"] == "accepted"
     assert cli(
         "read",
         root,
