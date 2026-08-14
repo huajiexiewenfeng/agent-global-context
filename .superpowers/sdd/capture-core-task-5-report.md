@@ -606,3 +606,83 @@ git diff --check
 Result: both passed. The strict UTF-8/no-BOM/LF byte scan passed for every
 changed Python, test, and report file. All tests used `C:\tmp` roots; no live
 deployed AGC profile or original Codex source task was accessed or changed.
+
+## Fail-closed Windows 8.3 alias validation (2026-08-14)
+
+- The shared archive-name validator no longer guesses which protected names a
+  Windows short name might alias. Every path component matching a plausible
+  8.3 short-name shape is rejected regardless of namespace, including numeric
+  and hash/alphanumeric suffix forms. Restore, writer verification, and formal
+  forget all use this shared validator.
+- The previous `contexts/draft~1.md` compatibility is intentionally removed.
+  An unambiguous ordinary tilde spelling such as
+  `contexts/draft~notes~final.md` remains valid because it cannot be an 8.3
+  short-name component.
+
+### 8.3 alias RED evidence
+
+```powershell
+& '.\.venv\Scripts\python.exe' -m pytest `
+  tests/test_capture_backup_restore.py::test_restore_rejects_windows_filesystem_aliases_before_clear `
+  tests/test_capture_backup_restore.py::test_archive_writer_rejects_plausible_windows_short_name_alias `
+  tests/test_capture_backup_restore.py::test_archive_writer_preserves_unambiguous_ordinary_tilde_name `
+  tests/test_forget_service.py::test_formal_forget_validates_every_source_archive_name_before_filtering `
+  -q --basetemp 'C:\tmp\agc-task5-83-alias-red'
+```
+
+Result: `7 failed, 19 passed in 13.56s`. The new arbitrary-namespace numeric
+and hash/alphanumeric aliases were accepted by restore, archive writing, and
+formal forget; formal forget rewrote the source backup instead of failing
+closed.
+
+### 8.3 alias targeted GREEN
+
+The same command with `--basetemp C:\tmp\agc-task5-83-alias-green` produced
+`26 passed in 9.43s`.
+
+### 8.3 alias final verification
+
+```powershell
+& '.\.venv\Scripts\python.exe' -m pytest tests/test_forget_service.py -q `
+  --basetemp 'C:\tmp\agc-task5-83-formal-final'
+```
+
+Result: `34 passed in 12.09s`.
+
+```powershell
+& '.\.venv\Scripts\python.exe' -m pytest `
+  tests/test_capture_backup_restore.py tests/test_capture_forget.py `
+  tests/test_admin_service.py tests/test_forget_service.py -q `
+  --basetemp 'C:\tmp\agc-task5-83-focused-final'
+```
+
+Result: `130 passed, 1 warning in 50.91s`.
+
+```powershell
+& '.\.venv\Scripts\python.exe' -m pytest `
+  tests/test_capture_contracts.py tests/test_capture_paths.py `
+  tests/test_capture_store.py tests/test_capture_transaction.py `
+  tests/test_capture_read_service.py tests/test_capture_status.py -q `
+  --basetemp 'C:\tmp\agc-task5-83-adjacent-final'
+```
+
+Result: `197 passed in 18.22s`.
+
+```powershell
+& '.\.venv\Scripts\python.exe' -m pytest tests `
+  --ignore=tests/test_local_install.py `
+  --deselect=tests/test_runtime_config.py::test_built_wheel_contains_default_and_installed_admin_init_works `
+  -q --basetemp 'C:\tmp\agc-task5-83-broad-final'
+```
+
+Result: `470 passed, 1 deselected, 1 warning in 87.01s`. The warning is the
+intentional duplicate-ZIP-entry attack regression.
+
+```powershell
+& '.\.venv\Scripts\python.exe' -m compileall -q agc_runtime tests
+git diff --check
+```
+
+Result: both passed. The strict UTF-8/no-BOM/LF byte scan passed for every
+changed Python, test, and report file. All tests used `C:\tmp` roots; no live
+deployed AGC profile or original Codex source task was accessed or changed.

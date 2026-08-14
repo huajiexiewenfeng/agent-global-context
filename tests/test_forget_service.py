@@ -316,6 +316,8 @@ def test_formal_forget_never_deletes_casefolded_capture_archive_path(populated):
         "memories/identity/../identity/family-structure.md",
         "memories//identity/family-structure.md",
         ".runtime./capture/dirty/strict-copy.json",
+        "ordinary/DRAFT~12.MD",
+        "contexts/DRA4F~A1.MD",
     ],
 )
 def test_formal_forget_validates_every_source_archive_name_before_filtering(

@@ -54,9 +54,10 @@ _WINDOWS_RESERVED_BASENAMES = frozenset({
     *(f"lpt{number}" for number in range(1, 10)),
 })
 _WINDOWS_SHORT_ALIAS = re.compile(
-    r"^[^ .]{1,6}~[0-9]+(?:\.[^.]*)?$", re.IGNORECASE
+    r"^(?=[^.]{3,8}(?:\.|$))[^ .~]{1,6}~[A-Za-z0-9]{1,6}"
+    r"(?:\.[^ .]{1,3})?$",
+    re.IGNORECASE,
 )
-_WINDOWS_PROTECTED_SHORT_STEMS = frozenset({"captur", "backup"})
 
 
 def _zip_info(name: str) -> zipfile.ZipInfo:
@@ -203,17 +204,8 @@ def _safe_archive_name(name: str) -> None:
         basename = part.split(".", 1)[0].rstrip(" .").casefold()
         if basename in _WINDOWS_RESERVED_BASENAMES:
             raise ValueError("backup uses a Windows reserved device path")
-    first_short = _WINDOWS_SHORT_ALIAS.fullmatch(pure.parts[0])
-    if first_short and pure.parts[0].split("~", 1)[0].casefold() == "runtim":
-        raise ValueError("backup aliases the protected Windows runtime path")
-    if len(pure.parts) > 1 and pure.parts[0].casefold() == ".runtime":
-        second_short = _WINDOWS_SHORT_ALIAS.fullmatch(pure.parts[1])
-        if (
-            second_short
-            and pure.parts[1].split("~", 1)[0].casefold()
-            in _WINDOWS_PROTECTED_SHORT_STEMS
-        ):
-            raise ValueError("backup aliases a protected Windows runtime namespace")
+        if _WINDOWS_SHORT_ALIAS.fullmatch(part):
+            raise ValueError("backup uses a plausible Windows short-name alias")
 
 
 def validate_archive_name(name: str) -> None:

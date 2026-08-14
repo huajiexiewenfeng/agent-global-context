@@ -572,6 +572,8 @@ def test_restore_rejects_noncanonical_archive_aliases_before_mutation(
         "RUNTIM~1/capture/cursor-hmac-key",
         ".runtime/CAPTUR~1/cursor-hmac-key",
         ".runtime/BACKUP~1/old.zip",
+        "ordinary/DRAFT~12.MD",
+        "contexts/DRA4F~A1.MD",
     ],
 )
 def test_restore_rejects_windows_filesystem_aliases_before_clear(
@@ -617,14 +619,28 @@ def test_restore_rejects_windows_filesystem_aliases_before_clear(
     assert not (paths.queue / "stale.json").exists()
 
 
-def test_archive_writer_preserves_nonprotected_posix_tilde_name():
-    files = [("contexts/draft~1.md", b"ordinary managed content\n")]
+@pytest.mark.parametrize(
+    "archive_name",
+    ["contexts/draft~1.md", "ordinary/DRAFT~12.MD", "contexts/DRA4F~A1.MD"],
+)
+def test_archive_writer_rejects_plausible_windows_short_name_alias(
+    archive_name: str,
+):
+    files = [(archive_name, b"ordinary managed content\n")]
+    value = managed_backup.manifest(files)
+
+    with pytest.raises(ValueError, match="alias|short|archive"):
+        managed_backup.archive_bytes(files, value)
+
+
+def test_archive_writer_preserves_unambiguous_ordinary_tilde_name():
+    files = [("contexts/draft~notes~final.md", b"ordinary managed content\n")]
     value = managed_backup.manifest(files)
 
     archive_data = managed_backup.archive_bytes(files, value)
 
     with zipfile.ZipFile(io.BytesIO(archive_data)) as archive:
-        assert archive.read("contexts/draft~1.md") == files[0][1]
+        assert archive.read(files[0][0]) == files[0][1]
 
 
 def test_archive_writer_rejects_high_compression_ratio_output():
