@@ -94,3 +94,123 @@ The user explicitly authorized this implementation scope on 2026-08-14. The
 capability executes only for a future exact `capture_forget` request carrying
 `authorization=explicit_user_request`; this implementation and its tests did
 not operate on the deployed AGC profile or delete any original Codex task.
+
+## Review fixes (2026-08-14)
+
+The Task 5 review findings were resolved as follows:
+
+- Restore now acquires the root writer lock and then the Capture writer lock
+  before reading or verifying the selected archive, and keeps both locks
+  through mutation or rollback. A deterministic two-thread regression proves
+  that a stale restore cannot resurrect an Observation after Capture forget
+  rewrites the managed archive.
+- Exact Observation forget discovers its Receipt through the immutable
+  manifest even when the canonical Observation file is missing, updates the
+  primary graph, rewrites every nested managed backup, and removes every
+  runtime JSON artifact with an explicit exact Observation binding.
+- Recovery validates the complete journal, operation count, unique targets,
+  image names, image existence, target scope, and all before-image bytes before
+  its first target mutation. Corrupt recovery records are strict
+  `SourceQuarantine` objects accepted by managed-backup validation.
+- Restore prevalidates every restorable entry as strict UTF-8 before clearing
+  current state. Rollback restores byte snapshots with atomic byte writes, so
+  pre-existing non-UTF-8 files are restored exactly.
+- Revision forget independently validates every manifest-referenced
+  Observation's strict source Capture Key before deletion. Cross-bound
+  manifests fail closed and preserve the foreign Observation.
+- Managed backup excludes `.runtime/queue/` and `.runtime/cache/`, rejects
+  symbolic links, Windows reparse points, and resolved root escapes before
+  reading targets, and checks the archive file-size ceiling before
+  `read_bytes()`.
+- Formal term forget excludes all live and archived `.runtime/capture/` model
+  paths from matching, deletion, rewriting, and verification. Root locking
+  continues to serialize shared archive changes without bypassing exact
+  Capture forget.
+- Primary, rollback, recovery, restore-clear, and suppression deletes in the
+  reviewed owned modules use the durable `safe_unlink` primitive. Repeated
+  revision forget preserves the existing tombstone and backup bytes instead of
+  churning timestamps or archives.
+
+### Review RED evidence
+
+```powershell
+& 'D:\tmp\github\agent-global-context\.venv\Scripts\python.exe' -m pytest `
+  'D:\tmp\github\agent-global-context\tests\test_capture_backup_restore.py' `
+  'D:\tmp\github\agent-global-context\tests\test_capture_forget.py' `
+  'D:\tmp\github\agent-global-context\tests\test_forget_service.py' -q `
+  --basetemp 'C:\tmp\agc-task5-review-red'
+```
+
+Result: `14 failed, 57 passed, 1 skipped, 1 warning in 38.82s`. The first
+cross-bound test fixture itself was rejected by the existing Observation model
+because its Receipt did not match its source key. The fixture was corrected to
+use a valid foreign Observation and foreign Receipt referenced by the target
+manifest; the corrected regression then failed for the intended reason:
+
+```powershell
+& '.\.venv\Scripts\python.exe' -m pytest `
+  tests/test_capture_forget.py::test_revision_forget_fails_closed_on_foreign_observation_in_target_manifest `
+  -q --basetemp 'C:\tmp\agc-task5-cross-red'
+```
+
+Result: `1 failed in 1.07s` because revision forget returned `accepted` and
+deleted the cross-bound foreign Observation.
+
+The local host cannot create an unprivileged file symlink, so the regression
+was tightened to fall back to a real Windows junction. With both link/reparse
+and resolved-escape defenses temporarily reverted to the original behavior:
+
+```powershell
+& '.\.venv\Scripts\python.exe' -m pytest `
+  tests/test_capture_backup_restore.py::test_backup_rejects_symbolic_link_before_reading_target `
+  -q --basetemp 'C:\tmp\agc-task5-link-red-2'
+```
+
+Result: `1 failed in 7.69s` with `DID NOT RAISE ValueError`. Restoring the two
+defenses and rerunning with `--basetemp C:\tmp\agc-task5-link-green-final`
+produced `1 passed in 0.49s`.
+
+### Final verification
+
+```powershell
+& '.\.venv\Scripts\python.exe' -m pytest `
+  tests/test_capture_backup_restore.py tests/test_capture_forget.py `
+  tests/test_admin_service.py tests/test_forget_service.py -q `
+  --basetemp 'C:\tmp\agc-task5-focused-final'
+```
+
+Result: `81 passed, 1 warning in 33.43s`. The warning is intentionally
+triggered by the duplicate-ZIP-entry attack regression.
+
+```powershell
+& '.\.venv\Scripts\python.exe' -m pytest `
+  tests/test_capture_contracts.py tests/test_capture_paths.py `
+  tests/test_capture_store.py tests/test_capture_transaction.py `
+  tests/test_capture_read_service.py tests/test_capture_status.py -q `
+  --basetemp 'C:\tmp\agc-task5-adjacent-review'
+```
+
+Result: `197 passed in 23.14s`.
+
+```powershell
+& '.\.venv\Scripts\python.exe' -m pytest tests `
+  --ignore=tests/test_local_install.py `
+  --deselect=tests/test_runtime_config.py::test_built_wheel_contains_default_and_installed_admin_init_works `
+  -q --basetemp 'C:\tmp\agc-task5-runtime-final'
+```
+
+Result: `421 passed, 1 deselected, 1 warning in 74.82s`. Only the documented
+local installer module and known wheel-environment integration test were
+excluded.
+
+```powershell
+& '.\.venv\Scripts\python.exe' -m compileall -q agc_runtime tests
+git diff --check
+```
+
+Result: both passed. A strict PowerShell byte scan over every changed Python
+file decoded with `UTF8Encoding(false, true)`, rejected an `EF BB BF` prefix,
+and rejected byte `0D`; result: `UTF-8 strict/no-BOM/LF: passed`.
+
+All tests used temporary roots under `C:\tmp`; no deployed AGC profile or
+original Codex source task was read, rewritten, or deleted.

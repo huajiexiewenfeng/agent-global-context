@@ -26,6 +26,16 @@ from agc_runtime import managed_backup
 from agc_runtime.paths import MemoryPaths
 
 
+_RUNTIME_PREFIXES = (
+    ".runtime/capture/dirty/",
+    ".runtime/capture/journals/",
+    ".runtime/capture/staging/",
+    ".runtime/capture/leases/",
+    ".runtime/capture/scan-state/",
+    ".runtime/capture/budgets/",
+)
+
+
 def _failed(code: str, message: str) -> ToolResponse:
     return ToolResponse(tool="agc.write", action="capture_forget", status="failed", error={"code": code, "message": message})
 
@@ -125,17 +135,78 @@ def _backup_projection(entries: dict[str, bytes]) -> dict[str, bytes]:
     return {name: data for name, data in entries.items() if managed_backup._capture_name_allowed(name)}
 
 
-def _updated_observation(entries: dict[str, bytes], observation_id: str) -> tuple[dict[str, bytes], str]:
+def _mapping_binds_observation(value: Any, observation_id: str) -> bool:
+    if isinstance(value, dict):
+        for name, item in value.items():
+            if name in {"observation_id", "staged_observation_id"} and item == observation_id:
+                return True
+            if name == "observation_ids" and isinstance(item, list) and observation_id in item:
+                return True
+            if _mapping_binds_observation(item, observation_id):
+                return True
+    elif isinstance(value, list):
+        return any(_mapping_binds_observation(item, observation_id) for item in value)
+    return False
+
+
+def _scrub_observation_runtime(entries: dict[str, bytes], observation_id: str) -> dict[str, bytes]:
+    result = dict(entries)
+    needle = observation_id.encode("ascii")
+    for name, data in tuple(result.items()):
+        if not name.startswith(_RUNTIME_PREFIXES):
+            continue
+        try:
+            value = _strict_json(data)
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+            if needle in data:
+                raise ValueError("unparseable Capture artifact may retain target observation")
+            continue
+        if _mapping_binds_observation(value, observation_id):
+            result.pop(name, None)
+        elif Path(name).stem == observation_id or needle in data:
+            raise ValueError("Capture artifact retains an unbound target observation")
+    return result
+
+
+def _updated_observation(entries: dict[str, bytes], observation_id: str) -> tuple[dict[str, bytes], str | None]:
     name = f".runtime/capture/observations/{observation_id}.json"
-    value = json.loads(entries[name].decode("utf-8"))
-    receipt_id = value["receipt_id"]
+    observation: CollectedObservation | None = None
+    if name in entries:
+        observation = CollectedObservation.from_mapping(_strict_json(entries[name]))
+        if observation.observation_id != observation_id:
+            raise ValueError("Capture observation filename binding is invalid")
+
+    manifest_receipts: list[str] = []
+    manifests: dict[str, dict[str, Any]] = {}
+    for manifest_name, data in entries.items():
+        if not manifest_name.startswith(".runtime/capture/indexes/"):
+            continue
+        object_id = Path(manifest_name).stem
+        value = _strict_json(data)
+        ids = _manifest(value, object_id)
+        manifests[object_id] = value
+        if observation_id in ids:
+            manifest_receipts.append(object_id)
+    if len(manifest_receipts) > 1:
+        raise ValueError("observation is bound by multiple immutable manifests")
+    if not manifest_receipts:
+        if observation is not None:
+            raise ValueError("observation is not bound by its immutable manifest")
+        return _scrub_observation_runtime(entries, observation_id), None
+
+    receipt_id = manifest_receipts[0]
+    if observation is not None and observation.receipt_id != receipt_id:
+        raise ValueError("observation receipt binding is invalid")
     receipt_name = f".runtime/capture/receipts/{receipt_id}.json"
     manifest_name = f".runtime/capture/indexes/{receipt_id}.json"
-    receipt = json.loads(entries[receipt_name].decode("utf-8"))
-    manifest = json.loads(entries[manifest_name].decode("utf-8"))
-    ids = manifest.get("observation_ids")
-    if not isinstance(ids, list) or observation_id not in ids:
-        raise ValueError("observation is not bound by its immutable manifest")
+    receipt_object = CaptureReceipt.from_mapping(_strict_json(entries[receipt_name]))
+    if receipt_object.receipt_id != receipt_id:
+        raise ValueError("Capture receipt filename binding is invalid")
+    if observation is not None and _source_key(observation) != receipt_object.key:
+        raise ValueError("observation source binding is invalid")
+    receipt = receipt_object.to_mapping()
+    manifest = manifests[receipt_id]
+    ids = list(_manifest(manifest, receipt_id))
     updated_ids = [item for item in ids if item != observation_id]
     receipt.update({
         "source_fingerprint": None, "source_hash_schema_version": None,
@@ -145,15 +216,13 @@ def _updated_observation(entries: dict[str, bytes], observation_id: str) -> tupl
         "observation_count": len(updated_ids),
         "zero_reason": "user_forget" if not updated_ids else None,
     })
-    # Strict constructors validate every receipt transition before publication.
-    from agc_runtime.capture_contracts import CaptureReceipt
     CaptureReceipt.from_mapping(receipt)
     manifest["observation_ids"] = updated_ids
-    entries = dict(entries)
-    entries.pop(name)
-    entries[receipt_name] = canonical_json_bytes(receipt)
-    entries[manifest_name] = canonical_json_bytes(manifest)
-    return entries, receipt_id
+    result = dict(entries)
+    result.pop(name, None)
+    result[receipt_name] = canonical_json_bytes(receipt)
+    result[manifest_name] = canonical_json_bytes(manifest)
+    return _scrub_observation_runtime(result, observation_id), receipt_id
 
 
 def _updated_revision(entries: dict[str, bytes], key: CaptureKey) -> dict[str, bytes]:
@@ -161,6 +230,7 @@ def _updated_revision(entries: dict[str, bytes], key: CaptureKey) -> dict[str, b
     result = dict(entries)
     tombstone_name = f".runtime/capture/tombstones/{tombstone_id_for(key)}.json"
     target_observations: set[str] = set()
+    observations: dict[str, CollectedObservation] = {}
     needles: set[bytes] = {receipt_id.encode("ascii")}
 
     # Discover observations from their strict source identity rather than from
@@ -171,6 +241,7 @@ def _updated_revision(entries: dict[str, bytes], key: CaptureKey) -> dict[str, b
         observation = CollectedObservation.from_mapping(_strict_json(data))
         if name != f".runtime/capture/observations/{observation.observation_id}.json":
             raise ValueError("Capture observation filename binding is invalid")
+        observations[observation.observation_id] = observation
         if _source_key(observation) == key:
             target_observations.add(observation.observation_id)
             needles.update({
@@ -203,26 +274,27 @@ def _updated_revision(entries: dict[str, bytes], key: CaptureKey) -> dict[str, b
             tombstone = CaptureSuppressionTombstone.from_mapping(_strict_json(data))
             if name != f".runtime/capture/tombstones/{tombstone.tombstone_id}.json":
                 raise ValueError("Capture tombstone filename binding is invalid")
-            if tombstone.capture_key == key:
-                result.pop(name, None)
+            if tombstone.capture_key == key and name != tombstone_name:
+                raise ValueError("duplicate Capture tombstone binding")
         elif name.startswith(".runtime/capture/indexes/"):
             value = _strict_json(data)
             object_id = Path(name).stem
             ids = _manifest(value, object_id)
             if object_id == receipt_id:
-                target_observations.update(ids)
+                for observation_id in ids:
+                    observation = observations.get(observation_id)
+                    if observation is None:
+                        continue
+                    if _source_key(observation) != key:
+                        raise ValueError("Capture manifest references a foreign observation")
+                    target_observations.add(observation_id)
                 result.pop(name, None)
 
     for observation_id in target_observations:
         result.pop(f".runtime/capture/observations/{observation_id}.json", None)
 
-    known_prefixes = (
-        ".runtime/capture/dirty/", ".runtime/capture/journals/",
-        ".runtime/capture/staging/", ".runtime/capture/leases/",
-        ".runtime/capture/scan-state/", ".runtime/capture/budgets/",
-    )
     for name, data in tuple(result.items()):
-        if name.startswith(known_prefixes):
+        if name.startswith(_RUNTIME_PREFIXES):
             if Path(name).stem in {receipt_id, *target_observations}:
                 result.pop(name, None)
                 continue
@@ -243,15 +315,21 @@ def _updated_revision(entries: dict[str, bytes], key: CaptureKey) -> dict[str, b
         if any(needle and needle in data for needle in needles):
             raise ValueError("Capture artifact retains target data")
 
-    tombstone = CaptureSuppressionTombstone.from_mapping({"schema_version": 1, "tombstone_id": tombstone_id_for(key), "capture_key": key.to_mapping(), "created_at": _now(), "reason": "user_forget"})
-    result[tombstone_name] = canonical_json_bytes(tombstone.to_mapping())
+    if tombstone_name in result:
+        tombstone = CaptureSuppressionTombstone.from_mapping(
+            _strict_json(result[tombstone_name])
+        )
+        if tombstone.capture_key != key:
+            raise ValueError("Capture tombstone filename binding is invalid")
+    else:
+        tombstone = CaptureSuppressionTombstone.from_mapping({"schema_version": 1, "tombstone_id": tombstone_id_for(key), "capture_key": key.to_mapping(), "created_at": _now(), "reason": "user_forget"})
+        result[tombstone_name] = canonical_json_bytes(tombstone.to_mapping())
     return result
 
 
 def _rewrite_backup(entries: dict[str, bytes], target_kind: str, target: str | CaptureKey) -> tuple[dict[str, bytes], str | None]:
     if target_kind == "observation":
-        name = f".runtime/capture/observations/{target}.json"
-        return _updated_observation(entries, target) if name in entries else (entries, None)
+        return _updated_observation(entries, target)
     return _updated_revision(entries, target), receipt_id_for(target)
 
 
@@ -302,7 +380,11 @@ def capture_forget(paths: MemoryPaths, request: dict[str, Any]) -> ToolResponse:
                     return _failed("capture_forget_backup_verification_failed", "managed backup verification failed")
                 tx = CaptureForgetTransaction(paths)
                 try:
-                    tx.begin(len(set(before) | set(after)) + len(backup_updates))
+                    primary_change_count = sum(
+                        before.get(name) != after.get(name)
+                        for name in set(before) | set(after)
+                    )
+                    tx.begin(primary_change_count + len(backup_updates))
                     _apply_files(tx, paths, before, after)
                     for backup, data in backup_updates:
                         tx.write(backup, data, boundary="backup")

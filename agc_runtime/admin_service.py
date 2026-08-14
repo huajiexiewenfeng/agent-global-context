@@ -24,6 +24,7 @@ from agc_runtime.capture_contracts import (
 )
 from agc_runtime.capture_status_service import capture_status
 from agc_runtime.capture_store import CaptureStore
+from agc_runtime.capture_transaction import safe_unlink
 from agc_runtime.contracts import ToolResponse
 from agc_runtime.locking import capture_write_lock, root_write_lock
 from agc_runtime import managed_backup
@@ -601,7 +602,7 @@ def _clear_replaceable_files(paths: MemoryPaths) -> None:
         return
     for path in sorted(paths.root.rglob("*"), reverse=True):
         if path.is_file() and not _preserve_during_restore(paths, path):
-            path.unlink()
+            safe_unlink(path)
 
 
 def _restore_file_snapshot(
@@ -610,22 +611,22 @@ def _restore_file_snapshot(
     _clear_replaceable_files(paths)
     for name, data in sorted(snapshot.items()):
         target = paths.resolve_managed(Path(*PurePosixPath(name).parts))
-        atomic_write_text(target, data.decode("utf-8", errors="strict"))
+        managed_backup.atomic_write_bytes(target, data)
 
 
 def _suppress_restored_ids(paths: MemoryPaths, memory_ids: set[str]) -> None:
     for memory_id in memory_ids:
         for path in paths.memories.glob(f"*/{memory_id}.md"):
-            path.unlink(missing_ok=True)
+            safe_unlink(path)
         for path in paths.archive.rglob(f"{memory_id}.md"):
-            path.unlink(missing_ok=True)
+            safe_unlink(path)
         for path in paths.candidates.rglob("*.json"):
             try:
                 value = json.loads(strict_read_text(path))
             except (ValueError, UnicodeDecodeError):
                 continue
             if value.get("candidate_id") == memory_id:
-                path.unlink(missing_ok=True)
+                safe_unlink(path)
 
     event_file = paths.events / "events.jsonl"
     if event_file.exists():
@@ -670,53 +671,71 @@ def _restore_path(paths: MemoryPaths, request: dict[str, Any]) -> Path:
     return backups[-1].resolve()
 
 
+def _prevalidated_restore_entries(
+    entries: dict[str, bytes], suppressed: set[str]
+) -> list[tuple[str, PurePosixPath, str]]:
+    prepared: list[tuple[str, PurePosixPath, str]] = []
+    for name, data in sorted(entries.items()):
+        if (
+            name.startswith(".runtime/locks/")
+            or name.startswith(".runtime/backups/")
+            or name == ".runtime/capture/cursor-hmac-key"
+        ):
+            continue
+        pure = PurePosixPath(name)
+        if (
+            len(pure.parts) >= 3
+            and pure.parts[0] == "memories"
+            and pure.stem in suppressed
+        ):
+            continue
+        try:
+            text = data.decode("utf-8", errors="strict")
+        except UnicodeDecodeError as error:
+            raise ValueError(f"non-UTF-8 managed backup entry: {name}") from error
+        prepared.append((name, pure, text))
+    return prepared
+
+
 def _handle_restore(paths: MemoryPaths, request: dict[str, Any]) -> ToolResponse:
     backup_path = _restore_path(paths, request)
-    try:
-        entries, _manifest_value = managed_backup.read_verified_archive(backup_path)
-    except (
-        OSError,
-        ValueError,
-        KeyError,
-        TypeError,
-        json.JSONDecodeError,
-        zipfile.BadZipFile,
-    ) as error:
-        return _failed(
-            "restore",
-            "backup_verification_failed",
-            str(error),
-        )
-
-    archive_tombstones = _read_tombstones_from_files(entries)
-
     with root_write_lock(paths):
         with capture_write_lock(paths):
+            try:
+                entries, _manifest_value = managed_backup.read_verified_archive(
+                    backup_path
+                )
+                archive_tombstones = _read_tombstones_from_files(entries)
+            except (
+                OSError,
+                ValueError,
+                KeyError,
+                TypeError,
+                UnicodeDecodeError,
+                json.JSONDecodeError,
+                zipfile.BadZipFile,
+            ) as error:
+                return _failed(
+                    "restore",
+                    "backup_verification_failed",
+                    str(error),
+                )
             current_tombstones = _read_current_tombstones(paths)
             tombstones = {**archive_tombstones, **current_tombstones}
             suppressed = set(tombstones)
+            try:
+                prepared = _prevalidated_restore_entries(entries, suppressed)
+            except ValueError as error:
+                return _failed(
+                    "restore",
+                    "backup_verification_failed",
+                    str(error),
+                )
             snapshot = _current_replaceable_files(paths)
             try:
                 _clear_replaceable_files(paths)
-                for name, data in sorted(entries.items()):
-                    if name.startswith(".runtime/locks/") or name.startswith(
-                        ".runtime/backups/"
-                    ) or name == ".runtime/capture/cursor-hmac-key":
-                        continue
-                    pure = PurePosixPath(name)
-                    if (
-                        len(pure.parts) >= 3
-                        and pure.parts[0] == "memories"
-                        and pure.stem in suppressed
-                    ):
-                        continue
+                for _name, pure, text in prepared:
                     target = paths.resolve_managed(Path(*pure.parts))
-                    try:
-                        text = data.decode("utf-8", errors="strict")
-                    except UnicodeDecodeError as error:
-                        raise ValueError(
-                            f"non-UTF-8 managed backup entry: {name}"
-                        ) from error
                     atomic_write_text(target, text)
                 for value in tombstones.values():
                     memory_id = value["memory_id"]

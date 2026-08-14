@@ -17,6 +17,7 @@ from agc_runtime._forget_migration import (
 )
 from agc_runtime._forget_types import ForgetOperation, ForgetPlanError
 from agc_runtime.catalog import build_catalog, render_catalog_markdown
+from agc_runtime.capture_transaction import safe_unlink
 from agc_runtime.migration_manifest import SHA256_PATTERN
 from agc_runtime.paths import MemoryPaths
 from agc_runtime import managed_backup
@@ -41,6 +42,7 @@ _JOURNAL_FIELDS = {
     "status",
     "integrity_sha256",
 }
+_CAPTURE_PREFIX = ".runtime/capture/"
 
 
 @dataclass(frozen=True)
@@ -139,6 +141,9 @@ def _rewritten_backup_bytes(
                 continue
             data = archive.read(info.filename)
             normalized_name = info.filename.replace("\\", "/")
+            if normalized_name.startswith(_CAPTURE_PREFIX):
+                retained[normalized_name] = data
+                continue
             if normalized_name.endswith(f"/{memory_id}.md"):
                 continue
             if Path(normalized_name).suffix.lower() in _TEXT_SUFFIXES:
@@ -245,6 +250,8 @@ def _generic_managed_operations(
             continue
         relative = str(path.relative_to(paths.root)).replace("\\", "/")
         if relative.startswith(migrations_prefix):
+            continue
+        if relative.startswith(_CAPTURE_PREFIX):
             continue
         if path.suffix.lower() == ".zip":
             operations.append(
@@ -502,7 +509,7 @@ def _prepare_forget_plan(
 
 def _apply_forget_operation(operation: ForgetOperation) -> None:
     if operation.content is None:
-        operation.path.unlink(missing_ok=True)
+        safe_unlink(operation.path)
     else:
         content = (
             operation.content()
@@ -521,7 +528,7 @@ def _rollback_forget_operations(
             if existed and original is not None:
                 _atomic_write_bytes(operation.path, original)
             elif not existed:
-                operation.path.unlink(missing_ok=True)
+                safe_unlink(operation.path)
         except Exception:
             succeeded = False
     return succeeded
@@ -568,10 +575,15 @@ def _verify_forget_plan(
         relative = str(path.relative_to(paths.root)).replace("\\", "/")
         if relative.startswith(".runtime/migrations/"):
             continue
+        if relative.startswith(_CAPTURE_PREFIX):
+            continue
         if path.suffix.lower() == ".zip":
             with zipfile.ZipFile(path, "r") as archive:
                 for info in archive.infolist():
                     if info.is_dir():
+                        continue
+                    normalized_name = info.filename.replace("\\", "/")
+                    if normalized_name.startswith(_CAPTURE_PREFIX):
                         continue
                     data = archive.read(info.filename)
                     try:

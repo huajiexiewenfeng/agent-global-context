@@ -8,7 +8,9 @@ from pathlib import Path
 
 import pytest
 
+from agc_runtime import forget_transaction
 from agc_runtime.catalog import rebuild_catalog
+from agc_runtime.capture_transaction import safe_unlink as durable_unlink
 from agc_runtime.contracts import SourceKey
 from agc_runtime.forget_service import forget
 from agc_runtime.migration_manifest import migration_manifest_integrity
@@ -252,6 +254,53 @@ def test_forget_rewrites_backup_zip_and_injects_tombstone(populated):
     assert "config.yaml" in names
     assert any(".runtime/tombstones/" in name for name in names)
     assert "妻子和儿子" not in all_text
+
+
+def test_formal_forget_never_scans_or_rewrites_capture_model_paths(populated):
+    paths, _source_task = populated
+    capture_copy = paths.capture.dirty / "strict-copy.json"
+    capture_copy.parent.mkdir(parents=True, exist_ok=True)
+    capture_bytes = json.dumps(
+        {"schema_version": 1, "statement": "妻子和儿子"},
+        ensure_ascii=False,
+    ).encode("utf-8")
+    capture_copy.write_bytes(capture_bytes)
+    backup_zip = paths.backups / "capture-isolation.zip"
+    capture_name = ".runtime/capture/observations/co_" + "1" * 64 + ".json"
+    with zipfile.ZipFile(backup_zip, "w") as archive:
+        archive.writestr(capture_name, capture_bytes)
+        archive.writestr(
+            "memories/identity/family-structure.md",
+            family_memory().to_markdown(),
+        )
+
+    response = forget(paths, authorized_request())
+
+    assert response.status == "accepted"
+    assert capture_copy.read_bytes() == capture_bytes
+    with zipfile.ZipFile(backup_zip) as archive:
+        assert archive.read(capture_name) == capture_bytes
+
+
+def test_formal_forget_primary_delete_uses_durable_unlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    paths = MemoryPaths.from_root(tmp_path / "memory")
+    target = paths.cache / "delete-me.txt"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(b"managed")
+    calls: list[Path] = []
+
+    def record(path: Path) -> None:
+        calls.append(path)
+        durable_unlink(path)
+
+    monkeypatch.setattr(forget_transaction, "safe_unlink", record, raising=False)
+    forget_transaction._apply_forget_operation(
+        forget_transaction.ForgetOperation(target, None, "managed_purge")
+    )
+
+    assert calls == [target]
 
 
 def test_write_dispatch_exposes_authorized_forget(populated):

@@ -3,18 +3,23 @@ from __future__ import annotations
 import json
 import io
 import hashlib
+import os
+import subprocess
+import threading
 import zipfile
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
-from agc_runtime import managed_backup
+from agc_runtime import admin_service, managed_backup
 from agc_runtime.admin_service import dispatch_admin
 from agc_runtime.capture_contracts import CaptureKey, CaptureReceipt, CollectedObservation, TokenUsage, observation_fingerprint_for, observation_id_for, receipt_id_for
 from agc_runtime.capture_store import CaptureStore
 from agc_runtime.locking import capture_write_lock
 from agc_runtime.paths import MemoryPaths
+from agc_runtime.write_service import dispatch_write
 
 
 UTC = "2026-08-13T12:00:00Z"
@@ -83,6 +88,8 @@ def test_capture_backup_round_trip_is_allowlisted_and_keeps_recall_isolated(tmp_
     (paths.capture.dirty / "raw-task.json").write_text("secret transcript", encoding="utf-8")
     (paths.capture.journals / "active.json").write_text("{}", encoding="utf-8")
     (paths.capture.leases / "lease.json").write_text("{}", encoding="utf-8")
+    (paths.queue / "queued.json").write_text("runtime queue", encoding="utf-8")
+    (paths.cache / "cached.json").write_text("runtime cache", encoding="utf-8")
     backup = dispatch_admin(paths, {"action": "backup"})
 
     assert backup.status == "accepted"
@@ -94,6 +101,8 @@ def test_capture_backup_round_trip_is_allowlisted_and_keeps_recall_isolated(tmp_
     assert ".runtime/capture/journals/active.json" not in names
     assert ".runtime/capture/leases/lease.json" not in names
     assert ".runtime/capture/cursor-hmac-key" not in names
+    assert ".runtime/queue/queued.json" not in names
+    assert ".runtime/cache/cached.json" not in names
 
     paths.capture.observations.joinpath(f"{observation.observation_id}.json").unlink()
     restored = dispatch_admin(paths, {"action": "restore", "backup_path": backup.data["backup_path"]})
@@ -230,3 +239,167 @@ def test_restore_uses_capture_lock_and_preserves_existing_cursor_key(tmp_path: P
     restored = dispatch_admin(paths, {"action": "restore", "backup_path": backup.data["backup_path"]})
     assert restored.status == "accepted"
     assert paths.capture.cursor_hmac_key.read_bytes() == b"K" * 32
+
+
+def test_restore_archive_read_and_mutation_are_serialized_with_capture_forget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    paths, _store, observation = _populated(tmp_path)
+    backup = Path(dispatch_admin(paths, {"action": "backup"}).data["backup_path"])
+    original_read = managed_backup.read_verified_archive
+    read_ready = threading.Event()
+    release_read = threading.Event()
+
+    def blocked_read(path: Path):
+        result = original_read(path)
+        if threading.current_thread().name == "restore-worker":
+            read_ready.set()
+            assert release_read.wait(5), "restore read was not released"
+        return result
+
+    monkeypatch.setattr(managed_backup, "read_verified_archive", blocked_read)
+    results: dict[str, object] = {}
+
+    restore_thread = threading.Thread(
+        name="restore-worker",
+        target=lambda: results.setdefault(
+            "restore",
+            dispatch_admin(paths, {"action": "restore", "backup_path": str(backup)}),
+        ),
+    )
+    restore_thread.start()
+    assert read_ready.wait(5), "restore never reached archive verification"
+
+    forget_thread = threading.Thread(
+        name="forget-worker",
+        target=lambda: results.setdefault(
+            "forget",
+            dispatch_write(
+                paths,
+                {
+                    "action": "capture_forget",
+                    "authorization": "explicit_user_request",
+                    "target": {
+                        "type": "observation",
+                        "observation_id": observation.observation_id,
+                    },
+                },
+            ),
+        ),
+    )
+    forget_thread.start()
+    forget_thread.join(5)
+    assert not forget_thread.is_alive(), "concurrent forget did not resolve at the lock boundary"
+    release_read.set()
+    restore_thread.join(5)
+    assert not restore_thread.is_alive(), "restore did not complete"
+
+    forget = results["forget"]
+    if forget.status == "failed" and forget.error["code"] == "capture_forget_busy":
+        forget = dispatch_write(
+            paths,
+            {
+                "action": "capture_forget",
+                "authorization": "explicit_user_request",
+                "target": {
+                    "type": "observation",
+                    "observation_id": observation.observation_id,
+                },
+            },
+        )
+    assert forget.status == "accepted"
+    assert not (paths.capture.observations / f"{observation.observation_id}.json").exists()
+
+
+def test_restore_prevalidates_ordinary_utf8_before_clearing_current_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    paths, _store, _observation_value = _populated(tmp_path)
+    valid = Path(dispatch_admin(paths, {"action": "backup"}).data["backup_path"])
+    with zipfile.ZipFile(valid) as archive:
+        entries = [
+            (name, archive.read(name))
+            for name in archive.namelist()
+            if name != "manifest.json"
+        ]
+    entries.append(("ordinary-invalid.txt", b"\xff\xfe"))
+    malicious = tmp_path / "ordinary-invalid.zip"
+    _write_archive(malicious, entries)
+    clear_called = False
+    original_clear = admin_service._clear_replaceable_files
+
+    def track_clear(current_paths: MemoryPaths) -> None:
+        nonlocal clear_called
+        clear_called = True
+        original_clear(current_paths)
+
+    monkeypatch.setattr(admin_service, "_clear_replaceable_files", track_clear)
+    response = dispatch_admin(paths, {"action": "restore", "backup_path": str(malicious)})
+
+    assert response.status == "failed"
+    assert response.error["code"] == "backup_verification_failed"
+    assert clear_called is False
+
+
+def test_restore_failure_rolls_back_non_utf8_snapshot_byte_exact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    paths, _store, _observation_value = _populated(tmp_path)
+    backup = Path(dispatch_admin(paths, {"action": "backup"}).data["backup_path"])
+    opaque = paths.root / "opaque.bin"
+    opaque.write_bytes(b"\x00\xff\x80current")
+    before = admin_service._current_replaceable_files(paths)
+    original_write = admin_service.atomic_write_text
+    failed = False
+
+    def fail_once(path: Path, text: str) -> None:
+        nonlocal failed
+        if path == paths.root / "config.yaml" and not failed:
+            failed = True
+            raise OSError("injected restore failure")
+        original_write(path, text)
+
+    monkeypatch.setattr(admin_service, "atomic_write_text", fail_once)
+    response = dispatch_admin(paths, {"action": "restore", "backup_path": str(backup)})
+
+    assert response.status == "failed"
+    assert admin_service._current_replaceable_files(paths) == before
+
+
+def test_backup_rejects_symbolic_link_before_reading_target(tmp_path: Path):
+    paths, _store, _observation_value = _populated(tmp_path)
+    outside = tmp_path / "outside.txt"
+    outside.write_text("outside secret", encoding="utf-8")
+    link = paths.contexts / "escape.txt"
+    try:
+        link.symlink_to(outside)
+    except (OSError, NotImplementedError):
+        if os.name != "nt":
+            pytest.skip("symbolic links unavailable")
+        outside_directory = tmp_path / "outside-directory"
+        outside_directory.mkdir()
+        (outside_directory / "secret.txt").write_text("outside secret", encoding="utf-8")
+        link = paths.contexts / "escape-directory"
+        result = subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(link), str(outside_directory)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            pytest.skip(f"symbolic links and junctions unavailable: {result.stderr}")
+
+    with pytest.raises(ValueError, match="symbolic link|reparse|escape"):
+        managed_backup.backup_files(paths)
+
+
+def test_archive_file_size_limit_is_checked_before_read_bytes():
+    class OversizedPath(type(Path())):
+        def stat(self, *args, **kwargs):
+            return SimpleNamespace(st_size=1024 * 1024 * 1024)
+
+        def read_bytes(self):
+            raise AssertionError("oversized archive was read before its size check")
+
+    with pytest.raises(ValueError, match="archive.*limit|archive.*large|size"):
+        managed_backup.read_verified_archive(OversizedPath("oversized.zip"))

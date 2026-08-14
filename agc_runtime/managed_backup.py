@@ -10,6 +10,7 @@ import io
 import json
 import os
 import re
+import stat
 import tempfile
 import zipfile
 from pathlib import Path, PurePosixPath
@@ -42,6 +43,8 @@ _MAX_FILE_SIZE = 16 * 1024 * 1024
 _MAX_TOTAL_SIZE = 64 * 1024 * 1024
 _MAX_MANIFEST_SIZE = 1024 * 1024
 _MAX_COMPRESSION_RATIO = 200
+_MAX_ARCHIVE_SIZE = _MAX_TOTAL_SIZE + _MAX_MANIFEST_SIZE + (2 * 1024 * 1024)
+_RUNTIME_NOISE_PREFIXES = (".runtime/queue/", ".runtime/cache/")
 
 
 def _zip_info(name: str) -> zipfile.ZipInfo:
@@ -72,20 +75,35 @@ def _capture_name_allowed(relative: str) -> bool:
     return bool(tail) and tail.split("/", 1)[0] in _CAPTURE_ALLOWLIST
 
 
+def _is_link_or_reparse(path: Path) -> bool:
+    if path.is_symlink():
+        return True
+    attributes = getattr(path.lstat(), "st_file_attributes", 0)
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    return bool(attributes & reparse_flag)
+
+
 def backup_files(paths: MemoryPaths) -> list[tuple[str, bytes]]:
     if not paths.root.exists():
         return []
     files: list[tuple[str, bytes]] = []
+    root = paths.root.resolve()
     for path in paths.root.rglob("*"):
+        if _is_link_or_reparse(path):
+            raise ValueError("managed backup path is a symbolic link or reparse point")
         if not path.is_file():
             continue
-        relative = path.relative_to(paths.root).as_posix()
+        resolved = path.resolve()
+        if resolved == root or not resolved.is_relative_to(root):
+            raise ValueError("managed backup path escapes the memory root")
+        relative = resolved.relative_to(root).as_posix()
         if (relative.startswith(".runtime/locks/") or relative.startswith(".runtime/backups/")
+                or relative.startswith(_RUNTIME_NOISE_PREFIXES)
                 or relative.endswith(".tmp") or relative == ".runtime/capture/cursor-hmac-key"):
             continue
         if not _capture_name_allowed(relative):
             continue
-        files.append((relative, path.read_bytes()))
+        files.append((relative, resolved.read_bytes()))
     return sorted(files, key=lambda item: item[0].encode("utf-8"))
 
 
@@ -282,6 +300,10 @@ def _validate_manifest(value: Any, entries: dict[str, bytes]) -> None:
 
 
 def read_verified_archive(backup_path: Path) -> tuple[dict[str, bytes], dict[str, Any]]:
+    if backup_path.stat().st_size > _MAX_ARCHIVE_SIZE:
+        raise ValueError("backup archive exceeds safe size limit")
+    if _is_link_or_reparse(backup_path):
+        raise ValueError("backup archive is a symbolic link or reparse point")
     archive_data = backup_path.read_bytes()
     with zipfile.ZipFile(io.BytesIO(archive_data), "r") as archive:
         infos = archive.infolist()
