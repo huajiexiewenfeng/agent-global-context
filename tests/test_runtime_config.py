@@ -55,8 +55,8 @@ def test_load_runtime_config_exposes_strict_typed_runtime_values(tmp_path: Path)
     [
         ("unknown_key: true\n", "unknown runtime config field: unknown_key"),
         ("overview_token_budget: invalid", "recall.overview_token_budget must be a positive integer"),
-        ("enabled: true", "capture.enabled must be false while capture is unavailable"),
-        ("mode: runner", "capture.mode must be off while capture is unavailable"),
+        ("enabled: true", "enabled capture.mode must be scanner_only or runner"),
+        ("mode: runner", "disabled capture.mode must be off"),
     ],
 )
 def test_load_runtime_config_rejects_unknown_invalid_and_unsafe_values(
@@ -75,6 +75,35 @@ def test_load_runtime_config_rejects_unknown_invalid_and_unsafe_values(
 
     with pytest.raises(ValueError, match=message):
         load_runtime_config(paths)
+
+
+def test_capture_config_enforces_mode_source_and_schema_v1_subagent_invariants(tmp_path: Path):
+    paths = initialized_paths(tmp_path)
+    config_file = paths.root / "config.yaml"
+    source = tmp_path / "codex-home"
+    source.mkdir()
+    base = config_file.read_text(encoding="utf-8")
+
+    enabled = base.replace("enabled: false", "enabled: true").replace(
+        "mode: off", "mode: scanner_only"
+    ).replace("sources: []", f"sources:\n    - {source.as_posix()}")
+    atomic_write_text(config_file, enabled)
+    assert load_runtime_config(paths).capture.mode == "scanner_only"
+
+    runner = enabled.replace("mode: scanner_only", "mode: runner")
+    atomic_write_text(config_file, runner)
+    assert load_runtime_config(paths).capture.mode == "runner"
+
+    invalid_cases = (
+        (base.replace("mode: off", "mode: scanner_only"), "disabled capture.mode must be off"),
+        (enabled.replace("enabled: true", "enabled: false"), "disabled capture.mode must be off"),
+        (enabled.replace("include_subagents: false", "include_subagents: true"), "include_subagents must be false"),
+        (enabled.replace(source.as_posix(), "relative/profile"), "absolute directory"),
+    )
+    for text, message in invalid_cases:
+        atomic_write_text(config_file, text)
+        with pytest.raises(ValueError, match=message):
+            load_runtime_config(paths)
 
 
 @pytest.mark.parametrize(

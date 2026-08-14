@@ -348,6 +348,13 @@ class SourceQuarantine:
     def _to_mapping_unchecked(self) -> dict[str, Any]:
         return {"schema_version": self.schema_version, "adapter_id": self.adapter_id, "source_root_id": self.source_root_id, "created_at": self.created_at, "code": self.code}
 
+    @property
+    def binding_key(self) -> Any:
+        """Return the content-free Source binding affected by this anomaly."""
+        from agc_runtime.capture_source import SourceBindingKey
+
+        return SourceBindingKey(CAPTURE_SCHEMA_VERSION, self.adapter_id, self.source_root_id)
+
 
 @dataclass(frozen=True)
 class CaptureSuppressionTombstone:

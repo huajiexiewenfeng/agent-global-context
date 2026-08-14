@@ -178,6 +178,30 @@ def _string_list(value: Any, name: str) -> tuple[str, ...]:
     return tuple(value)
 
 
+def _source_roots(value: Any) -> tuple[str, ...]:
+    sources = _string_list(value, "capture.sources")
+    if not sources:
+        return sources
+    identities: set[str] = set()
+    from agc_runtime.capture_source import canonical_source_root, source_root_id_for
+
+    for source in sources:
+        path = Path(source)
+        if not path.is_absolute():
+            raise ValueError("capture.sources entries must be an absolute directory")
+        try:
+            canonical_source_root(path)
+            identity = source_root_id_for(path)
+        except ValueError as error:
+            raise ValueError(
+                "capture.sources entries must be an existing absolute directory"
+            ) from error
+        if identity in identities:
+            raise ValueError("capture.sources must not contain duplicate physical roots")
+        identities.add(identity)
+    return sources
+
+
 def _int_list(value: Any, name: str) -> tuple[int, ...]:
     if not isinstance(value, list):
         raise ValueError(f"{name} must be a list of positive integers")
@@ -262,19 +286,24 @@ def _parse_runtime_config(value: Any) -> RuntimeConfig:
     if capture_schema_version != 1:
         raise ValueError("capture.schema_version must be 1")
     enabled = _bool(capture["enabled"], "capture.enabled")
-    if enabled:
-        raise ValueError("capture.enabled must be false while capture is unavailable")
     mode = _string(capture["mode"], "capture.mode")
     if mode not in {"off", "scanner_only", "runner"}:
         raise ValueError("capture.mode must be off, scanner_only, or runner")
-    if mode != "off":
-        raise ValueError("capture.mode must be off while capture is unavailable")
-    sources = _string_list(capture["sources"], "capture.sources")
-    if sources:
-        raise ValueError("capture.sources must be empty while capture is unavailable")
+    if not enabled and mode != "off":
+        raise ValueError("disabled capture.mode must be off")
+    if enabled and mode not in {"scanner_only", "runner"}:
+        raise ValueError("enabled capture.mode must be scanner_only or runner")
+    include_subagents = _bool(
+        capture["include_subagents"], "capture.include_subagents"
+    )
+    if include_subagents:
+        raise ValueError("capture.include_subagents must be false for schema version 1")
+    sources = _source_roots(capture["sources"])
+    if enabled and not sources:
+        raise ValueError("enabled capture requires at least one capture.sources entry")
     hook_enabled = _bool(hook["enabled"], "capture.hook.enabled")
-    if hook_enabled:
-        raise ValueError("capture.hook.enabled must be false while capture is unavailable")
+    if hook_enabled and not enabled:
+        raise ValueError("capture.hook.enabled requires capture.enabled")
     incremental = budgets["incremental_total_tokens"]
     if incremental is not None:
         incremental = _positive_int(
@@ -298,9 +327,7 @@ def _parse_runtime_config(value: Any) -> RuntimeConfig:
             enabled=enabled,
             mode=mode,
             paused=_bool(capture["paused"], "capture.paused"),
-            include_subagents=_bool(
-                capture["include_subagents"], "capture.include_subagents"
-            ),
+            include_subagents=include_subagents,
             sources=sources,
             hook=HookConfig(enabled=hook_enabled),
             runner=RunnerConfig(
