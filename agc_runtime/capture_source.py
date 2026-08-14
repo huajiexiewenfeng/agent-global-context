@@ -303,8 +303,6 @@ def canonical_source_root(path: Path) -> Path:
 def source_root_id_for(path: Path) -> str:
     canonical = canonical_source_root(path)
     normalized = canonical.as_posix()
-    if os.name == "nt":
-        normalized = normalized.casefold()
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 

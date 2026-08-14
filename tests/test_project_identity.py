@@ -59,11 +59,23 @@ def test_project_identity_resolution_order_and_content_free_values(tmp_path: Pat
 
 def test_project_identity_rejects_absolute_paths_and_unknown_fields():
     _, identity = _identity_contracts()
-    for absolute in ("C:\\private\\repo", "C:/private/repo", "/home/private/repo"):
+    for absolute in (
+        "C:\\private\\repo",
+        "C:/private/repo",
+        "/home/private/repo",
+        "file:/C:/private/repo",
+        "fIlE:C:/private/repo",
+        "FILE:///home/private/repo",
+        "file://server/share/repo",
+        "FiLe:////server/share/repo",
+    ):
         with pytest.raises(ValueError, match="project_id"):
             identity.ProjectIdentity.from_mapping(
                 {"schema_version": 1, "project_id": absolute, "resolution": "explicit_registry"}
             )
+    assert identity.ProjectIdentity.from_mapping(
+        {"schema_version": 1, "project_id": "file:project-opaque", "resolution": "explicit_registry"}
+    ).project_id == "file:project-opaque"
     with pytest.raises(ValueError, match="unknown"):
         identity.ProjectIdentity.from_mapping(
             {"schema_version": 1, "project_id": "project:one", "resolution": "explicit_registry", "path": "C:\\private"}
@@ -88,6 +100,17 @@ def test_windows_canonical_source_identity_handles_case_unicode_long_paths_and_j
     assert source.canonical_source_root(case_variant) == source.canonical_source_root(physical)
     assert source.source_root_id_for(case_variant) == source.source_root_id_for(physical)
     assert source.source_root_id_for(alias) == source.source_root_id_for(physical)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows canonical path identity")
+def test_windows_distinct_non_ascii_physical_roots_do_not_casefold_collide(tmp_path: Path):
+    source, _ = _identity_contracts()
+    sharp_s = tmp_path / "straße"
+    double_s = tmp_path / "strasse"
+    sharp_s.mkdir()
+    double_s.mkdir()
+
+    assert source.source_root_id_for(sharp_s) != source.source_root_id_for(double_s)
 
 
 def test_canonical_source_root_requires_an_existing_directory(tmp_path: Path):

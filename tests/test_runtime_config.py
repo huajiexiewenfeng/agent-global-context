@@ -280,6 +280,27 @@ def test_built_wheel_contains_default_and_installed_admin_init_works(tmp_path: P
     assert (memory_root / "config.yaml").read_bytes() == (
         install_dir / "agc_runtime" / "default_config.yaml"
     ).read_bytes()
+    source_modules = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import json; "
+                "import agc_runtime.capture_source as source; "
+                "import agc_runtime.project_identity as identity; "
+                "print(json.dumps({'source': source.__file__, 'identity': identity.__file__}))"
+            ),
+        ],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert source_modules.returncode == 0, source_modules.stdout + source_modules.stderr
+    module_paths = json.loads(source_modules.stdout)
+    for module_path in module_paths.values():
+        assert Path(module_path).resolve().is_relative_to(install_dir.resolve())
     repository_artifacts_after = {
         path.relative_to(repository): (path.stat().st_mtime_ns, path.stat().st_size)
         for pattern in ("build/**/*", "dist/**/*", "*.egg-info/**/*")

@@ -101,7 +101,11 @@ def _project_id(value: Any, name: str, *, nullable: bool = False) -> str | None:
 def _opaque_project_id(value: Any, name: str) -> str:
     result = _project_id(value, name)
     assert isinstance(result, str)
-    if result.startswith(("/", "\\")) or re.match(r"^[A-Za-z]:[/\\]", result):
+    if (
+        result.startswith(("/", "\\"))
+        or re.match(r"^[A-Za-z]:[/\\]", result)
+        or re.match(r"(?i)^file:(?:/+|[a-z]:/)", result)
+    ):
         raise ValueError(f"{name} must not be an absolute path")
     return result
 
