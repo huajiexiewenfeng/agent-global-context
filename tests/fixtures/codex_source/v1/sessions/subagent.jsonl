@@ -1,0 +1,2 @@
+{"timestamp":"2026-08-12T10:00:00Z","type":"session_meta","payload":{"id":"rollout-sub","session_id":"task-sub","source":{"thread_source":"subagent","subagent":{"kind":"synthetic"}}}}
+{"timestamp":"2026-08-12T10:01:00Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-sub"}}

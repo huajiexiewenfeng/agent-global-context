@@ -1,0 +1,8 @@
+{"timestamp":"2026-08-10T10:00:00Z","type":"session_meta","payload":{"id":"rollout-main","session_id":"task-main","source":"cli"}}
+{"timestamp":"2026-08-10T10:01:00Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-1"}}
+{"timestamp":"2026-08-10T10:01:30Z","type":"future_noncritical","payload":{"synthetic":"ignored"}}
+{"timestamp":"2026-08-10T10:02:00Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-1"}}
+{"timestamp":"2026-08-10T10:03:00Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-2"}}
+{"timestamp":"2026-08-10T10:04:00Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-2"}}
+{"timestamp":"2026-08-10T10:05:00Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-started-only"}}
+{"timestamp":"2026-08-10T10:06:00Z","type":"event_msg","payload":{"type":"task_aborted","turn_id":"turn-aborted"}}

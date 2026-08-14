@@ -1,0 +1,2 @@
+{"timestamp":"2026-08-13T10:00:00Z","type":"session_meta","payload":{"id":"rollout-unknown","session_id":"task-unknown","source":{"future_main_kind":"unknown"}}}
+{"timestamp":"2026-08-13T10:01:00Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-unknown"}}
