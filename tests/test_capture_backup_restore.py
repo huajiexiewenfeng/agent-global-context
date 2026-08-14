@@ -341,6 +341,33 @@ def test_restore_prevalidates_ordinary_utf8_before_clearing_current_state(
     assert clear_called is False
 
 
+@pytest.mark.parametrize("namespace", ["queue", "cache"])
+def test_restore_rejects_excluded_transient_runtime_namespaces_before_mutation(
+    tmp_path: Path, namespace: str
+):
+    paths, _store, _observation_value = _populated(tmp_path)
+    valid = Path(dispatch_admin(paths, {"action": "backup"}).data["backup_path"])
+    with zipfile.ZipFile(valid) as archive:
+        entries = [
+            (name, archive.read(name))
+            for name in archive.namelist()
+            if name != "manifest.json"
+        ]
+    crafted_name = f".runtime/{namespace}/crafted.json"
+    entries.append((crafted_name, b'{"crafted":true}\n'))
+    malicious = tmp_path / f"crafted-{namespace}.zip"
+    _write_archive(malicious, entries)
+    marker = paths.root / "pre-restore-marker.txt"
+    marker.write_bytes(b"unchanged")
+
+    response = dispatch_admin(paths, {"action": "restore", "backup_path": str(malicious)})
+
+    assert response.status == "failed"
+    assert response.error["code"] == "backup_verification_failed"
+    assert marker.read_bytes() == b"unchanged"
+    assert not (paths.root / Path(*crafted_name.split("/"))).exists()
+
+
 def test_restore_failure_rolls_back_non_utf8_snapshot_byte_exact(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
@@ -403,3 +430,36 @@ def test_archive_file_size_limit_is_checked_before_read_bytes():
 
     with pytest.raises(ValueError, match="archive.*limit|archive.*large|size"):
         managed_backup.read_verified_archive(OversizedPath("oversized.zip"))
+
+
+@pytest.mark.parametrize(
+    ("limits", "files"),
+    [
+        ({"_MAX_ARCHIVE_FILES": 1}, [("one.txt", b"1"), ("two.txt", b"2")]),
+        ({"_MAX_FILE_SIZE": 3}, [("large.txt", b"1234")]),
+        ({"_MAX_TOTAL_SIZE": 5}, [("one.txt", b"123"), ("two.txt", b"456")]),
+    ],
+)
+def test_backup_manifest_rejects_output_exceeding_reader_limits(
+    monkeypatch: pytest.MonkeyPatch,
+    limits: dict[str, int],
+    files: list[tuple[str, bytes]],
+):
+    for name, value in limits.items():
+        monkeypatch.setattr(managed_backup, name, value)
+
+    with pytest.raises(ValueError, match="file count|file size|total size|safe limit"):
+        managed_backup.manifest(files)
+
+
+def test_backup_creation_fails_before_archive_when_writer_limit_is_exceeded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    paths, _store, _observation_value = _populated(tmp_path)
+    monkeypatch.setattr(managed_backup, "_MAX_ARCHIVE_FILES", 0)
+
+    response = dispatch_admin(paths, {"action": "backup"})
+
+    assert response.status == "failed"
+    assert response.error["code"] == "validation_failed"
+    assert not list(paths.backups.glob("*.zip"))

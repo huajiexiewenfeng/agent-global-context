@@ -172,6 +172,24 @@ def test_observation_forget_scrubs_every_strictly_bound_runtime_copy(tmp_path: P
     assert all(not path.exists() for path in copies)
 
 
+def test_observation_forget_removes_only_exact_unparseable_staging_filename(tmp_path: Path):
+    paths, _store, _receipt_value, observations = _populated(tmp_path)
+    target = observations[0]
+    exact = paths.capture.staging / f"{target.observation_id}.json"
+    exact.write_bytes(b"\xff malformed staging without embedded id")
+    unrelated = paths.capture.dirty / f"{target.observation_id}.json"
+    unrelated.write_bytes(b"\xff unrelated dirty artifact")
+
+    response = dispatch_write(
+        paths,
+        _request({"type": "observation", "observation_id": target.observation_id}),
+    )
+
+    assert response.status == "accepted", response
+    assert not exact.exists()
+    assert unrelated.read_bytes() == b"\xff unrelated dirty artifact"
+
+
 def test_observation_forget_uses_backups_when_primary_observation_is_missing(tmp_path: Path):
     paths, store, receipt, observations = _populated(tmp_path)
     target = observations[0]
@@ -428,6 +446,83 @@ def test_recovery_validates_all_entries_and_images_before_first_mutation(tmp_pat
 
     assert first.read_bytes() == b"first-interrupted"
     assert second.read_bytes() == b"second-interrupted"
+
+
+@pytest.mark.parametrize("recorded_count", [0, 1])
+def test_recovery_rolls_back_canonical_recorded_crash_prefix(
+    tmp_path: Path, recorded_count: int
+):
+    paths, _store, _receipt_value, _observations = _populated(tmp_path)
+    target = paths.capture.dirty / "prefix.json"
+    target.write_bytes(b"prefix-before")
+    transaction = CaptureForgetTransaction(paths)
+    transaction.begin(3)
+    if recorded_count:
+        transaction.write(target, b"prefix-interrupted", boundary="primary")
+
+    recovered = CaptureForgetTransaction.recover(paths)
+
+    assert recovered == 1
+    assert target.read_bytes() == b"prefix-before"
+    assert not transaction._journal.exists()
+    assert not transaction._images.exists()
+
+
+def test_recovery_rejects_before_image_overflow_without_mutating_target(tmp_path: Path):
+    paths, _store, _receipt_value, _observations = _populated(tmp_path)
+    target = paths.capture.dirty / "overflow.json"
+    target.write_bytes(b"overflow-before")
+    transaction = CaptureForgetTransaction(paths)
+    transaction.begin(0)
+    transaction.write(target, b"overflow-interrupted", boundary="primary")
+
+    with pytest.raises(ValueError, match="invalid Capture forget journal"):
+        CaptureForgetTransaction.recover(paths)
+
+    assert target.read_bytes() == b"overflow-interrupted"
+
+
+def test_corrupt_recovery_keeps_marker_when_dedicated_staging_cleanup_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    paths, _store, _receipt_value, _observations = _populated(tmp_path)
+    token = "e" * 32
+    images = paths.capture.root / "forget-staging" / f"capture-forget-{token}"
+    images.mkdir(parents=True)
+    (images / "0001.before").write_bytes(b"before")
+    journal = paths.capture.journals / f"capture-forget-{token}.json"
+    journal.write_text(
+        json.dumps({
+            "schema_version": 1,
+            "operation": "capture_forget",
+            "state": "active",
+            "operation_count": 1,
+            "before_images": [
+                {"target": "config.yaml", "image": "0001.before", "existed": True}
+            ],
+        }),
+        encoding="utf-8",
+    )
+    original_rmtree = shutil.rmtree
+
+    def fail_without_removing(path, *args, **kwargs):
+        if Path(path) == images:
+            if kwargs.get("ignore_errors"):
+                return None
+            raise OSError("injected corrupt staging cleanup failure")
+        return original_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(
+        "agc_runtime.capture_forget_transaction.shutil.rmtree",
+        fail_without_removing,
+    )
+
+    with pytest.raises(OSError, match="injected corrupt staging cleanup failure"):
+        CaptureForgetTransaction.recover(paths)
+
+    assert journal.is_file()
+    assert images.is_dir()
+    assert not list(paths.capture.quarantines.glob("invalid-forget-journal-*.json"))
 
 
 def test_capture_transaction_deletes_use_durable_unlink(

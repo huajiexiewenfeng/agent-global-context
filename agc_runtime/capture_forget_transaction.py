@@ -127,7 +127,7 @@ class CaptureForgetTransaction:
                     or type(value["operation_count"]) is not int
                     or value["operation_count"] < 0
                     or not isinstance(value["before_images"], list)
-                    or value["operation_count"] != len(value["before_images"])
+                    or len(value["before_images"]) > value["operation_count"]
                 ):
                     raise ValueError("invalid Capture forget journal")
                 token = journal.stem.removeprefix("capture-forget-")
@@ -142,7 +142,7 @@ class CaptureForgetTransaction:
                 plan: list[tuple[Path, bytes | None]] = []
                 targets: set[Path] = set()
                 image_names: set[str] = set()
-                for entry in value["before_images"]:
+                for index, entry in enumerate(value["before_images"], start=1):
                     if not isinstance(entry, dict) or set(entry) != {"target", "image", "existed"} or not isinstance(entry["target"], str) or not isinstance(entry["image"], str) or not isinstance(entry["existed"], bool):
                         raise ValueError("invalid Capture forget journal")
                     target = paths.resolve_managed(entry["target"])
@@ -153,7 +153,7 @@ class CaptureForgetTransaction:
                     image = images / entry["image"]
                     if (
                         image.parent != images
-                        or re.fullmatch(r"[0-9]{4}\.before", entry["image"]) is None
+                        or entry["image"] != f"{index:04d}.before"
                         or entry["image"] in image_names
                     ):
                         raise ValueError("invalid Capture forget journal")
@@ -185,13 +185,11 @@ class CaptureForgetTransaction:
                 if re.fullmatch(r"[0-9a-f]{32}", token):
                     images = paths.capture.root / "forget-staging" / f"capture-forget-{token}"
                     images_root = (paths.capture.root / "forget-staging").resolve()
-                    if (
-                        images.exists()
-                        and not images.is_symlink()
-                        and images.resolve().is_relative_to(images_root)
-                    ):
-                        shutil.rmtree(images, ignore_errors=True)
-                        _flush_parent(images.parent)
+                    if images.exists():
+                        if images.is_symlink() or not images.resolve().is_relative_to(images_root):
+                            raise OSError("unsafe Capture forget staging cleanup")
+                        shutil.rmtree(images)
+                    _flush_parent(images.parent)
                 quarantine = paths.capture.quarantines / f"invalid-forget-journal-{uuid.uuid4().hex}.json"
                 quarantine_value = SourceQuarantine.from_mapping({
                     "schema_version": 1,

@@ -152,8 +152,12 @@ def _mapping_binds_observation(value: Any, observation_id: str) -> bool:
 def _scrub_observation_runtime(entries: dict[str, bytes], observation_id: str) -> dict[str, bytes]:
     result = dict(entries)
     needle = observation_id.encode("ascii")
+    exact_staging_name = f".runtime/capture/staging/{observation_id}.json"
     for name, data in tuple(result.items()):
         if not name.startswith(_RUNTIME_PREFIXES):
+            continue
+        if name == exact_staging_name:
+            result.pop(name, None)
             continue
         try:
             value = _strict_json(data)

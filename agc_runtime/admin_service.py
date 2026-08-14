@@ -478,8 +478,16 @@ def _handle_backup(paths: MemoryPaths, _request: dict[str, Any]) -> ToolResponse
                 invalid_count=len(issues),
                 issues=issues,
             )
-        files = managed_backup.backup_files(paths)
-        manifest = managed_backup.manifest(files)
+        try:
+            files = managed_backup.backup_files(paths)
+            manifest = managed_backup.manifest(files)
+        except ValueError:
+            return _failed(
+                "backup",
+                "validation_failed",
+                "refusing to create a backup outside safe archive limits",
+                invalid_count=1,
+            )
         # Capture's immutable graph must be coherent in the locked snapshot;
         # otherwise a backup would preserve a silently unusable receipt set.
         try:

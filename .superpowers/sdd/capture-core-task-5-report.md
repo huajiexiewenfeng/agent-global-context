@@ -214,3 +214,91 @@ and rejected byte `0D`; result: `UTF-8 strict/no-BOM/LF: passed`.
 
 All tests used temporary roots under `C:\tmp`; no deployed AGC profile or
 original Codex source task was read, rewritten, or deleted.
+
+## Second-review fixes (2026-08-14)
+
+The second review findings were resolved with strict targeted regressions:
+
+- Capture-forget recovery now accepts and rolls back a fully validated
+  canonical recorded prefix from zero through `operation_count` before-images.
+  Overflow, noncanonical image names, and all other invalid records still fail
+  closed before mutation.
+- Corrupt-journal recovery removes and durably flushes the dedicated private
+  staging directory before quarantining and unlinking the recovery marker. An
+  injected cleanup failure leaves both marker and staging evidence intact.
+- Exact Observation forget removes the canonical
+  `.runtime/capture/staging/<observation_id>.json` path even when its bytes are
+  unparseable or omit the ID, while preserving an unparseable same-stem dirty
+  artifact that lacks a strict binding.
+- Restore validation rejects crafted `.runtime/queue` and `.runtime/cache`
+  archive entries before target mutation.
+- Backup creation enforces the reader's file-count, per-file-size, and
+  aggregate-size limits before writing an archive that the reader would reject.
+
+### Second-review RED evidence
+
+```powershell
+& '.\.venv\Scripts\python.exe' -m pytest `
+  tests/test_capture_backup_restore.py tests/test_capture_forget.py -q `
+  --basetemp 'C:\tmp\agc-task5-second-review-red'
+```
+
+Result: `10 failed, 47 passed, 1 warning in 24.57s`. The failures reproduced
+the crafted queue/cache acceptance, three writer-limit gaps, end-to-end backup
+limit acceptance, malformed canonical staging survival, two crash-prefix
+quarantines, and masked corrupt-staging cleanup failure.
+
+### Second-review targeted GREEN
+
+```powershell
+& '.\.venv\Scripts\python.exe' -m pytest `
+  tests/test_capture_backup_restore.py tests/test_capture_forget.py -q `
+  --basetemp 'C:\tmp\agc-task5-second-review-green-2'
+```
+
+Result: `58 passed, 1 warning in 22.87s`, including the additional invalid
+overflow-record regression.
+
+### Second-review final verification
+
+```powershell
+& '.\.venv\Scripts\python.exe' -m pytest `
+  tests/test_capture_backup_restore.py tests/test_capture_forget.py `
+  tests/test_admin_service.py tests/test_forget_service.py -q `
+  --basetemp 'C:\tmp\agc-task5-second-focused-final'
+```
+
+Result: `92 passed, 1 warning in 35.68s`.
+
+```powershell
+& '.\.venv\Scripts\python.exe' -m pytest `
+  tests/test_capture_contracts.py tests/test_capture_paths.py `
+  tests/test_capture_store.py tests/test_capture_transaction.py `
+  tests/test_capture_read_service.py tests/test_capture_status.py -q `
+  --basetemp 'C:\tmp\agc-task5-second-adjacent-final'
+```
+
+Result: `197 passed in 17.27s`.
+
+```powershell
+& '.\.venv\Scripts\python.exe' -m pytest tests `
+  --ignore=tests/test_local_install.py `
+  --deselect=tests/test_runtime_config.py::test_built_wheel_contains_default_and_installed_admin_init_works `
+  -q --basetemp 'C:\tmp\agc-task5-second-broad-final'
+```
+
+Result: `432 passed, 1 deselected, 1 warning in 79.65s`. The warning in all
+relevant runs is intentionally triggered by the duplicate-ZIP-entry attack
+regression.
+
+```powershell
+& '.\.venv\Scripts\python.exe' -m compileall -q agc_runtime tests
+git diff --check
+```
+
+Result: both passed. A strict byte scan of every changed Python and report file
+decoded with `UTF8Encoding(false, true)`, rejected an `EF BB BF` prefix, and
+rejected byte `0D`; result: `UTF-8 strict/no-BOM/LF: passed`.
+
+Every test used a temporary root under `C:\tmp`; no deployed AGC profile or
+original Codex source task was accessed, rewritten, or deleted.

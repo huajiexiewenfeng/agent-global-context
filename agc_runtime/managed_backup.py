@@ -83,10 +83,30 @@ def _is_link_or_reparse(path: Path) -> bool:
     return bool(attributes & reparse_flag)
 
 
+def _runtime_name_excluded(name: str) -> bool:
+    return name in {".runtime/queue", ".runtime/cache"} or name.startswith(
+        _RUNTIME_NOISE_PREFIXES
+    )
+
+
+def _validate_backup_files_for_write(files: list[tuple[str, bytes]]) -> None:
+    if len(files) > _MAX_ARCHIVE_FILES:
+        raise ValueError("backup file count exceeds safe limit")
+    total = 0
+    for _name, data in files:
+        size = len(data)
+        if size > _MAX_FILE_SIZE:
+            raise ValueError("backup file size exceeds safe limit")
+        total += size
+        if total > _MAX_TOTAL_SIZE:
+            raise ValueError("backup total size exceeds safe limit")
+
+
 def backup_files(paths: MemoryPaths) -> list[tuple[str, bytes]]:
     if not paths.root.exists():
         return []
     files: list[tuple[str, bytes]] = []
+    total = 0
     root = paths.root.resolve()
     for path in paths.root.rglob("*"):
         if _is_link_or_reparse(path):
@@ -98,16 +118,30 @@ def backup_files(paths: MemoryPaths) -> list[tuple[str, bytes]]:
             raise ValueError("managed backup path escapes the memory root")
         relative = resolved.relative_to(root).as_posix()
         if (relative.startswith(".runtime/locks/") or relative.startswith(".runtime/backups/")
-                or relative.startswith(_RUNTIME_NOISE_PREFIXES)
+                or _runtime_name_excluded(relative)
                 or relative.endswith(".tmp") or relative == ".runtime/capture/cursor-hmac-key"):
             continue
         if not _capture_name_allowed(relative):
             continue
-        files.append((relative, resolved.read_bytes()))
+        if len(files) >= _MAX_ARCHIVE_FILES:
+            raise ValueError("backup file count exceeds safe limit")
+        size = resolved.stat().st_size
+        if size > _MAX_FILE_SIZE:
+            raise ValueError("backup file size exceeds safe limit")
+        if total + size > _MAX_TOTAL_SIZE:
+            raise ValueError("backup total size exceeds safe limit")
+        data = resolved.read_bytes()
+        if len(data) > _MAX_FILE_SIZE:
+            raise ValueError("backup file size exceeds safe limit")
+        if total + len(data) > _MAX_TOTAL_SIZE:
+            raise ValueError("backup total size exceeds safe limit")
+        files.append((relative, data))
+        total += len(data)
     return sorted(files, key=lambda item: item[0].encode("utf-8"))
 
 
 def manifest(files: list[tuple[str, bytes]]) -> dict[str, Any]:
+    _validate_backup_files_for_write(files)
     capture_present = any(name.startswith(_CAPTURE_PREFIX) for name, _ in files)
     value: dict[str, Any] = {
         "schema_version": ARCHIVE_SCHEMA_VERSION,
@@ -122,6 +156,7 @@ def manifest(files: list[tuple[str, bytes]]) -> dict[str, Any]:
 
 
 def archive_bytes(files: list[tuple[str, bytes]], value: dict[str, Any]) -> bytes:
+    _validate_backup_files_for_write(files)
     output = io.BytesIO()
     encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2).encode("utf-8") + b"\n"
     with zipfile.ZipFile(output, "w") as archive:
@@ -281,6 +316,8 @@ def _validate_manifest(value: Any, entries: dict[str, bytes]) -> None:
         if not isinstance(path, str) or path == "manifest.json":
             raise ValueError("backup manifest path is invalid")
         _safe_archive_name(path)
+        if _runtime_name_excluded(path):
+            raise ValueError("backup contains excluded transient runtime namespace")
         if not isinstance(digest, str) or not _SHA256.fullmatch(digest):
             raise ValueError("backup manifest checksum is invalid")
         if type(size) is not int or not 0 <= size <= _MAX_FILE_SIZE:
