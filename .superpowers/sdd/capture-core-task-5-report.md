@@ -409,3 +409,97 @@ git diff --check
 Result: both passed. The strict UTF-8/no-BOM/LF byte scan passed for every
 changed Python, test, and report file. All tests used `C:\tmp` roots; no live
 deployed AGC profile or original Codex source task was accessed or changed.
+
+## Remaining review fixes (2026-08-14)
+
+- Archive names must now equal their exact `PurePosixPath.as_posix()` spelling
+  in addition to the existing traversal, absolute-path, drive, and backslash
+  checks. Repeated separators, dot segments, trailing separators, and their
+  alias collisions therefore fail before restore mutation.
+- `managed_backup.is_protected_capture_path` is the shared canonicalized,
+  case-folded Capture classifier. Managed backup and formal forget use it for
+  live planning, archive rewriting, and post-operation verification, so
+  `.RUNTIME/capture` and separator aliases are never term-scanned or deleted.
+- Formal forget no longer has an alternate ZIP writer. Rebuilt archives pass
+  through `managed_backup.archive_bytes` and the same immediate verifier as
+  normal backups. Compression-ratio, encoded-manifest, file-count, total-size,
+  exact-manifest, and Capture-graph failures now abort plan construction before
+  the journal or any managed path is mutated; the original backup stays byte
+  exact.
+
+### Remaining-findings RED evidence
+
+```powershell
+& '.\.venv\Scripts\python.exe' -m pytest `
+  tests/test_capture_backup_restore.py::test_restore_rejects_noncanonical_archive_aliases_before_mutation `
+  tests/test_forget_service.py::test_formal_forget_never_deletes_casefolded_capture_archive_path `
+  tests/test_forget_service.py::test_formal_forget_rejects_unrestorable_rebuilt_archive_before_mutation `
+  -q --basetemp 'C:\tmp\agc-task5-remaining-red'
+```
+
+Result: `6 failed in 3.63s`. Restore accepted the two protected aliases and an
+ordinary alias collision. Formal forget deleted the case-folded Capture entry
+and published rebuilt archives that violated compression-ratio and encoded
+manifest limits.
+
+### Remaining-findings targeted GREEN
+
+The same command with
+`--basetemp C:\tmp\agc-task5-remaining-green` produced
+`6 passed in 2.25s`.
+
+```powershell
+& '.\.venv\Scripts\python.exe' -m pytest `
+  tests/test_forget_service.py::test_forget_rewrites_backup_zip_and_injects_tombstone `
+  tests/test_forget_service.py::test_formal_forget_never_scans_or_rewrites_capture_model_paths `
+  -q --basetemp 'C:\tmp\agc-task5-remaining-formal-compat'
+```
+
+Result: `2 passed in 0.88s`.
+
+### Remaining-findings final verification
+
+```powershell
+& '.\.venv\Scripts\python.exe' -m pytest tests/test_forget_service.py -q `
+  --basetemp 'C:\tmp\agc-task5-remaining-formal-final'
+```
+
+Result: `28 passed in 10.88s`.
+
+```powershell
+& '.\.venv\Scripts\python.exe' -m pytest `
+  tests/test_capture_backup_restore.py tests/test_capture_forget.py `
+  tests/test_admin_service.py tests/test_forget_service.py -q `
+  --basetemp 'C:\tmp\agc-task5-remaining-focused-final'
+```
+
+Result: `104 passed, 1 warning in 46.45s`.
+
+```powershell
+& '.\.venv\Scripts\python.exe' -m pytest `
+  tests/test_capture_contracts.py tests/test_capture_paths.py `
+  tests/test_capture_store.py tests/test_capture_transaction.py `
+  tests/test_capture_read_service.py tests/test_capture_status.py -q `
+  --basetemp 'C:\tmp\agc-task5-remaining-adjacent-final'
+```
+
+Result: `197 passed in 16.97s`.
+
+```powershell
+& '.\.venv\Scripts\python.exe' -m pytest tests `
+  --ignore=tests/test_local_install.py `
+  --deselect=tests/test_runtime_config.py::test_built_wheel_contains_default_and_installed_admin_init_works `
+  -q --basetemp 'C:\tmp\agc-task5-remaining-broad-final'
+```
+
+Result: `444 passed, 1 deselected, 1 warning in 81.93s`. The warning is the
+intentional duplicate-ZIP-entry attack regression.
+
+```powershell
+& '.\.venv\Scripts\python.exe' -m compileall -q agc_runtime tests
+git diff --check
+```
+
+Result: both passed. The strict UTF-8/no-BOM/LF byte scan passed for every
+changed Python, test, and report file. All tests used `C:\tmp` roots; no live
+deployed AGC profile or original Codex source task was accessed or changed.

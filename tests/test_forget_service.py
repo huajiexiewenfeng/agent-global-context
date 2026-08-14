@@ -266,9 +266,10 @@ def test_formal_forget_never_scans_or_rewrites_capture_model_paths(populated):
     ).encode("utf-8")
     capture_copy.write_bytes(capture_bytes)
     backup_zip = paths.backups / "capture-isolation.zip"
-    capture_name = ".runtime/capture/observations/co_" + "1" * 64 + ".json"
+    capture_name = ".runtime/capture/schema-version"
+    archived_capture_bytes = b"1\n"
     with zipfile.ZipFile(backup_zip, "w") as archive:
-        archive.writestr(capture_name, capture_bytes)
+        archive.writestr(capture_name, archived_capture_bytes)
         archive.writestr(
             "memories/identity/family-structure.md",
             family_memory().to_markdown(),
@@ -279,7 +280,62 @@ def test_formal_forget_never_scans_or_rewrites_capture_model_paths(populated):
     assert response.status == "accepted"
     assert capture_copy.read_bytes() == capture_bytes
     with zipfile.ZipFile(backup_zip) as archive:
+        assert archive.read(capture_name) == archived_capture_bytes
+
+
+def test_formal_forget_never_deletes_casefolded_capture_archive_path(populated):
+    paths, _source_task = populated
+    backup_zip = paths.backups / "casefolded-capture.zip"
+    capture_name = ".RUNTIME/capture/dirty/strict-copy.json"
+    capture_bytes = json.dumps(
+        {"schema_version": 1, "statement": "妻子和儿子"},
+        ensure_ascii=False,
+    ).encode("utf-8")
+    with zipfile.ZipFile(backup_zip, "w") as archive:
+        archive.writestr(capture_name, capture_bytes)
+        archive.writestr(
+            "memories/identity/family-structure.md",
+            family_memory().to_markdown(),
+        )
+    before = backup_zip.read_bytes()
+
+    response = forget(paths, authorized_request())
+
+    assert response.status == "failed"
+    assert response.error["code"] == "forget_failed"
+    assert backup_zip.read_bytes() == before
+    with zipfile.ZipFile(backup_zip) as archive:
         assert archive.read(capture_name) == capture_bytes
+    assert MemoryStore(paths).get_memory("family-structure") == family_memory()
+
+
+@pytest.mark.parametrize("resource", ["compression_ratio", "manifest_size"])
+def test_formal_forget_rejects_unrestorable_rebuilt_archive_before_mutation(
+    populated, resource: str
+):
+    paths, _source_task = populated
+    backup_zip = paths.backups / f"unsafe-rewrite-{resource}.zip"
+    with zipfile.ZipFile(
+        backup_zip, "w", compression=zipfile.ZIP_DEFLATED
+    ) as archive:
+        archive.writestr(
+            "memories/identity/family-structure.md",
+            family_memory().to_markdown(),
+        )
+        if resource == "compression_ratio":
+            archive.writestr("highly-compressible.txt", b"0" * (1024 * 1024))
+        else:
+            suffix = "x" * 220
+            for index in range(4095):
+                archive.writestr(f"contexts/{index:04d}-{suffix}.txt", b"")
+    before = backup_zip.read_bytes()
+
+    response = forget(paths, authorized_request())
+
+    assert response.status == "failed"
+    assert response.error["code"] == "forget_failed"
+    assert backup_zip.read_bytes() == before
+    assert MemoryStore(paths).get_memory("family-structure") == family_memory()
 
 
 def test_formal_forget_primary_delete_uses_durable_unlink(

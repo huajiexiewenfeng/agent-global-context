@@ -71,9 +71,13 @@ def atomic_write_bytes(path: Path, data: bytes) -> None:
         raise
 
 
+def is_protected_capture_path(name: str) -> bool:
+    normalized = PurePosixPath(name.replace("\\", "/")).as_posix().casefold()
+    return normalized == _CAPTURE_ROOT or normalized.startswith(_CAPTURE_PREFIX)
+
+
 def _capture_name_allowed(relative: str) -> bool:
-    folded = relative.casefold()
-    if folded != _CAPTURE_ROOT and not folded.startswith(_CAPTURE_PREFIX):
+    if not is_protected_capture_path(relative):
         return True
     if not relative.startswith(_CAPTURE_PREFIX):
         return False
@@ -148,11 +152,7 @@ def backup_files(paths: MemoryPaths) -> list[tuple[str, bytes]]:
 
 def manifest(files: list[tuple[str, bytes]]) -> dict[str, Any]:
     _validate_backup_files_for_write(files)
-    capture_present = any(
-        name.casefold() == _CAPTURE_ROOT
-        or name.casefold().startswith(_CAPTURE_PREFIX)
-        for name, _ in files
-    )
+    capture_present = any(is_protected_capture_path(name) for name, _ in files)
     value: dict[str, Any] = {
         "schema_version": ARCHIVE_SCHEMA_VERSION,
         "files": [{"path": name, "sha256": hashlib.sha256(data).hexdigest(), "size": len(data)} for name, data in files],
@@ -182,7 +182,9 @@ def _safe_archive_name(name: str) -> None:
     if "\\" in name:
         raise ValueError("backup uses non-canonical path separators")
     pure = PurePosixPath(name)
-    if not name or pure.is_absolute() or ".." in pure.parts or "." in pure.parts or not pure.parts or ":" in pure.parts[0]:
+    if pure.as_posix() != name:
+        raise ValueError("backup uses a non-canonical archive path")
+    if not name or pure.is_absolute() or ".." in pure.parts or not pure.parts or ":" in pure.parts[0]:
         raise ValueError("unsafe archive path")
 
 
@@ -199,8 +201,7 @@ def _json(entries: dict[str, bytes], name: str) -> dict[str, Any]:
 def _validate_capture_entries(entries: dict[str, bytes], value: dict[str, Any]) -> None:
     names = [
         name for name in entries
-        if name.casefold() == _CAPTURE_ROOT
-        or name.casefold().startswith(_CAPTURE_PREFIX)
+        if is_protected_capture_path(name)
     ]
     if not names:
         return
@@ -312,11 +313,7 @@ def _validate_capture_entries(entries: dict[str, bytes], value: dict[str, Any]) 
 def _validate_manifest(value: Any, entries: dict[str, bytes]) -> None:
     if not isinstance(value, dict):
         raise ValueError("backup manifest must be a mapping")
-    capture_present = any(
-        name.casefold() == _CAPTURE_ROOT
-        or name.casefold().startswith(_CAPTURE_PREFIX)
-        for name in entries
-    )
+    capture_present = any(is_protected_capture_path(name) for name in entries)
     expected_fields = {"schema_version", "files"}
     if capture_present:
         expected_fields.update({"capture_schema_version", "capabilities"})

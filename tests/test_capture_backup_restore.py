@@ -502,6 +502,59 @@ def test_restore_rejects_case_variant_protected_runtime_paths_before_mutation(
     assert not (paths.queue / "stale.json").exists()
 
 
+@pytest.mark.parametrize(
+    ("case", "crafted_entries"),
+    [
+        (
+            "repeated_separator",
+            [(".runtime//Queue/stale.json", b"crafted queue\n")],
+        ),
+        (
+            "dot_segment",
+            [("./.RUNTIME/capture/cursor-hmac-key", b"crafted cursor\n")],
+        ),
+        (
+            "alias_collision",
+            [
+                ("ordinary/value.txt", b"canonical\n"),
+                ("ordinary//value.txt", b"alias\n"),
+            ],
+        ),
+    ],
+)
+def test_restore_rejects_noncanonical_archive_aliases_before_mutation(
+    tmp_path: Path,
+    case: str,
+    crafted_entries: list[tuple[str, bytes]],
+):
+    paths, _store, _observation_value = _populated(tmp_path)
+    cursor_before = b"existing-cursor-key"
+    paths.capture.cursor_hmac_key.write_bytes(cursor_before)
+    valid = Path(dispatch_admin(paths, {"action": "backup"}).data["backup_path"])
+    with zipfile.ZipFile(valid) as archive:
+        entries = [
+            (name, archive.read(name))
+            for name in archive.namelist()
+            if name != "manifest.json"
+        ]
+    entries.extend(crafted_entries)
+    malicious = tmp_path / f"noncanonical-{case}.zip"
+    _write_archive(malicious, entries)
+    marker = paths.root / "pre-restore-marker.txt"
+    marker.write_bytes(b"unchanged")
+
+    response = dispatch_admin(
+        paths, {"action": "restore", "backup_path": str(malicious)}
+    )
+
+    assert response.status == "failed"
+    assert response.error["code"] == "backup_verification_failed"
+    assert marker.read_bytes() == b"unchanged"
+    assert paths.capture.cursor_hmac_key.read_bytes() == cursor_before
+    assert not (paths.queue / "stale.json").exists()
+    assert not (paths.root / "ordinary" / "value.txt").exists()
+
+
 def test_archive_writer_rejects_high_compression_ratio_output():
     files = [("highly-compressible.bin", b"0" * (1024 * 1024))]
     value = managed_backup.manifest(files)

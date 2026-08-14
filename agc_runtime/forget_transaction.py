@@ -1,5 +1,4 @@
 import hashlib
-import io
 import json
 import os
 import tempfile
@@ -42,7 +41,6 @@ _JOURNAL_FIELDS = {
     "status",
     "integrity_sha256",
 }
-_CAPTURE_PREFIX = ".runtime/capture/"
 
 
 @dataclass(frozen=True)
@@ -120,13 +118,6 @@ def _atomic_write_bytes(path: Path, data: bytes) -> None:
         raise
 
 
-def _zip_info(name: str) -> zipfile.ZipInfo:
-    info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
-    info.compress_type = zipfile.ZIP_DEFLATED
-    info.external_attr = 0o600 << 16
-    return info
-
-
 def _rewritten_backup_bytes(
     path: Path,
     memory_id: str,
@@ -141,8 +132,8 @@ def _rewritten_backup_bytes(
                 continue
             data = archive.read(info.filename)
             normalized_name = info.filename.replace("\\", "/")
-            if normalized_name.startswith(_CAPTURE_PREFIX):
-                retained[normalized_name] = data
+            if managed_backup.is_protected_capture_path(info.filename):
+                retained[info.filename] = data
                 continue
             if normalized_name.endswith(f"/{memory_id}.md"):
                 continue
@@ -155,24 +146,10 @@ def _rewritten_backup_bytes(
                     text, verification_terms
                 ):
                     continue
-            retained[normalized_name] = data
+            retained[info.filename] = data
     retained[tombstone_name] = tombstone_bytes
     files = sorted(retained.items(), key=lambda item: item[0].encode("utf-8"))
-    manifest = (
-        json.dumps(
-            managed_backup.manifest(files),
-            ensure_ascii=False,
-            sort_keys=True,
-            indent=2,
-        ).encode("utf-8")
-        + b"\n"
-    )
-    output = io.BytesIO()
-    with zipfile.ZipFile(output, "w") as archive:
-        for name, data in files:
-            archive.writestr(_zip_info(name), data)
-        archive.writestr(_zip_info("manifest.json"), manifest)
-    return output.getvalue()
+    return managed_backup.archive_bytes(files, managed_backup.manifest(files))
 
 
 def _events_operation(
@@ -251,7 +228,7 @@ def _generic_managed_operations(
         relative = str(path.relative_to(paths.root)).replace("\\", "/")
         if relative.startswith(migrations_prefix):
             continue
-        if relative.startswith(_CAPTURE_PREFIX):
+        if managed_backup.is_protected_capture_path(relative):
             continue
         if path.suffix.lower() == ".zip":
             operations.append(
@@ -575,15 +552,14 @@ def _verify_forget_plan(
         relative = str(path.relative_to(paths.root)).replace("\\", "/")
         if relative.startswith(".runtime/migrations/"):
             continue
-        if relative.startswith(_CAPTURE_PREFIX):
+        if managed_backup.is_protected_capture_path(relative):
             continue
         if path.suffix.lower() == ".zip":
             with zipfile.ZipFile(path, "r") as archive:
                 for info in archive.infolist():
                     if info.is_dir():
                         continue
-                    normalized_name = info.filename.replace("\\", "/")
-                    if normalized_name.startswith(_CAPTURE_PREFIX):
+                    if managed_backup.is_protected_capture_path(info.filename):
                         continue
                     data = archive.read(info.filename)
                     try:
