@@ -70,9 +70,9 @@
 - requirement: planned
 - written_spec: approved
 - implementation_plan: confirmed
-- development: Capture Core Task 6 test/docs implementation complete; no production delta
-- testing: focused and complete suites pass; installed wheel behavior passes except the literal `agc --version` spelling required by the Task 6 brief
-- next_gate: resolve or explicitly accept the existing `agc --version` versus `agc version` contract mismatch before entering the Codex Source Census plan
+- development: Capture Core Task 6 and review fixes complete; the only production delta is a backward-compatible CLI version alias
+- testing: focused `11 passed`; complete `514 passed, 1 warning`; installed wheel passes both version spellings, admin validation, provenance, and exactly-three-tools probes
+- next_gate: Capture Core exit gate satisfied; proceed to the Codex Source Census plan without enabling Capture
 
 ## Capture Core Task 6 Verification
 
@@ -85,14 +85,15 @@
 # exit 1; 1 failed
 
 & '.\.venv\Scripts\python.exe' -m pytest `
-  tests/test_capture_core_end_to_end.py tests/test_runtime_end_to_end.py -q `
+  tests/test_cli_contract.py tests/test_capture_core_end_to_end.py `
+  tests/test_runtime_end_to_end.py -q `
   --basetemp '<temporary-root>\agc-capture-core-e2e-green'
-# exit 0; 6 passed in 8.81s
+# exit 0; 11 passed in 11.59s
 
 $env:PYTHONPATH='<repository-venv-site-packages>;<bundled-backend-site-packages>'
 & '.\.venv\Scripts\python.exe' -m pytest -q `
   --basetemp '<temporary-root>\agc-capture-core-full-clean'
-# exit 0; 513 passed, 1 warning in 330.29s
+# exit 0; 514 passed, 1 warning in 318.80s
 ```
 
 The final full run orders the repository venv before the bundled backend. An
@@ -107,9 +108,6 @@ environment failures.
 
 ```powershell
 $env:PYTHONPATH='<repository-venv-site-packages>;<bundled-backend-site-packages>'
-$env:PIP_NO_INDEX='1'
-$env:PIP_NO_INPUT='1'
-$env:PIP_DISABLE_PIP_VERSION_CHECK='1'
 & '.\.venv\Scripts\python.exe' -m build --wheel --no-isolation `
   --outdir '<temporary-root>\wheel' '<temporary-clean-source-copy>'
 # exit 0; wheel built
@@ -118,7 +116,7 @@ $env:PIP_DISABLE_PIP_VERSION_CHECK='1'
 # exit 0; installed agent-global-context-runtime 0.2.0
 
 & '<temporary-venv>\Scripts\agc.exe' --version
-# exit 1; existing invalid_tool envelope
+# exit 0; accepted, runtime_version 0.2.0
 
 & '<temporary-venv>\Scripts\agc.exe' version
 # exit 0; accepted, runtime_version 0.2.0
@@ -128,24 +126,38 @@ $env:PIP_DISABLE_PIP_VERSION_CHECK='1'
 # exit 0; accepted
 ```
 
-An installed-artifact MCP probe from outside the repository returned exactly
-three tools: `agc.admin`, `agc.read`, and `agc.write`.
+An installed-artifact MCP probe ran outside the repository, asserted
+`agc_runtime.__file__` resolved under the temporary venv's `site-packages`,
+exited `0`, and returned exactly three tools: `agc.admin`, `agc.read`, and
+`agc.write`.
+
+```powershell
+# strict UTF-8 decoder plus no-BOM check over tracked text files
+# exit 0; 132 files
+& '.\.venv\Scripts\python.exe' -m compileall -q agc_runtime tests
+# exit 0
+git diff --check
+# exit 0
+```
 
 ### Production, tests, mocks, assertions, actual behavior
 
-- Production: no changed production files. Capture remains disabled by default
-  with mode `off`, configured source count `0`, and no configured model.
+- Production: `agc_runtime/cli.py` accepts both `version` and `--version`.
+  Capture remains disabled by default with mode `off`, configured source count
+  `0`, and no configured model.
 - Tests: one new disabled-core E2E and stronger ordinary Recall lifecycle,
   budget, and post-forget validation assertions.
-- Mocks: only boundary tripwires for subprocess calls and deferred Capture
-  Source/Scanner/Runner/Hook imports. Real store, transactions, dispatchers,
-  catalog, backup/restore, and forget paths run end to end.
+- Mocks: boundary tripwires are installed before Runtime imports and init for
+  subprocess calls, planned Source/model/provider imports, source-root
+  enumeration, socket calls, and URL calls. Real store, transactions,
+  dispatchers, catalog, backup/restore, and forget paths run end to end.
 - Assertions: init/validate, two-level replay idempotency, explicit read
-  isolation, backup/restore, both exact forget unions, suppression tombstone,
-  source-task preservation, zero external behavior, and unchanged Formal
-  Catalog byte hash/memory count at every step.
+  isolation, a non-no-op restore from `3` observations back to the backed-up
+  `2`, both exact forget unions, suppression tombstone, an outside-root source
+  sentinel byte-exact through both forget types, zero external behavior, and
+  unchanged Formal Catalog byte hash/memory count at every step.
 - Actual behavior: all assertions pass on a synthetic temporary root without a
-  profile, transcript, provider, network, or deployed AGC data.
+profile, transcript, provider, network, or deployed AGC data.
 
 ### Residual risk and gate
 
@@ -154,6 +166,5 @@ backup manifests carry Capture schema `1`, but the package version is still
 `0.2.0`. A pre-Capture 0.2.0 binary cannot be distinguished by semantic version
 alone and cannot safely restore post-Capture data. Host rollout must retain a
 Capture-capable Runtime and block that binary downgrade. Capture remains inert
-and is not yet usable. The Codex Source Census exit gate is held on the literal
-CLI-version mismatch unless the user accepts `agc version` as the intended
-installed-version check or separately authorizes a production CLI change.
+and is not yet usable. The CLI-version mismatch is resolved; the next stage is
+the Codex Source Census plan, still without enabling Capture.

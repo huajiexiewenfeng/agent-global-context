@@ -80,7 +80,7 @@ def _response_exit_code(response: ToolResponse) -> int:
 
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
-    if arguments == ["version"]:
+    if arguments in (["version"], ["--version"]):
         return emit(
             ToolResponse(
                 tool="agc.admin",

@@ -2,23 +2,24 @@
 
 ## Status
 
-`DONE_WITH_CONCERNS`
+`DONE`
 
-The disabled Capture Core release proof is implemented and all focused and
-complete tests pass. No production behavior changed. The remaining concern is
-an existing package-command mismatch: the brief requires `agc --version`, while
-Runtime 0.2.0 implements `agc version`. The exact required spelling was run and
-failed; the supported installed version action and every other package gate
-passed.
+The disabled Capture Core release proof and its review fixes are implemented.
+The only production change is a backward-compatible CLI alias: both
+`agc --version` and `agc version` return the same stable Runtime 0.2.0 envelope.
+Capture remains disabled and no Source, model, provider, network, Runner, Hook,
+scheduler, or host behavior was introduced.
 
 ## Scoped files
 
 - Created `tests/test_capture_core_end_to_end.py`.
 - Modified `tests/test_runtime_end_to_end.py`.
+- Modified `tests/test_cli_contract.py`.
+- Modified `agc_runtime/cli.py`.
 - Modified `.llm-wiki/requirements/agc-capture-coverage-mvp.md`.
 - Modified `.llm-wiki/working-context/agc-capture-coverage-mvp.md`.
 - Created this report.
-- Production files changed: `0`.
+- Production files changed: `1` (`agc_runtime/cli.py`, version alias only).
 
 ## TDD RED
 
@@ -32,6 +33,19 @@ Exit `1`: `1 failed in 0.25s`. The deliberately incomplete scaffold failed at
 `disabled Capture core E2E proof is not implemented`, proving the new release
 proof did not exist before implementation.
 
+The review-fix CLI regression was also observed RED before production code was
+changed:
+
+```powershell
+& '.\.venv\Scripts\python.exe' -m pytest `
+  tests/test_cli_contract.py::test_dash_dash_version_is_a_compatible_json_envelope `
+  -q --basetemp '<temporary-root>\agc-core6-version-red'
+```
+
+Exit `1`: `1 failed`; `agc --version` returned exit `2` with `invalid_tool`.
+After the minimal alias change, the legacy and compatibility version tests
+exited `0` with `2 passed in 1.48s`.
+
 ## TDD GREEN and complete suite
 
 ```powershell
@@ -40,7 +54,17 @@ proof did not exist before implementation.
   --basetemp 'C:\tmp\agc-capture-core-e2e-green'
 ```
 
-Exit `0`: `6 passed in 8.81s`.
+The final focused review command covered CLI, disabled Capture Core, and
+ordinary Runtime E2E:
+
+```powershell
+& '.\.venv\Scripts\python.exe' -m pytest `
+  tests/test_cli_contract.py tests/test_capture_core_end_to_end.py `
+  tests/test_runtime_end_to_end.py -q `
+  --basetemp '<temporary-root>\agc-core6-review-focused'
+```
+
+Exit `0`: `11 passed in 11.59s`.
 
 The repository venv lacks its declared setuptools backend. The final complete
 command therefore used the Task 1 documented backend with the repository venv
@@ -56,7 +80,7 @@ Remove-Item Env:PIP_DISABLE_PIP_VERSION_CHECK -ErrorAction SilentlyContinue
   --basetemp 'C:\tmp\agc-capture-core-full-clean'
 ```
 
-Exit `0`: `513 passed, 1 warning in 330.29s`. The warning is the expected
+Exit `0`: `514 passed, 1 warning in 318.80s`. The warning is the expected
 duplicate-name ZIP attack fixture.
 
 An initial diagnostic ordering put the bundled backend first and inherited
@@ -68,14 +92,16 @@ passed `12 passed in 167.71s`, then the corrected complete command above passed.
 
 ## Package, install, and MCP evidence
 
-A disposable source copy excluded `.git`, `.venv`, `build`, `dist`, egg-info,
-pytest cache, and bytecode caches. With `PIP_NO_INDEX=1`, `PIP_NO_INPUT=1`, and
-`PIP_DISABLE_PIP_VERSION_CHECK=1`, this command built the wheel:
+A new disposable source copy was populated only from `git ls-files`, reading
+the current working-tree bytes for those tracked files; `.git`, `.venv`, local
+build output, caches, and untracked files therefore could not enter the build.
+The already-installed local build backend was selected through `PYTHONPATH`,
+and `--no-isolation` prevented dependency resolution during the build:
 
 ```powershell
 & '.\.venv\Scripts\python.exe' -m build --wheel --no-isolation `
-  --outdir 'C:\tmp\agc-core6-package-cbb7c72425c6412b80df59d911e75c0d\wheel' `
-  'C:\tmp\agc-core6-package-cbb7c72425c6412b80df59d911e75c0d\source'
+  --outdir '<new-temporary-root>\wheel' `
+  '<new-temporary-root>\source'
 ```
 
 Exit `0`; `agent_global_context_runtime-0.2.0-py3-none-any.whl` was built and
@@ -88,14 +114,13 @@ covered by the full suite.
 
 Exit `0`; installed `agent-global-context-runtime-0.2.0`.
 
-Exact required command:
+Exact required and legacy-compatible commands:
 
 ```powershell
 & '<temporary-venv>\Scripts\agc.exe' --version
 ```
 
-Exit `1`; machine-readable `invalid_tool`, because `agc_runtime.cli` accepts
-the exact argument vector `['version']`, not `['--version']`.
+Exit `0`; status `accepted`, Runtime version `0.2.0`.
 
 Supported installed version action:
 
@@ -112,8 +137,18 @@ Exit `0`; status `accepted`, Runtime version `0.2.0`.
 
 Exit `0`; status `accepted`.
 
-The installed artifact was imported from outside the repository and
-`create_server(...).list_tools()` returned exactly three names:
+The installed MCP probe ran from the disposable directory, used `site.addsitedir`
+only for already-installed third-party dependencies, asserted that
+`agc_runtime.__file__` resolved under the disposable venv's `site-packages`,
+and then executed `create_server(...).list_tools()`:
+
+```powershell
+& '<temporary-venv>\Scripts\python.exe' -c `
+  "import asyncio,json,pathlib,site; site.addsitedir('<dependency-site>'); import agc_runtime; from agc_runtime.mcp_server import create_server; installed=pathlib.Path(agc_runtime.__file__).resolve(); assert str(installed).startswith('<temporary-venv>'); print(json.dumps({'provenance':str(installed),'tools':sorted(t.name for t in asyncio.run(create_server(pathlib.Path('<temporary-memory-root>')).list_tools()))}))"
+```
+
+Exit `0`; provenance was the wheel-installed `site-packages/agc_runtime`, and
+the tool names were exactly:
 
 ```text
 agc.admin
@@ -127,15 +162,19 @@ agc.write
   host behavior was added.
 - Test implementation: real `CaptureStore`, transaction journals, dispatcher
   routes, catalog, backup/restore, and hard forget run on a synthetic root.
-- Mocks: only fail-fast tripwires around `subprocess.Popen/run/call/check_*`
-  and imports of deferred Source/Scanner/Runner/Hook modules. No behavior under
-  assertion is mocked.
+- Mocks: fail-fast tripwires are installed before Runtime imports and init.
+  They cover `subprocess.Popen/run/call/check_*`, planned Source/Scanner/
+  Capsule/Extractor/Runner/Hook imports, source-root enumeration through
+  `os.scandir`, `os.listdir`, and `Path.iterdir/glob/rglob`, plus socket and
+  URL network calls. No behavior under assertion is mocked.
 - Assertions: disabled/off state, configured source count `0`, no configured
   model, two observations, exact replay delta `0`, explicit Capture-only reads,
-  ordinary Recall isolation, backup/restore, exact Observation forget, exact
-  Revision forget, one content-free tombstone, original source task unchanged,
-  subprocess call count `0`, deferred import count `0`, and stable Formal
-  Catalog byte hash/memory count after every operation.
+  ordinary Recall isolation, a non-no-op restore that removes a third
+  post-backup Observation and returns the count from `3` to `2`, exact
+  Observation forget, exact Revision forget, one content-free tombstone, and
+  an outside-root source-task sentinel that remains byte-exact through both
+  forget types. All boundary-call counts remain `0`, and the Formal Catalog
+  byte hash/memory count stays stable after every operation.
 - Ordinary Recall: Runtime E2E asserts memory count, hard overview budget,
   active-only lifecycle results, and validation before and after formal forget.
 - Inputs: temporary synthetic root and static fixture only. No real profile,
@@ -157,8 +196,10 @@ pre-Capture 0.2.0 binary. This task does not claim Capture is usable or active.
 - Ordinary Recall AC-02: pass.
 - Source/model/host behavior introduced: none.
 - Clean wheel/install/admin/exactly-three-tools: pass.
-- Literal `agc --version`: fail due to the pre-existing CLI spelling contract.
+- Literal `agc --version` and legacy `agc version`: pass from installed wheel.
+- Text/package gates: strict UTF-8/no-BOM checked `132` tracked text files and
+  exited `0`; `python -m compileall -q agc_runtime tests` exited `0`; and
+  `git diff --check` exited `0`.
 
-The Codex Source Census plan should not start until the user accepts
-`agc version` as the intended check or separately authorizes an in-scope CLI
-compatibility change.
+The Capture Core exit gate is satisfied. Capture is still inert and does not
+become usable until the separately planned Source/Census stages are delivered.

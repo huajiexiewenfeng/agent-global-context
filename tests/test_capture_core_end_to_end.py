@@ -4,46 +4,51 @@ from __future__ import annotations
 
 import builtins
 import hashlib
+import importlib
 import json
+import os
+import socket
 import sys
+import urllib.request
 from pathlib import Path
 from typing import Any
-
-from agc_runtime.admin_service import dispatch_admin
-from agc_runtime.capture_contracts import (
-    CAPTURE_SCHEMA_VERSION,
-    CaptureKey,
-    CaptureReceipt,
-    CollectedObservation,
-    TokenUsage,
-    observation_fingerprint_for,
-    observation_id_for,
-    receipt_id_for,
-)
-from agc_runtime.capture_store import CaptureStore
-from agc_runtime.paths import MemoryPaths
-from agc_runtime.read_service import dispatch_read
-from agc_runtime.write_service import dispatch_write
-
 
 UTC = "2026-08-13T12:00:00Z"
 SOURCE_ROOT_ID = "1" * 64
 DEFERRED_RUNTIME_MODULES = (
     "agc_runtime.capture_source",
+    "agc_runtime.project_identity",
     "agc_runtime.codex_source_adapter",
     "agc_runtime.capture_scanner",
+    "agc_runtime.capture_capsule",
+    "agc_runtime.capture_safety",
+    "agc_runtime.capture_extractor",
+    "agc_runtime.codex_extractor",
+    "agc_runtime.capture_budget",
     "agc_runtime.capture_runner",
+    "agc_runtime.capture_cli",
     "agc_runtime.capture_hook",
 )
 
 
-def _key() -> CaptureKey:
+def _key(
+    task_id: str = "synthetic-task", revision_id: str = "revision-1"
+) -> CaptureKey:
+    from agc_runtime.capture_contracts import CaptureKey
+
     return CaptureKey(
-        "synthetic_adapter", SOURCE_ROOT_ID, "synthetic-task", "revision-1"
+        "synthetic_adapter", SOURCE_ROOT_ID, task_id, revision_id
     )
 
 
 def _receipt(key: CaptureKey) -> CaptureReceipt:
+    from agc_runtime.capture_contracts import (
+        CAPTURE_SCHEMA_VERSION,
+        CaptureReceipt,
+        TokenUsage,
+        receipt_id_for,
+    )
+
     return CaptureReceipt.from_mapping(
         {
             "schema_version": CAPTURE_SCHEMA_VERSION,
@@ -84,6 +89,13 @@ def _receipt(key: CaptureKey) -> CaptureReceipt:
 def _observation(
     receipt: CaptureReceipt, *, ordinal: int, statement: str
 ) -> CollectedObservation:
+    from agc_runtime.capture_contracts import (
+        CAPTURE_SCHEMA_VERSION,
+        CollectedObservation,
+        observation_fingerprint_for,
+        observation_id_for,
+    )
+
     value: dict[str, Any] = {
         "schema_version": CAPTURE_SCHEMA_VERSION,
         "observation_id": "co_" + "0" * 64,
@@ -120,6 +132,8 @@ def _observation(
 def _complete(
     receipt: CaptureReceipt, observations: tuple[CollectedObservation, ...]
 ) -> CaptureReceipt:
+    from agc_runtime.capture_contracts import CaptureReceipt
+
     return CaptureReceipt.from_mapping(
         {
             **receipt.to_mapping(),
@@ -143,6 +157,9 @@ def _catalog_state(paths: MemoryPaths) -> tuple[str, int]:
 def _assert_catalog_unchanged(
     paths: MemoryPaths, baseline: tuple[str, int]
 ) -> None:
+    from agc_runtime.admin_service import dispatch_admin
+    from agc_runtime.read_service import dispatch_read
+
     assert dispatch_admin(paths, {"action": "validate"}).status == "accepted"
     assert _catalog_state(paths) == baseline
     overview = dispatch_read(paths, {"action": "overview"})
@@ -150,9 +167,14 @@ def _assert_catalog_unchanged(
     assert overview.data["memory_count"] == baseline[1]
 
 
-def _guard_disabled_boundary(monkeypatch) -> tuple[list[str], list[str]]:
+def _guard_disabled_boundary(
+    monkeypatch, source_root: Path
+) -> tuple[list[str], list[str], list[str], list[str]]:
     process_calls: list[str] = []
     source_imports: list[str] = []
+    source_enumerations: list[str] = []
+    external_calls: list[str] = []
+    assert set(DEFERRED_RUNTIME_MODULES).isdisjoint(sys.modules)
 
     def reject_process(name: str):
         def rejected(*_args, **_kwargs):
@@ -177,17 +199,90 @@ def _guard_disabled_boundary(monkeypatch) -> tuple[list[str], list[str]]:
         return original_import(name, globals, locals, fromlist, level)
 
     monkeypatch.setattr(builtins, "__import__", guarded_import)
-    return process_calls, source_imports
+    original_import_module = importlib.import_module
+
+    def guarded_import_module(name, package=None):
+        if any(
+            name == blocked or name.startswith(blocked + ".")
+            for blocked in DEFERRED_RUNTIME_MODULES
+        ):
+            source_imports.append(name)
+            raise AssertionError(f"disabled Capture imported deferred module {name}")
+        return original_import_module(name, package)
+
+    monkeypatch.setattr(importlib, "import_module", guarded_import_module)
+
+    def is_source_path(value: object) -> bool:
+        try:
+            candidate = Path(os.fspath(value)).resolve()
+            candidate.relative_to(source_root.resolve())
+        except (TypeError, ValueError, OSError):
+            return False
+        return True
+
+    def reject_source_enumeration(name: str, original):
+        def guarded(path, *args, **kwargs):
+            if is_source_path(path):
+                source_enumerations.append(name)
+                raise AssertionError(f"disabled Capture invoked source enumeration {name}")
+            return original(path, *args, **kwargs)
+
+        return guarded
+
+    monkeypatch.setattr(
+        os, "scandir", reject_source_enumeration("os.scandir", os.scandir)
+    )
+    monkeypatch.setattr(
+        os, "listdir", reject_source_enumeration("os.listdir", os.listdir)
+    )
+    for name in ("iterdir", "glob", "rglob"):
+        original = getattr(Path, name)
+        monkeypatch.setattr(
+            Path,
+            name,
+            reject_source_enumeration(f"Path.{name}", original),
+        )
+
+    def reject_external(name: str):
+        def rejected(*_args, **_kwargs):
+            external_calls.append(name)
+            raise AssertionError(f"disabled Capture invoked external boundary {name}")
+
+        return rejected
+
+    monkeypatch.setattr(socket, "socket", reject_external("socket.socket"))
+    monkeypatch.setattr(
+        socket, "create_connection", reject_external("socket.create_connection")
+    )
+    monkeypatch.setattr(urllib.request, "urlopen", reject_external("urllib.urlopen"))
+    return process_calls, source_imports, source_enumerations, external_calls
 
 
 def test_disabled_capture_core_is_independently_releasable(
     tmp_path: Path, monkeypatch
 ):
+    source_root = tmp_path / "synthetic-codex-source"
+    source_root.mkdir()
+    source_task = source_root / "synthetic-task.jsonl"
+    source_task_bytes = b'{"synthetic":"source-task-sentinel"}\n'
+    source_task.write_bytes(source_task_bytes)
+    (
+        process_calls,
+        source_imports,
+        source_enumerations,
+        external_calls,
+    ) = _guard_disabled_boundary(monkeypatch, source_root)
+
+    from agc_runtime.admin_service import dispatch_admin
+    from agc_runtime.capture_store import CaptureStore
+    from agc_runtime.paths import MemoryPaths
+    from agc_runtime.read_service import dispatch_read
+    from agc_runtime.write_service import dispatch_write
+
     paths = MemoryPaths.from_root(tmp_path / "synthetic-memory")
     assert dispatch_admin(paths, {"action": "init"}).status == "accepted"
     baseline = _catalog_state(paths)
     assert baseline[1] == 0
-    process_calls, source_imports = _guard_disabled_boundary(monkeypatch)
 
     status = dispatch_admin(paths, {"action": "capture_status"})
     assert status.status == "accepted"
@@ -265,6 +360,29 @@ def test_disabled_capture_core_is_independently_releasable(
 
     backup = dispatch_admin(paths, {"action": "backup"})
     assert backup.status == "accepted"
+    post_backup_receipt = _receipt(_key("post-backup-task", "revision-2"))
+    post_backup_observation = _observation(
+        post_backup_receipt,
+        ordinal=0,
+        statement="Synthetic state created only after backup.",
+    )
+    assert store.register_extraction(post_backup_receipt).created is True
+    post_backup_lease = store.acquire_lease(
+        post_backup_receipt.key,
+        owner_id="synthetic-post-backup-worker",
+        now=UTC,
+        ttl_seconds=60,
+    )
+    assert post_backup_lease is not None
+    store.commit_extraction(
+        post_backup_lease,
+        (post_backup_observation,),
+        _complete(post_backup_receipt, (post_backup_observation,)),
+    )
+    assert dispatch_read(paths, {"action": "capture_search"}).data[
+        "returned_count"
+    ] == 3
+    assert source_task.read_bytes() == source_task_bytes
     restored = dispatch_admin(
         paths,
         {"action": "restore", "backup_path": backup.data["backup_path"]},
@@ -288,6 +406,7 @@ def test_disabled_capture_core_is_independently_releasable(
         },
     )
     assert observation_forget.status == "accepted"
+    assert source_task.read_bytes() == source_task_bytes
     after_observation_forget = dispatch_read(paths, {"action": "capture_search"})
     assert [
         item["observation_id"] for item in after_observation_forget.data["results"]
@@ -304,6 +423,7 @@ def test_disabled_capture_core_is_independently_releasable(
     )
     assert revision_forget.status == "accepted"
     assert revision_forget.data["source_task_deleted"] is False
+    assert source_task.read_bytes() == source_task_bytes
     after_revision_forget = dispatch_read(paths, {"action": "capture_search"})
     after_revision_overview = dispatch_read(
         paths, {"action": "capture_overview"}
@@ -315,3 +435,5 @@ def test_disabled_capture_core_is_independently_releasable(
 
     assert process_calls == []
     assert source_imports == []
+    assert source_enumerations == []
+    assert external_calls == []
