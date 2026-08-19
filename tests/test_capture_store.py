@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import json
 from pathlib import Path
 
 import pytest
@@ -117,6 +118,65 @@ def _complete_receipt(receipt: CaptureReceipt, count: int) -> CaptureReceipt:
             "zero_reason": None if count else "extractor_empty",
         }
     )
+
+
+@pytest.mark.parametrize(
+    ("damage", "expected_codes"),
+    [
+        ("bad_json", {"invalid_ledger"}),
+        ("bad_filename", {"invalid_ledger", "missing_ledger"}),
+        ("missing_ledger", {"missing_ledger"}),
+        ("missing_receipt", {"orphan_ledger"}),
+        ("wrong_status", {"ledger_receipt_mismatch"}),
+        ("foreign_reference", {"orphan_ledger", "missing_ledger"}),
+    ],
+)
+def test_locked_snapshot_validates_ledger_receipt_graph(
+    tmp_path: Path, damage: str, expected_codes: set[str]
+):
+    store = _store(tmp_path)
+    receipt = _receipt(status="discovered")
+    store.register_extraction(receipt)
+    ledger_path = store.capture.ledger / f"{receipt.receipt_id}.json"
+    receipt_path = store.capture.receipts / f"{receipt.receipt_id}.json"
+    if damage == "bad_json":
+        ledger_path.write_text('{"private":"must-not-leak"}\n', encoding="utf-8")
+    elif damage == "bad_filename":
+        ledger_path.rename(store.capture.ledger / "not-a-ledger.json")
+    elif damage == "missing_ledger":
+        ledger_path.unlink()
+    elif damage == "missing_receipt":
+        receipt_path.unlink()
+    elif damage == "wrong_status":
+        value = json.loads(ledger_path.read_text(encoding="utf-8"))
+        value["status"] = "queued"
+        atomic_write_json(ledger_path, value)
+    elif damage == "foreign_reference":
+        value = json.loads(ledger_path.read_text(encoding="utf-8"))
+        value["capture_key"]["task_id"] = "foreign-task"
+        foreign_key = CaptureKey.from_mapping(value["capture_key"])
+        value["receipt_id"] = receipt_id_for(foreign_key)
+        foreign_path = store.capture.ledger / f"{value['receipt_id']}.json"
+        atomic_write_json(foreign_path, value)
+        ledger_path.unlink()
+
+    snapshot = store.read_snapshot()
+
+    codes = {item.code for item in snapshot.diagnostics}
+    assert expected_codes <= codes
+    assert "private" not in json.dumps(
+        [item.to_mapping() for item in snapshot.diagnostics]
+    )
+
+
+def test_locked_snapshot_accepts_matching_discovered_receipt_and_ledger(tmp_path: Path):
+    store = _store(tmp_path)
+    store.register_extraction(_receipt(status="discovered"))
+
+    snapshot = store.read_snapshot()
+
+    assert snapshot.integrity_state == "healthy"
+    assert len(snapshot.receipts) == 1
 
 
 def test_ac_08_two_level_idempotency_and_source_conflict(tmp_path: Path):

@@ -119,7 +119,7 @@ def _probe(paths: MemoryPaths) -> int:
             ("capture_busy", "Capture state is temporarily unavailable")
             if scanner_assessment == "busy"
             else (
-                "capture_integrity_failed",
+                "scanner_corrupt",
                 "Capture state failed integrity validation",
             )
         )

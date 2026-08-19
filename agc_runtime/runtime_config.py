@@ -187,7 +187,12 @@ def _source_roots(value: Any, *, active: bool) -> tuple[str, ...]:
         path = Path(source)
         if not path.is_absolute():
             raise ValueError("capture.sources entries must be an absolute directory")
-        lexical_identity = str(path).casefold()
+        # Windows path matching is ASCII case-insensitive for our inert shape
+        # check, but Unicode case folding is not a filesystem identity rule:
+        # it would collapse distinct NTFS names such as straße/strasse.
+        lexical_identity = str(path).translate(
+            str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
+        )
         if lexical_identity in lexical_identities:
             raise ValueError("capture.sources must not contain duplicate roots")
         lexical_identities.add(lexical_identity)

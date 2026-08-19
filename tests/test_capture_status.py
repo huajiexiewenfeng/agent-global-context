@@ -58,6 +58,46 @@ def _configured_status_root(tmp_path: Path) -> tuple[MemoryPaths, Path]:
     return MemoryPaths.from_root(memory_root), source_root
 
 
+def _scan(paths: MemoryPaths, action: str = "scan") -> None:
+    arguments = (
+        [action, "--root", str(paths.root), "--once"]
+        if action == "cycle"
+        else [
+            action,
+            "--root",
+            str(paths.root),
+            "--mode",
+            "census",
+            "--once",
+        ]
+    )
+    result = subprocess.run(
+        [sys.executable, "-m", "agc_runtime.capture_cli", *arguments],
+        cwd=REPOSITORY_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def _probe(paths: MemoryPaths) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "agc_runtime.capture_cli",
+            "probe",
+            "--root",
+            str(paths.root),
+        ],
+        cwd=REPOSITORY_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
 def test_capture_status_is_diagnosable_while_disabled(tmp_path):
     memory_root = tmp_path / "memory"
     status = capture_status(memory_root)
@@ -128,7 +168,11 @@ def test_direct_admin_api_has_no_host_evidence_injection_surface(tmp_path):
     assert not hasattr(admin_service, "make_host_bound_admin_dispatch")
 
 
-def test_capture_status_reports_truthful_durable_scanner_metrics_without_paths(tmp_path):
+def test_capture_status_reports_truthful_durable_scanner_metrics_without_paths(
+    tmp_path, monkeypatch
+):
+    from agc_runtime.capture_store import CaptureStore
+
     paths, source_root = _configured_status_root(tmp_path)
     result = subprocess.run(
         [sys.executable, "-m", "agc_runtime.capture_cli", "scan", "--root", str(paths.root), "--mode", "census", "--once"],
@@ -138,6 +182,13 @@ def test_capture_status_reports_truthful_durable_scanner_metrics_without_paths(t
         check=False,
     )
     assert result.returncode == 0, result.stdout
+    monkeypatch.setattr(
+        CaptureStore,
+        "is_revision_accounted",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("status escaped its locked snapshot")
+        ),
+    )
 
     status = capture_status(paths)
 
@@ -205,6 +256,135 @@ def test_capture_status_reports_busy_and_corrupt_with_fixed_codes(tmp_path):
     run_file.write_text('{"private":"must-not-leak"}\n', encoding="utf-8")
     corrupt = capture_status(paths)
     assert corrupt["scanner"]["assessment"] == "corrupt"
-    assert corrupt["scanner"]["code"] == "scanner_state_corrupt"
+    assert corrupt["scanner"]["code"] == "scanner_corrupt"
     assert corrupt["scanner"]["operation_eligible"] is False
     assert "private" not in json.dumps(corrupt)
+
+
+@pytest.mark.parametrize("artifact", ["ledger_json", "receipt_json", "missing_ledger"])
+def test_capture_status_and_probe_reject_corrupt_or_partial_receipt_graph(
+    tmp_path: Path, artifact: str
+):
+    paths, source_root = _configured_status_root(tmp_path)
+    _scan(paths)
+    ledger = next(paths.capture.ledger.glob("*.json"))
+    receipt = next(paths.capture.receipts.glob("*.json"))
+    if artifact == "ledger_json":
+        ledger.write_text('{"private":"ledger-secret"}\n', encoding="utf-8")
+    elif artifact == "receipt_json":
+        receipt.write_text('{"private":"receipt-secret"}\n', encoding="utf-8")
+    else:
+        ledger.unlink()
+
+    status = capture_status(paths)
+    result = _probe(paths)
+    payload = json.loads(result.stdout)
+
+    assert status["scanner"]["assessment"] == "corrupt"
+    assert status["scanner"]["code"] == "scanner_corrupt"
+    assert result.returncode != 0
+    assert result.stderr == ""
+    assert len(result.stdout.splitlines()) == 1
+    assert payload["status"] == "failed"
+    assert payload["error"] == {
+        "code": "scanner_corrupt",
+        "message": "Capture state failed integrity validation",
+    }
+    rendered = json.dumps(payload)
+    assert "secret" not in rendered
+    assert str(paths.root) not in rendered
+    assert str(source_root) not in rendered
+
+
+def test_capture_status_scopes_durable_metrics_to_current_source_binding(tmp_path: Path):
+    from agc_runtime.capture_source import DirtyMarker, SourceBindingKey, source_root_id_for
+    from agc_runtime.capture_store import CaptureStore
+
+    paths, source_a = _configured_status_root(tmp_path)
+    _scan(paths)
+    source_a_id = source_root_id_for(source_a)
+    binding_a = SourceBindingKey.from_mapping(
+        {
+            "schema_version": 1,
+            "adapter_id": "codex",
+            "source_root_id": source_a_id,
+        }
+    )
+    CaptureStore(paths).record_source_quarantine(
+        binding_a,
+        created_at="2026-08-19T00:00:00Z",
+        code="stale_source_diagnostic",
+    )
+    stale_marker = DirtyMarker.from_mapping(
+        {
+            "schema_version": 1,
+            "adapter_id": "codex",
+            "adapter_version": "1.0",
+            "source_schema_version": "codex-v1",
+            "source_root_id": source_a_id,
+            "task_id": "stale-task",
+            "revision_id": "stale-revision",
+            "locator": None,
+            "observed_at": "2026-08-19T00:00:00Z",
+            "hook_event": "Stop",
+        }
+    )
+    (paths.capture.dirty / "stale-marker.json").write_text(
+        json.dumps(stale_marker.to_mapping()) + "\n", encoding="utf-8"
+    )
+    source_b = tmp_path / "source-b"
+    source_b.mkdir()
+    config_path = paths.root / "config.yaml"
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8").replace(
+            source_a.as_posix(), source_b.as_posix()
+        ),
+        encoding="utf-8",
+    )
+
+    status = capture_status(paths)
+
+    assert status["source_roots"]["configured_count"] == 1
+    assert status["scanner"]["assessment"] == "absent"
+    assert status["scanner"]["source_health"] == "not_assessed"
+    assert status["scanner"]["latest_census"] == {
+        "assessment": "absent",
+        "run_count": 0,
+        "key_count": 0,
+    }
+    assert status["scanner"]["accounting"] == {
+        "known_key_count": 0,
+        "accounted_key_count": 0,
+        "pending_key_count": 0,
+        "silent_loss_count": 0,
+    }
+    assert status["scanner"]["scan_state"]["binding_count"] == 0
+    assert status["scanner"]["dirty_marker_count"] == 0
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows junction identity")
+def test_capture_status_matches_configured_alias_by_canonical_source_id(tmp_path: Path):
+    paths, source_root = _configured_status_root(tmp_path)
+    _scan(paths)
+    alias = tmp_path / "source-alias"
+    created = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(alias), str(source_root)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert created.returncode == 0, created.stdout + created.stderr
+    config_path = paths.root / "config.yaml"
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8").replace(
+            source_root.as_posix(), alias.as_posix()
+        ),
+        encoding="utf-8",
+    )
+
+    status = capture_status(paths)
+
+    assert status["scanner"]["assessment"] == "ready"
+    assert status["scanner"]["latest_census"]["run_count"] == 1
+    assert status["scanner"]["accounting"]["known_key_count"] == 1
+    assert status["scanner"]["scan_state"]["binding_count"] == 1

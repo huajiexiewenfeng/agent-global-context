@@ -216,3 +216,73 @@ The first static forbidden-boundary expression matched the required fixed
 machine code `capture_runner_unsupported`; it found no import or invocation.
 The check was narrowed from a bare lexical module-name fragment to actual
 semantic/external import and call forms, then the complete static gate passed.
+
+## Review Remediation (2026-08-19)
+
+The Task 5 review was resolved without widening the activation surface:
+
+- Disabled source-root validation now applies ASCII-only case folding for its
+  lexical duplicate check. It still rejects ASCII case aliases while keeping
+  distinct `straße`/`strasse` and composed/decomposed Unicode names distinct.
+  It performs no resolve, realpath, hashing, enumeration, or deferred Source,
+  Scanner, or adapter import. Physical alias and junction identity remains the
+  existing Task 1 `canonical_source_root` / `source_root_id_for` contract and
+  runs only after explicit activation.
+- `CaptureStore.read_snapshot` now validates the Ledger namespace and the
+  Receipt/Ledger graph under the same Capture read lock. Fixed content-safe
+  diagnostics cover malformed schema/JSON or filenames, missing Ledger,
+  orphan Ledger references, and mismatched key, status, discovery time, or
+  processed time. A matching `discovered` Receipt/Ledger pair is legitimate
+  durable pending work and remains healthy.
+- Scanner status now consumes locked snapshot data for frozen runs, scan
+  states, dirty markers, quarantines, and conflict identities. Valid metrics
+  and Source Health are filtered to the currently configured canonical Codex
+  bindings. Thus a configuration switch from source A to source B cannot make
+  B ready, degraded, dirty, or scanned based on A's durable state. Malformed
+  artifacts that cannot be safely attributed still fail closed globally.
+- Corruption uses the fixed public code `scanner_corrupt`; probe exits nonzero,
+  writes exactly one JSON object to stdout, keeps stderr controlled, and never
+  exposes a path, source content, filename, or raw exception.
+- The existing wheel isolation test now imports `capture_cli` from the
+  installed target, resolves the installed `agc-capture` console entry point
+  through wheel metadata, executes it outside the repository, and verifies one
+  accepted JSON object plus installed-module provenance.
+
+Review RED was recorded against `6183cb8` with synthetic roots only:
+
+```text
+12 failed, 4 passed
+```
+
+The failures reproduced Unicode sharp-s collapse, absent Ledger namespace and
+graph validation, the old scanner corruption code, corrupt/missing Ledger
+probe acceptance, and source A metrics leaking into source B. The NFC and
+junction/canonical-alias controls and legitimate discovered graph were already
+green. After the minimum production changes, the same review set passed
+`16 passed`.
+
+Final focused review plus Task 4 Scanner, MCP three-tool, installed-wheel, and
+canonical identity contracts:
+
+```text
+104 passed in 48.43s
+```
+
+A final lock-consistency RED then proved status was performing a second
+Receipt/Ledger accounting read after releasing the snapshot lock (`1 failed`).
+Accounting keys were moved into the same validated snapshot; the status,
+store, read-service, disabled-core, and Scanner regression passed
+`80 passed in 27.91s`.
+
+Final natural-order full repository suite in the repository's Python 3.13
+environment with a fresh short synthetic basetemp:
+
+```text
+644 passed, 1 expected warning in 310.83s
+```
+
+The warning remains the existing duplicate-name ZIP adversarial fixture. An
+earlier full attempt used a Python 3.12 host with Python 3.13 native MCP
+packages and was discarded as an interpreter mismatch; the proper repository
+environment run above is authoritative. No live Codex profile was read or
+scanned during any review test.

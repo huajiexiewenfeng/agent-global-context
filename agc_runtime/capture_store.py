@@ -110,6 +110,11 @@ class CaptureSnapshot:
     tombstones: tuple[CaptureSuppressionTombstone, ...] = ()
     source_quarantines: tuple[SourceQuarantine, ...] = ()
     source_conflict_count: int = 0
+    census_runs: tuple[CensusRun, ...] = ()
+    scan_states: tuple[ScanState, ...] = ()
+    dirty_markers: tuple[DirtyMarker, ...] = ()
+    source_conflict_digests: frozenset[str] = frozenset()
+    accounted_keys: frozenset[CaptureKey] = frozenset()
     diagnostics: tuple[CaptureIntegrityDiagnostic, ...] = ()
     unavailable_ids: frozenset[str] = frozenset()
 
@@ -704,6 +709,7 @@ class CaptureStore:
                         unavailable_ids.add(path.stem)
 
             receipts: list[CaptureReceipt] = []
+            receipts_by_id: dict[str, CaptureReceipt] = {}
             visible: list[CollectedObservation] = []
             referenced_observation_ids: set[str] = set()
             visible_receipt_ids: set[str] = set()
@@ -729,6 +735,7 @@ class CaptureStore:
                 if key_id in receipt_keys:
                     degraded("duplicate_capture_key", "receipt")
                     continue
+                receipts_by_id[receipt.receipt_id] = receipt
                 if receipt.status == "complete":
                     try:
                         ids = manifests[receipt.receipt_id]
@@ -754,6 +761,39 @@ class CaptureStore:
                     visible.extend(bound)
                 receipts.append(receipt)
                 receipt_keys.add(key_id)
+
+            ledgers_by_id: dict[str, LedgerEntry] = {}
+            valid_ledger_receipt_ids: set[str] = set()
+            for path in json_objects(self.capture.ledger, "invalid_ledger", "ledger"):
+                try:
+                    if not _RECEIPT_ID.fullmatch(path.stem):
+                        raise ValueError
+                    entry = LedgerEntry.from_mapping(read_json(path))
+                    if entry.receipt_id != path.stem or entry.receipt_id in ledgers_by_id:
+                        raise ValueError
+                    ledgers_by_id[entry.receipt_id] = entry
+                except (OSError, TypeError, ValueError):
+                    degraded("invalid_ledger", "ledger")
+
+            for receipt_id, receipt in receipts_by_id.items():
+                entry = ledgers_by_id.get(receipt_id)
+                if entry is None:
+                    degraded("missing_ledger", "ledger")
+                    continue
+                expected_processed_at = (
+                    receipt.updated_at if receipt.status == "complete" else None
+                )
+                if (
+                    entry.capture_key != receipt.key
+                    or entry.status != receipt.status
+                    or entry.discovered_at != receipt.discovered_at
+                    or entry.processed_at != expected_processed_at
+                ):
+                    degraded("ledger_receipt_mismatch", "ledger")
+                else:
+                    valid_ledger_receipt_ids.add(receipt_id)
+            for receipt_id in set(ledgers_by_id) - set(receipts_by_id):
+                degraded("orphan_ledger", "ledger")
 
             for receipt_id in set(manifests) - visible_receipt_ids:
                 degraded("orphan_manifest", "manifest")
@@ -830,6 +870,23 @@ class CaptureStore:
                     tombstone_keys.add(key_id)
                     tombstones.append(tombstone)
 
+            accounted_keys = {item.capture_key for item in tombstones}
+            if census:
+                from agc_runtime.capture_ledger import validate_receipt_revision_truth
+
+                for revision in census:
+                    if revision.key in accounted_keys:
+                        continue
+                    receipt_id = receipt_id_for(revision.key)
+                    receipt = receipts_by_id.get(receipt_id)
+                    if receipt is None or receipt_id not in valid_ledger_receipt_ids:
+                        continue
+                    try:
+                        validate_receipt_revision_truth(receipt, revision)
+                    except (TypeError, ValueError):
+                        continue
+                    accounted_keys.add(revision.key)
+
             quarantines: list[SourceQuarantine] = []
             quarantine_keys: set[tuple[str, str]] = set()
             if self.capture.quarantines.exists():
@@ -854,6 +911,7 @@ class CaptureStore:
                     quarantines.append(quarantine)
 
             conflict_count = 0
+            conflict_digests: set[str] = set()
             if self.capture.conflicts.exists():
                 for path in json_objects(self.capture.conflicts, "invalid_source_conflict", "conflict"):
                     try:
@@ -869,6 +927,46 @@ class CaptureStore:
                         degraded("invalid_source_conflict", "conflict")
                         continue
                     conflict_count += 1
+                    conflict_digests.add(path.stem.removeprefix("source-"))
+
+            census_runs: list[CensusRun] = []
+            run_root = self.capture.root / "census-runs"
+            if run_root.exists():
+                try:
+                    for path in sorted(run_root.iterdir()):
+                        if path.name.startswith("."):
+                            continue
+                        census_run, _members = self._read_frozen_run(path)
+                        census_runs.append(census_run)
+                except (OSError, TypeError, ValueError):
+                    degraded("invalid_frozen_census", "census")
+
+            scan_states: list[ScanState] = []
+            scan_state_paths = json_objects(
+                self.capture.scan_state, "invalid_scan_state", "scan_state"
+            )
+            if scan_state_paths:
+                from agc_runtime.capture_source import ScanState
+            for path in scan_state_paths:
+                try:
+                    state = ScanState.from_mapping(read_json(path))
+                    if path.name != f"state-{self._binding_digest(state.binding)}.json":
+                        raise ValueError
+                    scan_states.append(state)
+                except (OSError, TypeError, ValueError):
+                    degraded("invalid_scan_state", "scan_state")
+
+            dirty_markers: list[DirtyMarker] = []
+            dirty_paths = json_objects(
+                self.capture.dirty, "invalid_dirty_marker", "dirty_marker"
+            )
+            if dirty_paths:
+                from agc_runtime.capture_source import DirtyMarker
+            for path in dirty_paths:
+                try:
+                    dirty_markers.append(DirtyMarker.from_mapping(read_json(path)))
+                except (OSError, TypeError, ValueError):
+                    degraded("invalid_dirty_marker", "dirty_marker")
 
             return CaptureSnapshot(
                 receipts=tuple(receipts),
@@ -877,6 +975,11 @@ class CaptureStore:
                 tombstones=tuple(tombstones),
                 source_quarantines=tuple(quarantines),
                 source_conflict_count=conflict_count,
+                census_runs=tuple(census_runs),
+                scan_states=tuple(scan_states),
+                dirty_markers=tuple(dirty_markers),
+                source_conflict_digests=frozenset(conflict_digests),
+                accounted_keys=frozenset(accounted_keys),
                 diagnostics=tuple(diagnostics),
                 unavailable_ids=frozenset(unavailable_ids),
             )

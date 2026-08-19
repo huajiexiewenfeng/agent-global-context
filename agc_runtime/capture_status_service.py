@@ -73,10 +73,9 @@ def _not_assessed_scanner(capture: Any) -> dict[str, Any]:
     }
 
 
-def _scanner_status(paths: MemoryPaths, capture: Any) -> tuple[dict[str, Any], list[str]]:
-    from agc_runtime.capture_source import DirtyMarker, ScanState
-    from agc_runtime.capture_transaction import read_json
-
+def _scanner_status(
+    paths: MemoryPaths, capture: Any, bindings: tuple[Any, ...]
+) -> tuple[dict[str, Any], list[str]]:
     reasons = _scanner_reasons(capture)
     exclusions = {
         "task_id_count": len(capture.exclude.task_ids),
@@ -145,54 +144,56 @@ def _scanner_status(paths: MemoryPaths, capture: Any) -> tuple[dict[str, Any], l
         )
 
     corrupt = bool(snapshot.diagnostics)
-    runs: list[tuple[str, int]] = []
-    run_root = paths.capture.root / "census-runs"
-    if run_root.exists():
-        try:
-            for path in sorted(run_root.iterdir()):
-                if path.name.startswith("."):
-                    continue
-                census, members = store._read_frozen_run(path)
-                runs.append((census.started_at, len(members)))
-        except (OSError, TypeError, ValueError):
-            corrupt = True
+    configured = {
+        (binding.adapter_id, binding.source_root_id) for binding in bindings
+    }
+    runs = [
+        (run.started_at, len(run.revision_keys))
+        for run in snapshot.census_runs
+        if (run.binding.adapter_id, run.binding.source_root_id) in configured
+    ]
     latest = max(runs, default=None, key=lambda item: item[0])
 
-    states: list[ScanState] = []
-    if paths.capture.scan_state.exists():
-        try:
-            for path in sorted(paths.capture.scan_state.iterdir()):
-                if not path.is_file() or not path.name.startswith("state-") or path.suffix != ".json":
-                    raise ValueError("invalid scan state object")
-                states.append(ScanState.from_mapping(read_json(path)))
-        except (OSError, TypeError, ValueError):
-            corrupt = True
-
-    dirty_count = 0
-    if paths.capture.dirty.exists():
-        try:
-            for path in sorted(paths.capture.dirty.iterdir()):
-                if not path.is_file() or path.suffix != ".json":
-                    raise ValueError("invalid dirty marker object")
-                DirtyMarker.from_mapping(read_json(path))
-                dirty_count += 1
-        except (OSError, TypeError, ValueError):
-            corrupt = True
-
-    known = len(snapshot.census)
-    accounted = sum(store.is_revision_accounted(item) for item in snapshot.census)
+    states = [
+        state
+        for state in snapshot.scan_states
+        if (state.binding.adapter_id, state.binding.source_root_id) in configured
+    ]
+    dirty_count = sum(
+        (marker.adapter_id, marker.source_root_id) in configured
+        for marker in snapshot.dirty_markers
+    )
+    census = tuple(
+        revision
+        for revision in snapshot.census
+        if (revision.key.adapter_id, revision.key.source_root_id) in configured
+    )
+    known = len(census)
+    accounted = sum(item.key in snapshot.accounted_keys for item in census)
     pending = known - accounted
+    configured_quarantines = tuple(
+        item
+        for item in snapshot.source_quarantines
+        if (item.adapter_id, item.source_root_id) in configured
+    )
+    configured_conflict = any(
+        hashlib.sha256(
+            f"{adapter_id}\0{source_root_id}".encode("utf-8")
+        ).hexdigest()
+        in snapshot.source_conflict_digests
+        for adapter_id, source_root_id in configured
+    )
     state_absent = not (
         runs
         or states
         or known
         or dirty_count
-        or snapshot.source_quarantines
-        or snapshot.source_conflict_count
+        or configured_quarantines
+        or configured_conflict
     )
     source_health = (
         "degraded"
-        if corrupt or snapshot.source_quarantines or snapshot.source_conflict_count
+        if corrupt or configured_quarantines or configured_conflict
         else ("not_assessed" if state_absent else "healthy")
     )
     assessment = (
@@ -205,13 +206,13 @@ def _scanner_status(paths: MemoryPaths, capture: Any) -> tuple[dict[str, Any], l
         )
     )
     code = {
-        "corrupt": "scanner_state_corrupt",
+        "corrupt": "scanner_corrupt",
         "degraded": "scanner_degraded",
         "ready": "scanner_ready",
         "absent": "scanner_state_absent",
     }[assessment]
     if corrupt:
-        reasons.append("scanner_state_corrupt")
+        reasons.append("scanner_corrupt")
     return (
         {
             "assessment": assessment,
@@ -290,15 +291,27 @@ def capture_status(value: MemoryPaths | Path) -> dict[str, Any]:
         reasons.append("source_roots_unavailable")
     reasons.extend(("extractor_capability_not_assessed", "route_not_assessed"))
     reasons.append("memory_root_binding_not_assessed")
-    scanner, source_ids = (
-        (_not_assessed_scanner(capture), [])
-        if not capture.enabled
-        else _scanner_status(paths, capture)
-    )
+    bindings: tuple[Any, ...] = ()
+    source_ids: list[str] = []
     if capture.enabled:
-        from agc_runtime.capture_source import source_root_id_for
+        from agc_runtime.capture_source import SourceBindingKey, source_root_id_for
 
         source_ids = [source_root_id_for(Path(item)) for item in capture.sources]
+        bindings = tuple(
+            SourceBindingKey.from_mapping(
+                {
+                    "schema_version": 1,
+                    "adapter_id": "codex",
+                    "source_root_id": source_id,
+                }
+            )
+            for source_id in source_ids
+        )
+    scanner = (
+        _not_assessed_scanner(capture)
+        if not capture.enabled
+        else _scanner_status(paths, capture, bindings)[0]
+    )
     return {
         "config_source": {
             "kind": "memory_root_config" if config_exists else "runtime_default",

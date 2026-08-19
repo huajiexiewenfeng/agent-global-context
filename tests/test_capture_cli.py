@@ -226,6 +226,63 @@ for name in ('resolve', 'is_dir', 'iterdir', 'glob', 'rglob'):
     assert after == before
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows junction identity")
+def test_disabled_junction_aliases_remain_inert_but_enabled_activation_deduplicates(
+    tmp_path: Path,
+):
+    memory_root = tmp_path / "memory"
+    physical = tmp_path / "physical"
+    alias = tmp_path / "alias"
+    physical.mkdir()
+    created = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(alias), str(physical)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert created.returncode == 0, created.stdout + created.stderr
+    default = (REPOSITORY_ROOT / "agc_runtime" / "default_config.yaml").read_text(
+        encoding="utf-8"
+    )
+    configured = default.replace(
+        "sources: []",
+        f"sources:\n    - {physical.as_posix()}\n    - {alias.as_posix()}",
+    )
+    memory_root.mkdir()
+    (memory_root / "config.yaml").write_text(configured, encoding="utf-8")
+    script = f"""
+import builtins
+import json
+from pathlib import Path
+blocked = ('agc_runtime.capture_source', 'agc_runtime.capture_scanner', 'agc_runtime.codex_source_adapter')
+real_import = builtins.__import__
+def guarded(name, *args, **kwargs):
+    if any(name == item or name.startswith(item + '.') for item in blocked):
+        raise AssertionError('deferred Capture import')
+    return real_import(name, *args, **kwargs)
+builtins.__import__ = guarded
+from agc_runtime.capture_status_service import capture_status
+print(json.dumps(capture_status(Path({str(memory_root)!r}))))
+"""
+
+    disabled = subprocess.run(
+        [sys.executable, "-c", script], cwd=REPOSITORY_ROOT,
+        text=True, capture_output=True, check=False,
+    )
+    assert disabled.returncode == 0, disabled.stdout + disabled.stderr
+    assert json.loads(disabled.stdout)["source_roots"]["configured_count"] == 2
+
+    (memory_root / "config.yaml").write_text(
+        configured.replace("enabled: false", "enabled: true", 1).replace(
+            "mode: off", "mode: scanner_only", 1
+        ),
+        encoding="utf-8",
+    )
+    enabled = _invoke("probe", "--root", str(memory_root))
+    assert enabled.returncode != 0
+    assert _payload(enabled)["error"]["code"] == "invalid_runtime_config"
+
+
 @pytest.mark.parametrize(
     ("arguments", "code"),
     [
@@ -369,7 +426,7 @@ def test_scan_busy_and_invalid_config_fail_with_fixed_content_safe_codes(tmp_pat
     corrupt_probe = _invoke("probe", "--root", str(memory_root))
     corrupt_probe_payload = _payload(corrupt_probe)
     assert corrupt_probe.returncode != 0
-    assert corrupt_probe_payload["error"]["code"] == "capture_integrity_failed"
+    assert corrupt_probe_payload["error"]["code"] == "scanner_corrupt"
     assert "private" not in corrupt_probe.stdout
 
     (memory_root / "config.yaml").write_text(

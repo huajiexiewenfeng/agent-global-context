@@ -125,6 +125,31 @@ def test_disabled_capture_rejects_lexical_duplicate_sources_without_touching_the
 
 
 @pytest.mark.parametrize(
+    "names",
+    [
+        ("straße", "strasse"),
+        ("caf\u00e9", "cafe\u0301"),
+    ],
+)
+def test_disabled_capture_keeps_distinct_non_ascii_windows_lexical_roots(
+    tmp_path: Path, names: tuple[str, str]
+):
+    paths = initialized_paths(tmp_path)
+    config_file = paths.root / "config.yaml"
+    roots = tuple(tmp_path / name for name in names)
+    configured = config_file.read_text(encoding="utf-8").replace(
+        "sources: []",
+        "sources:\n" + "".join(f"    - {root.as_posix()}\n" for root in roots),
+    )
+    atomic_write_text(config_file, configured)
+
+    loaded = load_runtime_config(paths)
+
+    assert loaded.capture.sources == tuple(root.as_posix() for root in roots)
+    assert all(not root.exists() for root in roots)
+
+
+@pytest.mark.parametrize(
     ("duplicate", "key"),
     [
         ("schema_version: 3\n", "schema_version"),
@@ -304,9 +329,11 @@ def test_built_wheel_contains_default_and_installed_admin_init_works(tmp_path: P
             "-c",
             (
                 "import json; "
+                "import agc_runtime.capture_cli as capture_cli; "
                 "import agc_runtime.capture_source as source; "
                 "import agc_runtime.project_identity as identity; "
-                "print(json.dumps({'source': source.__file__, 'identity': identity.__file__}))"
+                "print(json.dumps({'capture_cli': capture_cli.__file__, "
+                "'source': source.__file__, 'identity': identity.__file__}))"
             ),
         ],
         cwd=tmp_path,
@@ -319,6 +346,36 @@ def test_built_wheel_contains_default_and_installed_admin_init_works(tmp_path: P
     module_paths = json.loads(source_modules.stdout)
     for module_path in module_paths.values():
         assert Path(module_path).resolve().is_relative_to(install_dir.resolve())
+    installed_capture = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import importlib.metadata, sys; "
+                f"root={str(install_dir)!r}; sys.path.insert(0, root); "
+                "dist=next(item for item in importlib.metadata.distributions(path=[root]) "
+                "if item.metadata['Name']=='agent-global-context-runtime'); "
+                "entry=next(item for item in dist.entry_points "
+                "if item.group=='console_scripts' and item.name=='agc-capture'); "
+                f"sys.argv=['agc-capture','probe','--root',{str(memory_root)!r}]; "
+                "raise SystemExit(entry.load()())"
+            ),
+        ],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert installed_capture.returncode == 0, (
+        installed_capture.stdout + installed_capture.stderr
+    )
+    assert installed_capture.stderr == ""
+    assert len(installed_capture.stdout.splitlines()) == 1
+    installed_payload = json.loads(installed_capture.stdout)
+    assert installed_payload["tool"] == "agc.capture"
+    assert installed_payload["action"] == "probe"
+    assert installed_payload["status"] == "accepted"
     repository_artifacts_after = {
         path.relative_to(repository): (path.stat().st_mtime_ns, path.stat().st_size)
         for pattern in ("build/**/*", "dist/**/*", "*.egg-info/**/*")
