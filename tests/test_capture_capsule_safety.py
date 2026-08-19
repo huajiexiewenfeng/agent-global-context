@@ -1587,3 +1587,364 @@ def test_atomicity_rejects_unknown_second_clauses_across_all_separators(
 
     assert gated.accepted == ()
     assert gated.filtered_policy_count == 1
+
+
+@pytest.mark.parametrize(
+    ("configured_label", "surface_label"),
+    (
+        ("Private  Note", "PRIVATE NOTE"),
+        ("Straße", "STRASSE"),
+    ),
+)
+@pytest.mark.parametrize("surface", ("title", "user"))
+def test_sensitive_label_detection_uses_one_unicode_whitespace_canonicalization(
+    configured_label: str,
+    surface_label: str,
+    surface: str,
+):
+    from agc_runtime.capture_capsule import CapsulePolicy, build_capsule
+
+    policy = CapsulePolicy(
+        project_scope="project:stable",
+        sensitive_labels=(configured_label,),
+    )
+
+    def result(secret: str, tail: str):
+        labeled = f"{surface_label} {secret} {tail}"
+        if surface == "title":
+            records = (
+                {
+                    "type": "session_meta",
+                    "payload": {
+                        "id": "rollout-main",
+                        "session_id": "task-main",
+                        "title": f"Capture {labeled}",
+                    },
+                },
+            )
+        else:
+            records = (_record("user", f"I prefer workflows with {labeled}."),)
+        return build_capsule(records, _ref(), policy)
+
+    left = result("CANONICAL_SECRET_ALPHA", "ARBITRARY_ALPHA_TAIL")
+    right = result("CANONICAL_SECRET_BRAVO", "UNRELATED_BRAVO_TAIL")
+
+    assert left.source_fingerprint == right.source_fingerprint
+    assert left.capsule_hash == right.capsule_hash
+    assert left.counts == right.counts
+    assert left.counts.scrubbed_secret_count == 1
+    serialized = repr((left.capsule.to_mapping(), right.capsule.to_mapping()))
+    assert "CANONICAL_SECRET" not in serialized
+    assert "ARBITRARY_ALPHA_TAIL" not in serialized
+    assert "UNRELATED_BRAVO_TAIL" not in serialized
+
+
+@pytest.mark.parametrize(
+    ("configured_label", "surface_label"),
+    (
+        ("Private  Note", "PRIVATE NOTE"),
+        ("Straße", "STRASSE"),
+    ),
+)
+def test_persistence_reuses_capsule_sensitive_label_canonicalization(
+    configured_label: str,
+    surface_label: str,
+):
+    from dataclasses import replace
+
+    from agc_runtime.capture_capsule import CapsulePolicy, build_capsule
+    from agc_runtime.capture_safety import persistence_gate
+
+    clean_evidence = "I prefer deterministic workflows."
+    result = build_capsule(
+        (_record("user", clean_evidence),),
+        _ref(),
+        CapsulePolicy(
+            project_scope="project:stable",
+            sensitive_labels=(configured_label,),
+        ),
+    )
+    adversarial_evidence = f"I prefer {surface_label} workflows."
+    capsule = replace(result.capsule, user_signals=(adversarial_evidence,))
+    gated = persistence_gate(
+        (_draft(f"The user prefers {surface_label} workflows.", adversarial_evidence),),
+        capsule,
+    )
+
+    assert gated.accepted == ()
+    assert gated.filtered_safety_count == 1
+    assert configured_label not in repr(capsule)
+    assert surface_label not in repr(gated)
+
+
+@pytest.mark.parametrize(
+    "body",
+    (
+        "Method: reuse [] as the workflow.",
+        "Method: reuse {} as the workflow.",
+        "Method: reuse [1] as the workflow.",
+        "Method: total += 1.",
+        "Method: @decorator",
+        "Method: lambda value: value",
+        "Method: value | transform",
+        "Method: value < other",
+        "Method: path\\private",
+    ),
+)
+def test_positive_plain_language_grammar_rejects_structural_single_units(body: str):
+    from agc_runtime.capture_capsule import CapsulePolicy, build_capsule
+
+    result = build_capsule(
+        (_record("assistant", body, final=True),),
+        _ref(),
+        CapsulePolicy(project_scope="project:stable"),
+    )
+
+    assert result.capsule.decisions_results == ()
+    assert result.capsule.reusable_methods == ()
+    assert result.capsule.next_steps == ()
+    assert result.counts.dropped_safety_count == 1
+
+
+@pytest.mark.parametrize(
+    "uncertain",
+    (
+        "I remain undecided about whether I prefer Rust.",
+        "I am considering whether I prefer Rust.",
+        "I am trying to determine whether I prefer Rust.",
+        "I wonder after reviewing many alternatives across several projects and discussing every tradeoff with my team whether I prefer Rust.",
+    ),
+)
+def test_positive_user_grammar_rejects_arbitrary_uncertainty_prefixes(uncertain: str):
+    from dataclasses import replace
+
+    from agc_runtime.capture_capsule import CapsulePolicy, build_capsule
+    from agc_runtime.capture_safety import persistence_gate
+
+    result = build_capsule(
+        (_record("user", uncertain),),
+        _ref(),
+        CapsulePolicy(project_scope="project:stable"),
+    )
+    assert result.capsule.user_signals == ()
+
+    capsule = replace(result.capsule, user_signals=(uncertain,))
+    gated = persistence_gate(
+        (_draft("The user prefers Rust.", uncertain),),
+        capsule,
+    )
+    assert gated.accepted == ()
+    assert gated.filtered_policy_count == 1
+
+
+@pytest.mark.parametrize(
+    "arbitrary",
+    (
+        "Yesterday I realized I prefer Rust.",
+        "After the workshop I prefer Rust.",
+    ),
+)
+def test_user_signal_requires_a_declarative_subject_predicate_start(arbitrary: str):
+    from agc_runtime.capture_capsule import CapsulePolicy, build_capsule
+
+    result = build_capsule(
+        (_record("user", arbitrary),),
+        _ref(),
+        CapsulePolicy(project_scope="project:stable"),
+    )
+
+    assert result.capsule.user_signals == ()
+
+
+def test_positive_user_grammar_preserves_supported_declarative_classes():
+    from agc_runtime.capture_capsule import CapsulePolicy, build_capsule
+
+    signals = (
+        "I prefer deterministic workflows.",
+        "My goal is to learn Rust.",
+        "We must keep sensitive data in memory.",
+        "I can reliably run verification.",
+        "We use a reusable workflow.",
+        "I learned to validate packages.",
+        "My research direction prioritizes privacy.",
+    )
+    result = build_capsule(
+        tuple(_record("user", signal) for signal in signals),
+        _ref(),
+        CapsulePolicy(project_scope="project:stable"),
+    )
+
+    assert result.capsule.user_signals == signals
+
+
+@pytest.mark.parametrize(
+    ("evidence", "statement", "predicate"),
+    (
+        (
+            "Result: This workflow can reliably help you run deterministic verification.",
+            "The user can reliably run deterministic verification.",
+            "ability",
+        ),
+        (
+            "Result: Deterministic verification can reliably benefit you.",
+            "The user can reliably perform deterministic verification.",
+            "ability",
+        ),
+        (
+            "Constraint: The workflow requires you to keep data in memory.",
+            "The user requires the workflow to keep data in memory.",
+            "constraint",
+        ),
+    ),
+)
+def test_assistant_object_or_beneficiary_you_is_not_a_grammatical_user_subject(
+    evidence: str,
+    statement: str,
+    predicate: str,
+):
+    from dataclasses import replace
+
+    from agc_runtime.capture_safety import persistence_gate
+
+    result, _base_evidence = _safe_result()
+    capsule = replace(
+        result.capsule,
+        user_signals=(),
+        decisions_results=(evidence,),
+        reusable_methods=(),
+    )
+    gated = persistence_gate(
+        (
+            _draft(
+                statement,
+                evidence,
+                mode="behavior_observed",
+                kind="capability" if predicate == "ability" else "pattern",
+                signal_type=(
+                    "capability_evidence" if predicate == "ability" else "decision_or_constraint"
+                ),
+            ),
+        ),
+        capsule,
+    )
+
+    assert gated.accepted == ()
+    assert gated.filtered_policy_count == 1
+
+
+@pytest.mark.parametrize(
+    ("evidence", "statement", "predicate", "kind", "signal_type"),
+    (
+        (
+            "Result: You can reliably run deterministic verification.",
+            "The user can reliably run deterministic verification.",
+            "ability",
+            "capability",
+            "capability_evidence",
+        ),
+        (
+            "Constraint: The user must keep sensitive data in memory.",
+            "The user must keep sensitive data in memory.",
+            "constraint",
+            "pattern",
+            "decision_or_constraint",
+        ),
+    ),
+)
+def test_assistant_subject_grammar_allows_matching_user_outcomes(
+    evidence: str,
+    statement: str,
+    predicate: str,
+    kind: str,
+    signal_type: str,
+):
+    from dataclasses import replace
+
+    from agc_runtime.capture_safety import persistence_gate
+
+    result, _base_evidence = _safe_result()
+    capsule = replace(
+        result.capsule,
+        user_signals=(),
+        decisions_results=(evidence,),
+        reusable_methods=(),
+    )
+    gated = persistence_gate(
+        (
+            _draft(
+                statement,
+                evidence,
+                mode="behavior_observed",
+                kind=kind,
+                signal_type=signal_type,
+            ),
+        ),
+        capsule,
+    )
+
+    assert len(gated.accepted) == 1
+
+
+@pytest.mark.parametrize(
+    "attribution",
+    (
+        "Alice told me I prefer Rust.",
+        "Per Alice I prefer Rust.",
+        "Alice believes I prefer Rust.",
+        "Alice wrote that I prefer Rust.",
+        "I was told by Alice that I prefer Rust.",
+    ),
+)
+def test_positive_subject_grammar_rejects_third_party_attribution_variants(
+    attribution: str,
+):
+    from dataclasses import replace
+
+    from agc_runtime.capture_capsule import CapsulePolicy, build_capsule
+    from agc_runtime.capture_safety import persistence_gate
+
+    result = build_capsule(
+        (_record("user", attribution),),
+        _ref(),
+        CapsulePolicy(project_scope="project:stable"),
+    )
+    assert result.capsule.user_signals == ()
+
+    capsule = replace(result.capsule, user_signals=(attribution,))
+    gated = persistence_gate(
+        (_draft("The user prefers Rust.", attribution),),
+        capsule,
+    )
+    assert gated.accepted == ()
+    assert gated.filtered_policy_count == 1
+
+
+@pytest.mark.parametrize("separator", (" — ", " – "))
+def test_atomicity_rejects_unicode_dash_multi_fact_separators(separator: str):
+    from dataclasses import replace
+
+    from agc_runtime.capture_safety import persistence_gate
+
+    evidence = f"I prefer Rust{separator}my office is Berlin."
+    statement = f"The user prefers Rust{separator}user's office is Berlin."
+    result, _base_evidence = _safe_result()
+    capsule = replace(result.capsule, user_signals=(evidence,), decisions_results=())
+    gated = persistence_gate((_draft(statement, evidence),), capsule)
+
+    assert gated.accepted == ()
+    assert gated.filtered_policy_count == 1
+
+
+def test_atomic_statement_grammar_rejects_a_second_subject_without_punctuation():
+    from dataclasses import replace
+
+    from agc_runtime.capture_safety import persistence_gate
+
+    evidence = "I prefer Rust My office is Berlin."
+    statement = "The user prefers Rust The user's office is Berlin."
+    result, _base_evidence = _safe_result()
+    capsule = replace(result.capsule, user_signals=(evidence,), decisions_results=())
+    gated = persistence_gate((_draft(statement, evidence),), capsule)
+
+    assert gated.accepted == ()
+    assert gated.filtered_policy_count == 1

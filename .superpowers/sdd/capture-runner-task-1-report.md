@@ -28,9 +28,10 @@ Tests are in `tests/test_capture_capsule_safety.py`.
   field is `repr=False`; only its schema version appears in `repr`. It contains
   the bound Revision identity, completion/project metadata, selected target-turn
   user signals, final decisions/results, reusable methods, next steps, and safe
-  relative high-level locators. Configured sensitive-label text is not carried
-  forward; only domain-separated, non-serialized, comparison-neutral label
-  fingerprints remain in memory for the post-extractor safety gate.
+  relative high-level locators. Configured sensitive labels are canonicalized
+  once with NFC, whitespace collapse, and Unicode casefold, then retained only
+  in a private, non-serialized, `repr=False`, comparison-neutral in-memory field
+  for the post-extractor safety gate.
 - `CapsuleResult` contains no raw records or excerpts. It returns the hidden
   Capsule, distinct versioned `source_fingerprint` and `capsule_hash`, exact
   source schema versions, the deterministic estimate, and content-free
@@ -51,7 +52,11 @@ Tests are in `tests/test_capture_capsule_safety.py`.
   unbalanced fences, repeated serialized mappings, dense method calls, and any
   log-shaped line fail closed for the whole record. Any backtick or tilde
   fence marker, single-line JSON/mapping/array payload, plain/awaited/dotted/
-  bracketed call, or assignment drops the entire text unit.
+  bracketed call, assignment, structural character, decorator, or code keyword
+  drops the entire text unit. User signals require an anchored first-person
+  declarative predicate grammar; assistant signals require an explicit
+  Decision/Result/Constraint/Method/Next prefix and a conservative
+  plain-language body.
 - The known-secret corpus covers JSON/YAML scalar and block assignments, XML
   elements, partial and complete PEM blocks, password and generic token assignments,
   OpenAI/AWS-style environment names, Bearer/Basic authorization, API keys,
@@ -71,11 +76,12 @@ Tests are in `tests/test_capture_capsule_safety.py`.
   substantive lexical units. Declarative user evidence must match the claim's
   durable predicate class and polarity/down-toner class. Assistant result and
   method provenance cannot be recast as preferences, goals, identity, or
-  personality; an assistant-grounded user outcome also requires an explicit
-  `you`/`user` evidence subject. Indirect interrogatives and attribution,
-  reporting, or quoted-claim cues fail closed. Comma, colon, semicolon, slash,
-  newline, or multiple-sentence separators are non-atomic even when a later
-  predicate is unknown.
+  personality; an assistant-grounded user outcome requires the stripped body
+  to begin grammatically with `You` or `The user`, not merely contain user text
+  as an object or beneficiary. Statements require one supported anchored
+  subject/predicate template. Comma, colon, semicolon, slash, newline, en/em
+  dash, conjunction, repeated subject, or multiple sentences are non-atomic
+  even when a later predicate is unknown.
 - Direct DTOs round-trip through the same strict mapping validator. Evidence is
   deduplicated before scoring. Accepted drafts are canonically deduplicated
   within the Revision, ranked first by the specified semantic tier (verified
@@ -228,6 +234,34 @@ Task Capsule and safety file: 108 passed in 0.27s
 Task 1 plus Codex Source Adapter: 123 passed in 0.83s
 ```
 
+### Fourth independent security review RED/GREEN
+
+A fourth **independent reviewer message** against main commit `aac0adb`
+required replacing incremental cue blacklists with a conservative positive
+grammar. It identified sensitive-label canonicalization gaps for repeated
+whitespace and Unicode casefold, empty/small structural payloads and code
+forms, arbitrary uncertainty prefixes, assistant object/beneficiary user
+mentions, additional third-party attribution forms, and Unicode clause
+separators.
+
+Generalized parameterized probes were added first across label, structural,
+uncertainty, subject-position, attribution, and Unicode-separator families.
+The authentic fourth-review RED was:
+
+```text
+30 failed, 5 passed, 108 deselected in 0.74s
+```
+
+The minimal positive-grammar implementation produced `35 passed` for that
+group. Legacy interrogative and durable-cue blacklists were then removed so
+acceptance is determined by explicit user, persisted-statement, assistant
+prefix, and assistant grammatical-subject templates. Final focused evidence:
+
+```text
+Task Capsule and safety file: 143 passed in 0.33s
+Task 1 plus Codex Source Adapter: 158 passed in 0.80s
+```
+
 The managed-root sentinel tripwire initially had one Windows-only test harness
 failure because `Path.write_text` produced CRLF rather than the asserted LF.
 The product made no write. The assertion was corrected to require byte-exact
@@ -239,7 +273,7 @@ Final Source Adapter, Source Contracts, Census, Scanner, and disabled-boundary
 adjacent suite, in its required census-before-adapter import order:
 
 ```text
-46 passed in 19.58s
+46 passed in 20.79s
 ```
 
 A deliberately contaminated reverse order produced only the repository's
@@ -249,7 +283,7 @@ required order passed without a product change.
 Final natural-order complete repository suite:
 
 ```text
-756 passed, 1 expected warning in 305.33s
+791 passed, 1 expected warning in 306.38s
 ```
 
 The warning is the existing intentional duplicate-name ZIP adversarial
@@ -258,7 +292,7 @@ fixture.
 Clean package evidence:
 
 - Existing offline wheel/install plus exact MCP surface nodes: `2 passed in
-  10.98s`; the server exposes only `agc.admin`, `agc.read`, and `agc.write`.
+  11.42s`; the server exposes only `agc.admin`, `agc.read`, and `agc.write`.
 - A fresh `python -m build --wheel --no-isolation` succeeded and explicitly
   packaged `capture_capsule.py`, `capture_safety.py`, and the updated source
   adapter.
