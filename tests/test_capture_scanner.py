@@ -6,11 +6,7 @@ import sys
 
 import pytest
 
-from agc_runtime.capture_contracts import (
-    CaptureSuppressionTombstone,
-    RevisionRef,
-    tombstone_id_for,
-)
+from agc_runtime.capture_contracts import RevisionRef, receipt_id_for
 from agc_runtime.capture_store import CaptureStore
 from agc_runtime.capture_transaction import atomic_write_json
 from agc_runtime.paths import MemoryPaths
@@ -156,20 +152,7 @@ def test_ac_03_synthetic_seven_day_census_has_full_accounting(tmp_path: Path):
     )
     paths = MemoryPaths.from_root(tmp_path / "memory")
     store = CaptureStore(paths, clock=lambda: STARTED)
-    suppressed = revisions[5]
-    tombstone = CaptureSuppressionTombstone.from_mapping(
-        {
-            "schema_version": 1,
-            "tombstone_id": tombstone_id_for(suppressed.key),
-            "capture_key": suppressed.key.to_mapping(),
-            "created_at": "2026-08-13T11:59:58Z",
-            "reason": "user_forget",
-        }
-    )
-    atomic_write_json(
-        paths.capture.tombstones / f"{tombstone.tombstone_id}.json",
-        tombstone.to_mapping(),
-    )
+    excluded = revisions[5]
     earlier = "2026-08-13T11:59:59Z"
     store.freeze_census(
         binding=SourceBindingKey(1, "synthetic", ROOT_ID),
@@ -182,6 +165,7 @@ def test_ac_03_synthetic_seven_day_census_has_full_accounting(tmp_path: Path):
     scanner = CaptureScanner(
         store,
         (SyntheticAdapter(revisions, diagnostics=("unknown_source_shape",)),),
+        excluded_keys=(excluded.key,),
     )
 
     report = scanner.scan(run_started_at=STARTED)
@@ -196,12 +180,15 @@ def test_ac_03_synthetic_seven_day_census_has_full_accounting(tmp_path: Path):
     assert report.source_quarantine_count == 1
     assert {item.status for item in snapshot.receipts} == {
         "discovered",
+        "excluded",
         "quarantined",
     }
-    assert {item.capture_key for item in snapshot.tombstones} == {suppressed.key}
-    assert suppressed.key not in {item.key for item in snapshot.receipts}
+    assert snapshot.tombstones == ()
+    excluded_receipts = [item for item in snapshot.receipts if item.status == "excluded"]
+    assert [item.key for item in excluded_receipts] == [excluded.key]
+    assert excluded_receipts[0].exclusion_reason == "configured_task_exclusion"
     assert not (
-        {"complete", "excluded", "coalesced", "retryable"}
+        {"complete", "coalesced", "retryable"}
         & {item.status for item in snapshot.receipts}
     )
     assert len(snapshot.census) == len(revisions)
@@ -389,7 +376,30 @@ def test_duplicate_configured_source_binding_is_enumerated_once(tmp_path: Path):
     assert report.known_key_count == report.accounted_key_count == 1
 
 
-def test_restart_uses_frozen_census_truth_when_current_discovery_is_empty(
+def test_explicit_exclusion_policy_converges_an_existing_discovered_receipt(
+    tmp_path: Path,
+):
+    paths = MemoryPaths.from_root(tmp_path / "memory")
+    revision = _revision("later-excluded")
+    CaptureScanner(
+        CaptureStore(paths, clock=lambda: STARTED),
+        (SyntheticAdapter((revision,)),),
+    ).scan(run_started_at=STARTED)
+    later = "2026-08-13T12:00:01Z"
+
+    report = CaptureScanner(
+        CaptureStore(paths, clock=lambda: later),
+        (SyntheticAdapter((revision,)),),
+        excluded_keys=(revision.key,),
+    ).scan(run_started_at=later)
+
+    receipt = CaptureStore(paths).read_receipt(receipt_id_for(revision.key))
+    assert report.accounted_key_count == 1
+    assert receipt.status == "excluded"
+    assert receipt.exclusion_reason == "configured_task_exclusion"
+
+
+def test_restart_rebuilds_accounting_from_frozen_truth_when_discovery_is_empty(
     tmp_path: Path,
 ):
     paths = MemoryPaths.from_root(tmp_path / "memory")
@@ -417,24 +427,56 @@ def test_restart_uses_frozen_census_truth_when_current_discovery_is_empty(
         ).scan(run_started_at=STARTED)
 
     empty = SyntheticAdapter(())
-    pending = CaptureScanner(
-        CaptureStore(paths, clock=lambda: STARTED), (empty,)
-    ).scan(run_started_at=STARTED)
-
-    assert pending.known_key_count == 1
-    assert pending.accounted_key_count == 0
-    assert pending.silent_loss_count == pending.pending_key_count == 1
-    assert pending.advanced_hint_count == 0
-    assert pending.acknowledged_marker_count == 0
-    assert marker_path.exists()
-
+    later = "2026-08-13T12:00:01Z"
     recovered = CaptureScanner(
-        CaptureStore(paths, clock=lambda: STARTED),
-        (SyntheticAdapter((revision,)),),
-    ).scan(run_started_at=STARTED)
+        CaptureStore(paths, clock=lambda: later), (empty,)
+    ).scan(run_started_at=later)
+
+    receipt_id = receipt_id_for(revision.key)
+    assert recovered.known_key_count == recovered.accounted_key_count == 1
     assert recovered.accounted_key_count == 1
     assert recovered.silent_loss_count == recovered.pending_key_count == 0
     assert recovered.advanced_hint_count == recovered.acknowledged_marker_count == 1
+    assert not marker_path.exists()
+    assert (paths.capture.receipts / f"{receipt_id}.json").is_file()
+    assert (paths.capture.ledger / f"{receipt_id}.json").is_file()
+
+
+def test_legacy_census_truth_gates_progress_and_recovers_after_pre_receipt_crash(
+    tmp_path: Path,
+):
+    paths = MemoryPaths.from_root(tmp_path / "memory")
+    revision = _revision("legacy-pre-receipt")
+    atomic_write_json(
+        paths.capture.census / f"{receipt_id_for(revision.key)}.json",
+        revision.to_mapping(),
+    )
+
+    with pytest.raises(RuntimeError, match="injected crash"):
+        CaptureScanner(
+            CaptureStore(
+                paths, crash_at="before:census:receipt", clock=lambda: STARTED
+            ),
+            (SyntheticAdapter(()),),
+        ).scan(run_started_at=STARTED)
+
+    binding = SourceBindingKey(1, "synthetic", ROOT_ID)
+    interrupted = CaptureStore(paths).load_scan_state(
+        binding=binding, lookback_started_at="2026-08-06T12:00:00Z"
+    )
+    receipt_id = receipt_id_for(revision.key)
+    assert interrupted.hint is None
+    assert not (paths.capture.receipts / f"{receipt_id}.json").exists()
+
+    report = CaptureScanner(
+        CaptureStore(paths, clock=lambda: STARTED), (SyntheticAdapter(()),)
+    ).scan(run_started_at=STARTED)
+
+    assert report.known_key_count == report.accounted_key_count == 1
+    assert report.silent_loss_count == report.pending_key_count == 0
+    assert report.created_receipt_count == report.advanced_hint_count == 1
+    assert (paths.capture.receipts / f"{receipt_id}.json").is_file()
+    assert (paths.capture.ledger / f"{receipt_id}.json").is_file()
 
 
 def test_dirty_marker_forces_hintless_discovery_and_blocks_progress_until_accounted(
@@ -475,9 +517,11 @@ def test_dirty_marker_forces_hintless_discovery_and_blocks_progress_until_accoun
     pending = CaptureScanner(store, (empty,)).scan(run_started_at=STARTED)
 
     assert empty.received_hints == [None]
-    assert pending.known_key_count == pending.pending_key_count == 1
-    assert pending.silent_loss_count == 1
+    assert pending.known_key_count == pending.accounted_key_count == 0
+    assert pending.silent_loss_count == pending.pending_key_count == 0
     assert pending.advanced_hint_count == pending.acknowledged_marker_count == 0
+    assert pending.source_health == "degraded"
+    assert pending.source_quarantine_count >= 1
     assert marker_path.exists()
 
     available = SyntheticAdapter((revision,))

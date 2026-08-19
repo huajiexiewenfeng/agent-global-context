@@ -5,6 +5,7 @@ import io
 import hashlib
 import os
 import subprocess
+import sys
 import threading
 import zipfile
 from dataclasses import replace
@@ -15,7 +16,7 @@ import pytest
 
 from agc_runtime import admin_service, managed_backup
 from agc_runtime.admin_service import dispatch_admin
-from agc_runtime.capture_contracts import CaptureKey, CaptureReceipt, CollectedObservation, TokenUsage, observation_fingerprint_for, observation_id_for, receipt_id_for
+from agc_runtime.capture_contracts import CaptureKey, CaptureReceipt, CollectedObservation, RevisionRef, TokenUsage, observation_fingerprint_for, observation_id_for, receipt_id_for
 from agc_runtime.capture_store import CaptureStore
 from agc_runtime.locking import capture_write_lock
 from agc_runtime.paths import MemoryPaths
@@ -24,6 +25,23 @@ from agc_runtime.write_service import dispatch_write
 
 UTC = "2026-08-13T12:00:00Z"
 ROOT_ID = "1" * 64
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _unload_deferred_capture_source_module():
+    yield
+    sys.modules.pop("agc_runtime.capture_source", None)
+
+
+def _freeze_census(store: CaptureStore, revisions: tuple[RevisionRef, ...]):
+    from agc_runtime.capture_source import SourceBindingKey, TimeWindow
+
+    return store.freeze_census(
+        binding=SourceBindingKey(1, "synthetic_adapter", ROOT_ID),
+        window=TimeWindow(1, "2026-08-06T12:00:00Z", UTC),
+        started_at=UTC,
+        revisions=revisions,
+    )
 
 
 def _key() -> CaptureKey:
@@ -45,6 +63,21 @@ def _receipt() -> CaptureReceipt:
         "redacted_by_forget": False, "forgotten_observation_count": 0, "zero_reason": None,
         "sanitized_error": None, "coalesced_to": None, "exclusion_reason": None,
     })
+
+
+def _revision() -> RevisionRef:
+    return RevisionRef.from_mapping(
+        {
+            "schema_version": 1,
+            "capture_key": _key().to_mapping(),
+            "rollout_anchor_id": "rollout-task-5",
+            "completed_at": UTC,
+            "locator": "sessions/task-5.jsonl",
+            "identity_quality": "session_id",
+            "adapter_version": "1",
+            "source_schema_version": "1",
+        }
+    )
 
 
 def _observation(statement: str) -> CollectedObservation:
@@ -85,6 +118,21 @@ def _populated(tmp_path: Path) -> tuple[MemoryPaths, CaptureStore, CollectedObse
 
 def test_capture_backup_round_trip_is_allowlisted_and_keeps_recall_isolated(tmp_path: Path):
     paths, store, observation = _populated(tmp_path)
+    revision = _revision()
+    census = _freeze_census(store, (revision,))
+    legacy = replace(
+        revision,
+        key=CaptureKey(
+            "synthetic_adapter", ROOT_ID, "task-legacy", "revision-legacy"
+        ),
+        rollout_anchor_id="rollout-legacy",
+        locator="sessions/legacy.jsonl",
+    )
+    legacy_path = paths.capture.census / f"{receipt_id_for(legacy.key)}.json"
+    legacy_path.parent.mkdir(parents=True, exist_ok=True)
+    legacy_path.write_text(
+        json.dumps(legacy.to_mapping(), sort_keys=True) + "\n", encoding="utf-8"
+    )
     (paths.capture.dirty / "raw-task.json").write_text("secret transcript", encoding="utf-8")
     (paths.capture.journals / "active.json").write_text("{}", encoding="utf-8")
     (paths.capture.leases / "lease.json").write_text("{}", encoding="utf-8")
@@ -97,6 +145,16 @@ def test_capture_backup_round_trip_is_allowlisted_and_keeps_recall_isolated(tmp_
     with zipfile.ZipFile(backup.data["backup_path"]) as archive:
         names = set(archive.namelist())
     assert f".runtime/capture/observations/{observation.observation_id}.json" in names
+    assert backup.data["manifest"]["capabilities"] == [
+        "capture-backup-v1",
+        "capture-census-runs-v1",
+    ]
+    run_prefix = f".runtime/capture/census-runs/{census.census_id}"
+    assert f"{run_prefix}/run.json" in names
+    assert f"{run_prefix}/members/{receipt_id_for(revision.key)}.json" in names
+    assert (
+        f".runtime/capture/census/{receipt_id_for(legacy.key)}.json" in names
+    )
     assert ".runtime/capture/dirty/raw-task.json" not in names
     assert ".runtime/capture/journals/active.json" not in names
     assert ".runtime/capture/leases/lease.json" not in names
@@ -105,10 +163,144 @@ def test_capture_backup_round_trip_is_allowlisted_and_keeps_recall_isolated(tmp_
     assert ".runtime/cache/cached.json" not in names
 
     paths.capture.observations.joinpath(f"{observation.observation_id}.json").unlink()
+    (paths.capture.root / "census-runs" / census.census_id / "run.json").write_text(
+        "{}\n", encoding="utf-8"
+    )
+    legacy_path.write_text("{}\n", encoding="utf-8")
     restored = dispatch_admin(paths, {"action": "restore", "backup_path": backup.data["backup_path"]})
     assert restored.status == "accepted"
     assert [item.observation_id for item in store.iter_visible_observations()] == [observation.observation_id]
+    assert set(store.frozen_revisions()) == {revision, legacy}
     assert not list(paths.memories.rglob("*.md"))
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    [
+        "missing_member",
+        "bad_member_name",
+        "unknown_run_schema",
+        "orphan_member",
+        "wrong_window",
+        "noncanonical_run_id",
+    ],
+)
+def test_restore_rejects_invalid_frozen_census_graph_before_mutation(
+    tmp_path: Path, corruption: str
+):
+    paths, store, _observation_value = _populated(tmp_path)
+    revision = _revision()
+    census = _freeze_census(store, (revision,))
+    valid = Path(dispatch_admin(paths, {"action": "backup"}).data["backup_path"])
+    with zipfile.ZipFile(valid) as archive:
+        entries = [
+            (name, archive.read(name))
+            for name in archive.namelist()
+            if name != "manifest.json"
+        ]
+    prefix = f".runtime/capture/census-runs/{census.census_id}"
+    member_name = f"{prefix}/members/{receipt_id_for(revision.key)}.json"
+    if corruption == "missing_member":
+        entries = [(name, data) for name, data in entries if name != member_name]
+    elif corruption == "bad_member_name":
+        entries = [
+            (f"{prefix}/members/not-a-receipt.json" if name == member_name else name, data)
+            for name, data in entries
+        ]
+    elif corruption == "unknown_run_schema":
+        run_name = f"{prefix}/run.json"
+        entries = [
+            (
+                name,
+                json.dumps(
+                    {**json.loads(data), "schema_version": 999}, sort_keys=True
+                ).encode("utf-8")
+                if name == run_name
+                else data,
+            )
+            for name, data in entries
+        ]
+    elif corruption == "orphan_member":
+        entries.append(
+            (
+                ".runtime/capture/census-runs/census-orphan/members/"
+                f"{receipt_id_for(revision.key)}.json",
+                json.dumps(revision.to_mapping(), sort_keys=True).encode("utf-8"),
+            )
+        )
+    elif corruption == "wrong_window":
+        run_name = f"{prefix}/run.json"
+        entries = [
+            (
+                name,
+                json.dumps(
+                    {
+                        **json.loads(data),
+                        "window": {
+                            "schema_version": 1,
+                            "start_at": "2026-08-06T12:00:01Z",
+                            "end_at": UTC,
+                        },
+                    },
+                    sort_keys=True,
+                ).encode("utf-8")
+                if name == run_name
+                else data,
+            )
+            for name, data in entries
+        ]
+    else:
+        replacement_id = "census-" + "f" * 32
+        replacement_prefix = f".runtime/capture/census-runs/{replacement_id}"
+        entries = [
+            (
+                name.replace(prefix, replacement_prefix),
+                json.dumps(
+                    {**json.loads(data), "census_id": replacement_id}, sort_keys=True
+                ).encode("utf-8")
+                if name == f"{prefix}/run.json"
+                else data,
+            )
+            for name, data in entries
+        ]
+    malicious = tmp_path / f"invalid-frozen-{corruption}.zip"
+    _write_archive(malicious, entries)
+    marker = paths.root / "pre-restore-marker.txt"
+    marker.write_bytes(b"unchanged")
+
+    response = dispatch_admin(
+        paths, {"action": "restore", "backup_path": str(malicious)}
+    )
+
+    assert response.status == "failed"
+    assert response.error["code"] == "backup_verification_failed"
+    assert marker.read_bytes() == b"unchanged"
+
+
+def test_restore_requires_frozen_census_capability_before_mutation(tmp_path: Path):
+    paths, store, _observation_value = _populated(tmp_path)
+    _freeze_census(store, (_revision(),))
+    valid = Path(dispatch_admin(paths, {"action": "backup"}).data["backup_path"])
+    with zipfile.ZipFile(valid) as archive:
+        entries = [
+            (name, archive.read(name))
+            for name in archive.namelist()
+            if name != "manifest.json"
+        ]
+    manifest_value = managed_backup.manifest(entries)
+    manifest_value["capabilities"] = ["capture-backup-v1"]
+    malicious = tmp_path / "missing-census-runs-capability.zip"
+    _write_archive(malicious, entries, manifest_value=manifest_value)
+    marker = paths.root / "pre-restore-marker.txt"
+    marker.write_bytes(b"unchanged")
+
+    response = dispatch_admin(
+        paths, {"action": "restore", "backup_path": str(malicious)}
+    )
+
+    assert response.status == "failed"
+    assert response.error["code"] == "backup_verification_failed"
+    assert marker.read_bytes() == b"unchanged"
 
 
 def test_restore_rejects_unknown_capture_versions_before_mutation(tmp_path: Path):

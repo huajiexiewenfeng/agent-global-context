@@ -336,12 +336,22 @@ class CaptureStore:
     def frozen_revision_records(
         self, *, binding: SourceBindingKey | None = None
     ) -> tuple[RevisionRef, ...]:
-        """Return every immutable run member without coalescing conflicts."""
+        """Return legacy and immutable-run truth without coalescing conflicts."""
 
+        revisions: list[RevisionRef] = []
+        if self.capture.census.exists():
+            for path in sorted(self.capture.census.iterdir()):
+                if not path.is_file() or path.suffix != ".json":
+                    raise ValueError("invalid legacy Census entry")
+                revision = RevisionRef.from_mapping(read_json(path))
+                if binding is None or (
+                    revision.key.adapter_id == binding.adapter_id
+                    and revision.key.source_root_id == binding.source_root_id
+                ):
+                    revisions.append(revision)
         root = self.capture.root / "census-runs"
         if not root.exists():
-            return ()
-        revisions: list[RevisionRef] = []
+            return tuple(revisions)
         for path in sorted(root.iterdir()):
             if path.name.startswith("."):
                 continue
@@ -877,10 +887,21 @@ class CaptureStore:
     def reconcile_discovery(self, batch: DiscoveryBatch) -> ReconcileResult:
         return self.register_extraction(batch.receipt)
 
+    def register_census_receipt(self, receipt: CaptureReceipt) -> ReconcileResult:
+        """Register a metadata-only discovered or explicitly excluded Receipt."""
+
+        receipt.to_mapping()
+        if receipt.status not in {"discovered", "excluded"}:
+            raise ValueError("census receipt must be discovered or excluded")
+        return self._register_receipt(receipt)
+
     def register_extraction(self, receipt: CaptureReceipt) -> ReconcileResult:
         receipt.to_mapping()
         if receipt.status not in {"discovered", "queued", "extracting"}:
             raise ValueError("discovery receipt must be non-terminal")
+        return self._register_receipt(receipt)
+
+    def _register_receipt(self, receipt: CaptureReceipt) -> ReconcileResult:
         with capture_write_lock(self.paths):
             self._ensure_layout_locked()
             tombstone_path = self._path(
@@ -902,6 +923,19 @@ class CaptureStore:
                 self._write_ledger(receipt, status=receipt.status, processed_at=None)
                 return ReconcileResult(receipt.status, True, receipt.receipt_id)
             current = self._read_receipt(receipt.receipt_id)
+            if receipt.status == "excluded" and current.status != "excluded":
+                validate_capture_transition(current.status, "excluded")
+                excluded = replace(
+                    current,
+                    status="excluded",
+                    updated_at=receipt.updated_at,
+                    next_retry_at=None,
+                    sanitized_error=None,
+                    exclusion_reason=receipt.exclusion_reason,
+                )
+                self._write_receipt(excluded)
+                self._write_ledger(excluded, status="excluded", processed_at=None)
+                return ReconcileResult("excluded", False, excluded.receipt_id)
             if current.source_hash_schema_version != receipt.source_hash_schema_version:
                 return ReconcileResult(current.status, False, current.receipt_id)
             if current.source_fingerprint == receipt.source_fingerprint:

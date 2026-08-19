@@ -13,23 +13,29 @@ import re
 import stat
 import tempfile
 import zipfile
+from datetime import datetime, timedelta
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from agc_runtime.capture_contracts import (
     CAPTURE_SCHEMA_VERSION, CaptureReceipt, CaptureSuppressionTombstone,
     CollectedObservation, LedgerEntry, RevisionRef, SourceQuarantine,
+    receipt_id_for,
 )
 from agc_runtime.capture_transaction import read_json
 from agc_runtime.paths import MemoryPaths
 
+if TYPE_CHECKING:
+    from agc_runtime.capture_source import CensusRun
+
 
 ARCHIVE_SCHEMA_VERSION = 2
 CAPTURE_BACKUP_CAPABILITY = "capture-backup-v1"
+CAPTURE_CENSUS_RUNS_CAPABILITY = "capture-census-runs-v1"
 _CAPTURE_ROOT = ".runtime/capture"
 _CAPTURE_PREFIX = f"{_CAPTURE_ROOT}/"
 _CAPTURE_ALLOWLIST = frozenset({
-    "schema-version", "receipts", "observations", "ledger", "census",
+    "schema-version", "receipts", "observations", "ledger", "census", "census-runs",
     "tombstones", "quarantines", "conflicts", "indexes",
 })
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -37,6 +43,7 @@ _RECEIPT_ID = re.compile(r"^cr_[0-9a-f]{64}$")
 _OBSERVATION_ID = re.compile(r"^co_[0-9a-f]{64}$")
 _TOMBSTONE_ID = re.compile(r"^ct_[0-9a-f]{64}$")
 _CENSUS_NAME = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
+_CENSUS_RUN_ID = re.compile(r"^census-[0-9a-f]{32}$")
 _CONFLICT_NAME = re.compile(r"^source-[0-9a-f]{64}$")
 _DIAGNOSTIC_NAME = re.compile(r"^[A-Za-z0-9._-]{1,160}$")
 _MAX_ARCHIVE_FILES = 4096
@@ -168,9 +175,15 @@ def manifest(files: list[tuple[str, bytes]]) -> dict[str, Any]:
         "files": [{"path": name, "sha256": hashlib.sha256(data).hexdigest(), "size": len(data)} for name, data in files],
     }
     if capture_present:
+        capabilities = [CAPTURE_BACKUP_CAPABILITY]
+        if any(
+            name.startswith(".runtime/capture/census-runs/")
+            for name, _data in files
+        ):
+            capabilities.append(CAPTURE_CENSUS_RUNS_CAPABILITY)
         value.update({
             "capture_schema_version": CAPTURE_SCHEMA_VERSION,
-            "capabilities": [CAPTURE_BACKUP_CAPABILITY],
+            "capabilities": capabilities,
         })
     return value
 
@@ -222,6 +235,22 @@ def _json(entries: dict[str, bytes], name: str) -> dict[str, Any]:
     return value
 
 
+def _canonical_census_id(census: CensusRun) -> str:
+    digest = hashlib.sha256(
+        json.dumps(
+            {
+                "binding": census.binding.to_mapping(),
+                "started_at": census.started_at,
+                "window": census.window.to_mapping(),
+            },
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("ascii")
+    ).hexdigest()[:32]
+    return f"census-{digest}"
+
+
 def _validate_capture_entries(entries: dict[str, bytes], value: dict[str, Any]) -> None:
     names = [
         name for name in entries
@@ -232,7 +261,10 @@ def _validate_capture_entries(entries: dict[str, bytes], value: dict[str, Any]) 
     if value.get("capture_schema_version") != CAPTURE_SCHEMA_VERSION:
         raise ValueError("unsupported Capture archive schema")
     capabilities = value.get("capabilities")
-    if not isinstance(capabilities, list) or capabilities != [CAPTURE_BACKUP_CAPABILITY]:
+    expected_capabilities = [CAPTURE_BACKUP_CAPABILITY]
+    if any(name.startswith(".runtime/capture/census-runs/") for name in names):
+        expected_capabilities.append(CAPTURE_CENSUS_RUNS_CAPABILITY)
+    if not isinstance(capabilities, list) or capabilities != expected_capabilities:
         raise ValueError("unsupported Capture archive capabilities")
     schema_name = ".runtime/capture/schema-version"
     if entries.get(schema_name) != f"{CAPTURE_SCHEMA_VERSION}\n".encode("utf-8"):
@@ -245,13 +277,47 @@ def _validate_capture_entries(entries: dict[str, bytes], value: dict[str, Any]) 
     ledgers: dict[str, LedgerEntry] = {}
     manifests: dict[str, tuple[str, ...]] = {}
     census_keys: set[tuple[str, str, str, str]] = set()
+    census_runs: dict[str, Any] = {}
+    census_members: dict[str, dict[str, RevisionRef]] = {}
     for name in names:
         parts = PurePosixPath(name).parts
         if name == ".runtime/capture/schema-version":
             continue
-        if len(parts) != 4 or parts[:2] != (".runtime", "capture") or not name.endswith(".json"):
+        if parts[:2] != (".runtime", "capture") or not name.endswith(".json"):
             raise ValueError("invalid Capture archive path")
         namespace = parts[2]
+        if namespace == "census-runs":
+            from agc_runtime.capture_source import CensusRun
+
+            if len(parts) not in {5, 6}:
+                raise ValueError("invalid frozen Census archive path")
+            run_id = parts[3]
+            if not _CENSUS_RUN_ID.fullmatch(run_id):
+                raise ValueError("invalid frozen Census run name")
+            if len(parts) == 5:
+                if parts[4] != "run.json":
+                    raise ValueError("invalid frozen Census run path")
+                census = CensusRun.from_mapping(_json(entries, name))
+                if census.census_id != run_id or run_id in census_runs:
+                    raise ValueError("frozen Census run binding is invalid")
+                census_runs[run_id] = census
+                census_members.setdefault(run_id, {})
+            else:
+                if parts[4] != "members":
+                    raise ValueError("invalid frozen Census member path")
+                object_id = parts[5][:-5]
+                if not _RECEIPT_ID.fullmatch(object_id):
+                    raise ValueError("invalid frozen Census member filename")
+                revision = RevisionRef.from_mapping(_json(entries, name))
+                if receipt_id_for(revision.key) != object_id:
+                    raise ValueError("frozen Census member filename binding is invalid")
+                members = census_members.setdefault(run_id, {})
+                if object_id in members:
+                    raise ValueError("duplicate frozen Census member")
+                members[object_id] = revision
+            continue
+        if len(parts) != 4:
+            raise ValueError("invalid Capture archive path")
         object_id = parts[3][:-5]
         payload = _json(entries, name)
         if namespace == "receipts":
@@ -309,6 +375,39 @@ def _validate_capture_entries(entries: dict[str, bytes], value: dict[str, Any]) 
             manifests[object_id] = tuple(ids)
         else:
             raise ValueError("unsupported Capture archive path")
+    if set(census_runs) != set(census_members):
+        raise ValueError("orphan frozen Census run or member")
+    for run_id, census in census_runs.items():
+        run_start = datetime.fromisoformat(census.started_at[:-1] + "+00:00")
+        window_start = datetime.fromisoformat(
+            census.window.start_at[:-1] + "+00:00"
+        )
+        window_end = datetime.fromisoformat(census.window.end_at[:-1] + "+00:00")
+        if (
+            window_end != run_start
+            or window_start != run_start - timedelta(days=7)
+            or _canonical_census_id(census) != run_id
+        ):
+            raise ValueError("frozen Census run identity or window is invalid")
+        members = tuple(
+            sorted(
+                census_members[run_id].values(),
+                key=lambda item: (
+                    item.key.adapter_id,
+                    item.key.source_root_id,
+                    item.key.task_id,
+                    item.key.revision_id,
+                ),
+            )
+        )
+        if tuple(item.key for item in members) != census.revision_keys:
+            raise ValueError("frozen Census membership does not match run")
+        if any(
+            item.key.adapter_id != census.binding.adapter_id
+            or item.key.source_root_id != census.binding.source_root_id
+            for item in members
+        ):
+            raise ValueError("frozen Census member binding does not match run")
     receipt_keys: set[tuple[str, str, str, str]] = set()
     referenced: set[str] = set()
     for receipt_id, receipt in receipts.items():

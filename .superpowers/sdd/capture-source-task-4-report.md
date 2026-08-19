@@ -21,11 +21,13 @@ Production files:
 - `agc_runtime/capture_ledger.py`
 - `agc_runtime/capture_scanner.py`
 - `agc_runtime/capture_store.py`
+- `agc_runtime/managed_backup.py`
 
 Tests:
 
 - `tests/test_capture_ledger.py`
 - `tests/test_capture_scanner.py`
+- `tests/test_capture_backup_restore.py`
 
 `agc_runtime/capture_transaction.py` now also provides atomic immutable JSON
 directory installation so a Census run and all of its membership become
@@ -75,6 +77,24 @@ Review-fix RED E strengthened the exact AC-03/AC-06 nodes. Result:
 minimal binding-level fail-closed change, the exact nodes were
 `2 passed in 4.18s`.
 
+Second re-review RED was recorded independently for every finding:
+
+- legacy upgrade: the expected pre-Receipt crash did not fire because legacy
+  `.runtime/capture/census/*.json` truth was absent from Scanner accounting;
+- frozen convergence: restart with empty discovery reported known `1`,
+  accounted `0` instead of rebuilding the missing Receipt/Ledger;
+- dirty marker: a stale marker incorrectly made the Census denominator `1` and
+  left Source Health healthy;
+- exclusion: `CaptureScanner(..., excluded_keys=...)` did not exist;
+- managed backup: the roundtrip lacked the Census-run capability and hierarchy,
+  while three malformed run-graph cases were accepted;
+- strict run invariants: wrong seven-day windows and noncanonical run IDs were
+  accepted by restore validation.
+
+The corresponding targeted GREEN runs were Scanner groups `5 passed`, frozen
+backup graph/roundtrip `7 passed`, and the legacy-preserving roundtrip
+`1 passed`.
+
 ## Contract Evidence
 
 - The Scanner computes and freezes `[run_started_at - 7 days, run_started_at]`.
@@ -82,10 +102,13 @@ minimal binding-level fail-closed change, the exact nodes were
   Receipt accounting. Same-run exact replay permits active/archive locator
   movement, while different membership conflicts and cannot overwrite the
   immutable run.
-- Durable frozen Revision records are unioned with current discovery. A restart
-  after Census publication but before Receipt creation reports pending/silent
-  loss even when current discovery is empty; it neither advances a hint nor
-  acknowledges the marker.
+- Durable truth is the union of legacy `.runtime/capture/census/*.json`, every
+  immutable Census-run member, and current discovery. Legacy files remain
+  authoritative during the managed upgrade rather than being silently dropped.
+- A restart after durable Census publication but before Receipt creation
+  rebuilds the missing discovered Receipt/Ledger even when current discovery is
+  empty. Only after that durable convergence may its hint advance and an
+  overlapping marker be acknowledged.
 - Changed correctness metadata is quarantined and fails closed.
 - Distinct roots remain distinct; duplicate configuration of the same binding
   is enumerated once.
@@ -95,10 +118,19 @@ minimal binding-level fail-closed change, the exact nodes were
   progress can advance.
 - Scan state is strict, binding-specific, atomically published, and guarded by
   an expected `state_version` with deterministic `scan_state_conflict`.
-- Strict, binding/version-matched dirty markers force hintless discovery and
-  remain pending until Receipt/Ledger durability. Invalid or unconfigured
-  markers remain unacknowledged, stay outside the known-key denominator, and
-  persist content-free Source Quarantine.
+- Strict, binding/version-matched dirty markers are hints only: they force
+  hintless discovery but never enter the completed-Census denominator without a
+  real `RevisionRef`. A stale marker remains pending, blocks progress, and
+  persists content-free degraded health until discovery or durable Census truth
+  resolves it.
+- Explicit `excluded_keys` policy creates or converges a metadata-only
+  `excluded` Receipt/Ledger with `configured_task_exclusion`; user-forget
+  tombstones are not used as an exclusion substitute.
+- Managed backup allowlists the complete `census-runs/<id>/run.json` and
+  `members/*.json` hierarchy, validates canonical run ID/window, schema,
+  membership, binding, filename, and graph references, and restores both legacy
+  and immutable Census truth. The `capture-census-runs-v1` manifest capability
+  fences older or unaware runtimes.
 - Durable Source Quarantines continue to degrade health after the transient
   adapter diagnostic disappears. Diagnostics also block hint advancement for
   the affected run.
@@ -114,12 +146,12 @@ tests/test_capture_scanner.py::test_ac_06_reconciliation_recovers_missed_duplica
 ```
 
 AC-03 synthetic result: 7 known keys, 7 accounted keys, 0 silent loss,
-1 quarantined Receipt, 5 discovered Receipts, 1 authorized suppression
-tombstone, and durable degraded Source Health. At this census-only boundary,
-zero/8/>8/continued and policy-exclusion-like shapes remain truthfully
-`discovered`: observation count, exclusion, retryability, and coalescing require
-later extractor/policy or fingerprint semantics. The test explicitly proves no
-false `complete`, `excluded`, `retryable`, or `coalesced` claim.
+1 quarantined Receipt, 1 explicit excluded Receipt, 5 discovered Receipts, and
+durable degraded Source Health. At this census-only boundary, zero/8/>8 and
+continued shapes remain truthfully `discovered`: observation count,
+retryability, and coalescing require later extractor or fingerprint semantics.
+The test explicitly proves no false `complete`, `retryable`, or `coalesced`
+claim.
 
 AC-06 performs an injected post-Census/pre-Receipt crash and actual restart,
 late/out-of-order completion, dirty hintless recovery, active/archive replay,
@@ -130,46 +162,49 @@ hint.
 
 ## Verification Evidence
 
-Focused Task 4 plus Capture transaction suite:
+Focused Task 4, Capture transaction, backup, and admin suite:
 
 ```powershell
 & '.\.venv\Scripts\python.exe' -m pytest `
   tests/test_capture_ledger.py tests/test_capture_scanner.py `
-  tests/test_capture_transaction.py -q -p no:cacheprovider `
-  --basetemp 'C:\tmp\agc-capture-source-review-focused-1'
+  tests/test_capture_transaction.py tests/test_capture_backup_restore.py `
+  tests/test_admin_service.py -q -p no:cacheprovider `
+  --basetemp 'C:\tmp\agc-task4-rereview-focused-1'
 ```
 
-Result: `47 passed in 17.04s`.
+Result: `121 passed, 1 expected warning in 57.01s`.
 
 Adjacent Capture Core/source suite:
 
 ```powershell
 & '.\.venv\Scripts\python.exe' -m pytest `
-  tests/test_capture_ledger.py tests/test_capture_scanner.py `
-  tests/test_capture_transaction.py tests/test_capture_store.py `
-  tests/test_capture_read_service.py tests/test_capture_source_contracts.py `
-  tests/test_codex_source_adapter.py tests/test_capture_hook.py `
-  -q -p no:cacheprovider `
-  --basetemp 'C:\tmp\agc-capture-source-review-adjacent-1'
+  tests/test_capture_core_end_to_end.py tests/test_capture_ledger.py `
+  tests/test_capture_scanner.py tests/test_capture_transaction.py `
+  tests/test_capture_store.py tests/test_capture_read_service.py `
+  tests/test_capture_source_contracts.py tests/test_codex_source_adapter.py `
+  tests/test_capture_hook.py tests/test_capture_backup_restore.py `
+  tests/test_capture_contracts.py tests/test_capture_paths.py `
+  tests/test_capture_status.py -q -p no:cacheprovider `
+  --basetemp 'C:\tmp\agc-task4-rereview-adjacent-2'
 ```
 
-Result: `124 passed in 28.40s`.
+Result: `317 passed, 1 expected warning in 70.50s`.
 
 Full repository suite in the repository Python 3.13 venv:
 
 ```powershell
 & '.\.venv\Scripts\python.exe' -m pytest -q -p no:cacheprovider `
-  --basetemp 'C:\tmp\agc-capture-source-review-full-1'
+  --basetemp 'C:\tmp\agc-task4-rereview-full-1'
 ```
 
-Result: `575 passed, 1 warning in 359.25s`. There was no full-suite failure to
+Result: `584 passed, 1 warning in 364.25s`. There was no full-suite failure to
 classify. The warning is the expected duplicate-name ZIP adversarial fixture,
 not a product failure, test-order failure, or environment failure.
 
 A clean copied-source wheel build completed with
 `Successfully built agent_global_context_runtime-0.2.0-py3-none-any.whl`.
 An isolated `python -I` wheel-path import loaded `agc_runtime.capture_ledger`,
-`capture_scanner`, `capture_store`, and `capture_transaction` from that wheel.
+`capture_scanner`, `capture_store`, and `managed_backup` from that wheel.
 
 Final gates also include Python compilation of changed Python files,
 `git diff --check`, and strict UTF-8/no-BOM validation of every changed file.
@@ -186,3 +221,16 @@ fresh standalone disabled-Capture boundary test passed. A later full run exposed
 collection-time test pollution because the new tests imported deferred Scanner
 modules at module import time; the tests now lazy-load and unload those modules.
 The review-fix full venv run above has zero failures.
+
+During second re-review, a mixed boundary/capability run first failed at the
+disabled-Capture test's `sys.modules` precondition because another selected test
+module imported Source contracts during collection. Isolated rerun then exposed
+a separate real product regression: `managed_backup` imported `capture_source`
+unconditionally even for archives without Census runs. The product import was
+scoped to the Census-run branch and the new backup tests now lazy-load/unload
+their Source DTOs. Boundary/capability nodes pass in both module orders. A later
+custom adjacent ordering still placed an existing non-self-cleaning Source
+contract suite before the boundary and produced exactly one precondition
+failure (`316 passed, 1 failed`); this was classified as test-order pollution.
+The corrected adjacent order passed `317`, and the natural full-suite order
+passed all `584` tests.

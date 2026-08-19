@@ -50,7 +50,13 @@ class ScanReport:
 class CaptureScanner:
     """Reconcile only adapters passed explicitly by the caller."""
 
-    def __init__(self, store: CaptureStore, adapters: Iterable[SourceAdapter]) -> None:
+    def __init__(
+        self,
+        store: CaptureStore,
+        adapters: Iterable[SourceAdapter],
+        *,
+        excluded_keys: Iterable[CaptureKey] = (),
+    ) -> None:
         self.store = store
         unique: dict[tuple[str, str], tuple[AdapterDescriptor, SourceAdapter]] = {}
         for adapter in tuple(adapters):
@@ -58,6 +64,9 @@ class CaptureScanner:
             binding = (descriptor.adapter_id, descriptor.source_root_id)
             unique.setdefault(binding, (descriptor, adapter))
         self._adapters = tuple(unique[key] for key in sorted(unique))
+        self._excluded_keys = frozenset(
+            CaptureKey.from_mapping(key.to_mapping()) for key in excluded_keys
+        )
 
     def scan(self, *, run_started_at: str) -> ScanReport:
         started = _utc(run_started_at)
@@ -79,6 +88,7 @@ class CaptureScanner:
         }
         markers = self._dirty_markers(configured=configured, created_at=started_at)
         known: set[CaptureKey] = set()
+        resolved_marker_paths: set[Path] = set()
         created = replay = advanced = 0
 
         for descriptor, adapter in self._adapters:
@@ -160,30 +170,45 @@ class CaptureScanner:
                 binding_failed_closed = True
 
             binding_known = set(by_key)
-            binding_known.update(marker.key for _path, marker in binding_markers)
             known.update(binding_known)
-
-            eligible_revisions = revisions
-            if binding_failed_closed:
-                durable_by_key: dict[CaptureKey, list[RevisionRef]] = {}
-                for revision in durable:
-                    durable_by_key.setdefault(revision.key, []).append(revision)
-                eligible_revisions = tuple(
-                    revision
-                    for revision in revisions
-                    if any(
-                        same_revision_metadata(revision, frozen)
-                        for frozen in durable_by_key.get(revision.key, ())
+            for path, marker in binding_markers:
+                if marker.key in binding_known:
+                    resolved_marker_paths.add(path)
+                else:
+                    self.store.record_source_quarantine(
+                        binding,
+                        created_at=started_at,
+                        code="dirty_revision_unresolved",
                     )
-                )
+                    binding_failed_closed = True
 
-            for revision in eligible_revisions:
+            durable_by_key: dict[CaptureKey, list[RevisionRef]] = {}
+            eligible_by_key: dict[CaptureKey, RevisionRef] = {}
+            for revision in durable:
+                durable_by_key.setdefault(revision.key, []).append(revision)
+                eligible_by_key.setdefault(revision.key, revision)
+            for revision in revisions:
+                if not binding_failed_closed or any(
+                    same_revision_metadata(revision, frozen)
+                    for frozen in durable_by_key.get(revision.key, ())
+                ):
+                    eligible_by_key[revision.key] = revision
+
+            for revision in eligible_by_key.values():
                 if revision.key in conflict_keys:
                     replay += 1
                     continue
                 self.store._point("before:census:receipt")
-                result = self.store.register_extraction(
-                    receipt_for_revision(revision, discovered_at=started_at)
+                excluded = revision.key in self._excluded_keys
+                result = self.store.register_census_receipt(
+                    receipt_for_revision(
+                        revision,
+                        discovered_at=started_at,
+                        status="excluded" if excluded else "discovered",
+                        exclusion_reason=(
+                            "configured_task_exclusion" if excluded else None
+                        ),
+                    )
                 )
                 self.store._point("after:census:receipt")
                 if result.created:
@@ -211,7 +236,7 @@ class CaptureScanner:
 
         acknowledged = 0
         for path, marker in markers:
-            if self.store.is_key_accounted(marker.key):
+            if path in resolved_marker_paths and self.store.is_key_accounted(marker.key):
                 safe_unlink(path)
                 acknowledged += 1
 

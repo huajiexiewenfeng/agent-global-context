@@ -62,6 +62,7 @@ def receipt_for_revision(
     discovered_at: str,
     status: str = "discovered",
     error_code: str | None = None,
+    exclusion_reason: str | None = None,
 ) -> CaptureReceipt:
     """Build the truthful pre-semantic Receipt for a discovered revision."""
 
@@ -69,6 +70,10 @@ def receipt_for_revision(
     error = None
     if status == "quarantined":
         error = SanitizedError("source", error_code or "revision_metadata_conflict", False)
+    if status == "excluded":
+        exclusion_reason = exclusion_reason or "configured_task_exclusion"
+    elif exclusion_reason is not None:
+        raise ValueError("exclusion_reason is valid only for excluded receipts")
     return CaptureReceipt.from_mapping(
         {
             "schema_version": CAPTURE_SCHEMA_VERSION,
@@ -101,7 +106,7 @@ def receipt_for_revision(
             "zero_reason": None,
             "sanitized_error": error.to_mapping() if error else None,
             "coalesced_to": None,
-            "exclusion_reason": None,
+            "exclusion_reason": exclusion_reason,
         }
     )
 
