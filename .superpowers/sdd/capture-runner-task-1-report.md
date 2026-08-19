@@ -39,12 +39,14 @@ Tests are in `tests/test_capture_capsule_safety.py`.
   location into the digest. `capsule_hash` separately hashes the exact canonical
   Capsule supplied to a future extractor.
 - `pre_capsule_gate` normalizes NFC/LF/control/spacing, isolates the target
-  turn, keeps only explicit title/user/final-message classes, selects only the
-  last final assistant message, scrubs known credential patterns before
+  turn, requires explicit trusted main-turn/type/provenance metadata, keeps
+  only high-signal user and semantically classified final-message classes,
+  selects only the last final assistant message, scrubs known credential patterns before
   selection/hashing, removes private absolute paths, and drops reasoning,
   encrypted/tool/attachment/other-turn records plus code, diff, traceback,
   terminal, log, quoted-source, and serialized-payload blocks.
-- The known-secret corpus covers password and generic token assignments,
+- The known-secret corpus covers JSON/YAML scalar and block assignments, XML
+  elements, partial and complete PEM blocks, password and generic token assignments,
   OpenAI/AWS-style environment names, Bearer/Basic authorization, API keys,
   cookies, private keys, database/HTTP user-info connection strings, JWTs, and
   configured secret/sensitive labels. This is a known-pattern pre-scrub, not a
@@ -60,8 +62,11 @@ Tests are in `tests/test_capture_capsule_safety.py`.
   project-scope mismatch, and ungrounded evidence. Evidence must equal a whole
   Capsule signal rather than a substring and cover at least 75% of the claim's
   substantive lexical units.
-- Accepted drafts are canonically deduplicated within the Revision, ranked by
-  assertion/evidence/personal-signal priority and stable locator, and bounded
+- Direct DTOs round-trip through the same strict mapping validator. Evidence is
+  deduplicated before scoring. Accepted drafts are canonically deduplicated
+  within the Revision, ranked first by the specified semantic tier (verified
+  outcomes, constraints, preferences, goals, and methods before research
+  changes), then evidence/priority/assertion mode and stable locator, and bounded
   to eight. The result retains no rejected draft text and returns only safety,
   policy, duplicate, and over-limit counts. It never creates a
   `CollectedObservation`.
@@ -70,7 +75,8 @@ Tests are in `tests/test_capture_capsule_safety.py`.
   checks. Content-free file signatures around both passes also fail closed on
   ordinary source drift. Active/archive loading produces stable hashes for
   identical safe content. Census discovery remains metadata-only and computes
-  no source or Capsule fingerprint.
+  no source or Capsule fingerprint. Interleaved lifecycle events from another
+  turn while the target is active fail closed before any Capsule is returned.
 
 ## TDD evidence
 
@@ -116,6 +122,39 @@ Task Capsule and safety file: 20 passed in 0.17s
 Task 1 plus Codex Source Adapter: 35 passed in 0.61s
 ```
 
+### Independent security review RED/GREEN
+
+The review evidence came from an **independent reviewer message** against main
+commit `53e4532`. It reported one Critical and six Important findings covering
+structured-secret/hash leakage, interleaved-turn provenance, fail-open
+allowlisting, direct-DTO/path validation, grounding/polarity, personal
+relevance/atomicity, and ranking/evidence deduplication.
+
+All adversarial probes were added before the security production changes. The
+authentic security RED was:
+
+```text
+29 failed, 28 passed in 0.61s
+```
+
+Paired-secret cases explicitly require two different JSON/YAML/XML/partial-PEM/
+URL-userinfo values to produce identical `source_fingerprint`, `capsule_hash`,
+and public counts, with neither value retained in Capsule mappings, errors, or
+repr surfaces. The focused security GREEN after the review fixes was:
+
+```text
+57 passed in 0.21s
+```
+
+A final self-review then found that an `agent_inferred` draft could claim a
+higher-tier signal label. A separate authentic RED was `1 failed`; making
+inference unconditionally the lowest semantic tier produced the final GREEN:
+
+```text
+58 passed in 0.26s
+Task 1 plus Codex Source Adapter: 73 passed in 0.71s
+```
+
 The managed-root sentinel tripwire initially had one Windows-only test harness
 failure because `Path.write_text` produced CRLF rather than the asserted LF.
 The product made no write. The assertion was corrected to require byte-exact
@@ -123,16 +162,21 @@ before/after equality independent of the baseline newline convention.
 
 ## Verification evidence
 
-Final Source Adapter, Census, Scanner, and disabled-boundary adjacent suite:
+Final Source Adapter, Source Contracts, Census, Scanner, and disabled-boundary
+adjacent suite, in its required census-before-adapter import order:
 
 ```text
-66 passed in 17.70s
+46 passed in 17.99s
 ```
+
+A deliberately contaminated reverse order produced only the repository's
+documented `sys.modules` census precondition (`44 passed, 2 failed`); the clean
+required order passed without a product change.
 
 Final natural-order complete repository suite:
 
 ```text
-668 passed, 1 expected warning in 300.60s
+706 passed, 1 expected warning in 296.72s
 ```
 
 The warning is the existing intentional duplicate-name ZIP adversarial
@@ -141,19 +185,19 @@ fixture.
 Clean package evidence:
 
 - Existing offline wheel/install plus exact MCP surface nodes: `2 passed in
-  11.42s`; the server exposes only `agc.admin`, `agc.read`, and `agc.write`.
+  11.14s`; the server exposes only `agc.admin`, `agc.read`, and `agc.write`.
 - A fresh `python -m build --wheel --no-isolation` succeeded and explicitly
   packaged `capture_capsule.py`, `capture_safety.py`, and the updated source
   adapter.
 - `pip --no-deps --target` installed that wheel to an isolated directory;
-  `python -I` loaded all three modules from the installed target, not the
+  `python -I` loaded all four Task-1 modules from the installed target, not the
   checkout.
 
 Final static and filesystem gates:
 
 ```text
 compileall: clean
-strict UTF-8 / no BOM: 5 implementation/test files
+strict UTF-8 / no BOM: 6 implementation/test/report files
 git diff --check: clean (line-ending advisory only)
 in-memory module subprocess/tempfile/network/write-call hits: 0
 unresolved marker hits: 0

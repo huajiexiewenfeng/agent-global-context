@@ -46,8 +46,11 @@ _SIGNAL_TYPES = frozenset(
         "open_commitment",
     }
 )
-_SCOPE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
-_LOCATOR = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/~-]{0,255}$")
+_SCOPE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
+_PROJECT_SCOPE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
+_LOCATOR = re.compile(
+    r"^(?:user|final|result|method|next):[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$"
+)
 _WINDOWS_PATH = re.compile(r"(?<![A-Za-z0-9])(?:[A-Za-z]:[\\/]|\\\\)[^\s\"'<>|]+")
 _UNIX_PRIVATE_PATH = re.compile(
     r"(?<![:/A-Za-z0-9.])/(?:[A-Za-z0-9._~-]+/)+[A-Za-z0-9._~-]+"
@@ -59,18 +62,32 @@ _PRIVATE_KEY = re.compile(
     r"-----BEGIN [^-\r\n]*PRIVATE KEY-----.*?-----END [^-\r\n]*PRIVATE KEY-----",
     re.IGNORECASE | re.DOTALL,
 )
+_PARTIAL_PRIVATE_KEY = re.compile(
+    r"-----BEGIN [^-\r\n]*PRIVATE KEY-----.*?(?:-----END [^-\r\n]*PRIVATE KEY-----|\Z)",
+    re.IGNORECASE | re.DOTALL,
+)
 _BEARER = re.compile(r"(?i)\b(?:authorization\s*:\s*)?bearer\s+[A-Za-z0-9._~+/-]{6,}")
-_SECRET_ASSIGNMENT = re.compile(
-    r"(?i)\b(?:[a-z0-9]+[_-])*(?:password|passwd|pwd|api[_-]?key|access[_-]?token|"
+_SECRET_KEY = (
+    r"(?:[a-z0-9]+[_-])*(?:password|passwd|pwd|api[_-]?key|access[_-]?token|"
     r"auth[_-]?token|refresh[_-]?token|client[_-]?secret|secret[_-]?access[_-]?key|"
-    r"secret|credential|token)\b\s*[:=]\s*"
+    r"secret|credential|token)"
+)
+_YAML_SECRET_BLOCK = re.compile(
+    r"(?im)^(?P<indent>[ \t]*)[\"']?" + _SECRET_KEY + r"[\"']?\s*:\s*[|>][^\r\n]*"
+    r"(?:\r?\n(?P=indent)[ \t]+[^\r\n]*)+"
+)
+_XML_SECRET = re.compile(
+    r"(?is)<\s*(?:" + _SECRET_KEY + r")\b[^>]*>.*?</\s*(?:" + _SECRET_KEY + r")\s*>"
+)
+_SECRET_ASSIGNMENT = re.compile(
+    r"(?i)[\"']?" + _SECRET_KEY + r"[\"']?\s*[:=]\s*"
     r"(?:\"[^\"\r\n]*\"|'[^'\r\n]*'|[^\r\n,;]+)"
 )
 _AUTH_COOKIE = re.compile(
     r"(?i)\b(?:authorization|proxy-authorization|cookie|set-cookie|x-api-key)\s*:\s*[^\r\n]+"
 )
 _CONNECTION = re.compile(
-    r"(?i)\b(?:https?|ssh|ftp|postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqp|mssql)://"
+    r"(?i)\b[A-Za-z][A-Za-z0-9+.-]{0,31}://"
     r"[^\s/:@]+:[^\s@]+@[^\s]+"
 )
 _KNOWN_TOKEN = re.compile(
@@ -82,10 +99,11 @@ _FENCED = re.compile(r"```.*?```", re.DOTALL)
 _CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _HYPOTHETICAL = re.compile(
     r"(?i)(?:^|[.!?。！？]\s*)(?:if|suppose|assuming|what if)\b|"
-    r"(?:\bmight\b|\bwould\b|\bcould perhaps\b)|(?:如果|假如|假设|可能会)"
+    r"(?:\bmay\b|\bmight\b|\bwould\b|\bcould\b|\bperhaps\b)|(?:如果|假如|假设|可能会)"
 )
 _PSYCHOLOGICAL = re.compile(
-    r"(?i)\b(?:personality|psychological|diagnosis|neurotic|fragile|lazy|anxious|depressed)\b|"
+    r"(?i)\b(?:personality|psychological|diagnosis|neurotic|fragile|lazy|anxious|depressed|"
+    r"impulsive|introverted|extroverted|narcissistic)\b|"
     r"(?:人格|心理诊断|焦虑症|抑郁症|懒惰)"
 )
 _COMMAND = re.compile(
@@ -98,8 +116,24 @@ _THIRD_PARTY = re.compile(
 _PROJECT_FACT = re.compile(
     r"(?i)^\s*(?:the\s+)?(?:parser|module|class|function|service|endpoint|database|repository|file|test|build)\b"
 )
-_MULTI_CLAIM = re.compile(
-    r";|\n|(?i:\b(?:and|but)\s+(?:the\s+user|user|they|he|she|i)\b)|(?:并且|而且).*(?:用户|他|她)"
+_MULTI_CLAIM = re.compile(r";|\n|(?i:\b(?:and|also|plus|but)\b)|(?:以及|并且|而且|和)")
+_LOG_LINE = re.compile(
+    r"(?i)^\s*(?:\d{4}-\d{2}-\d{2}[T ][0-9:.+Z-]+\s+)?"
+    r"(?:TRACE|DEBUG|INFO|WARN(?:ING)?|ERROR|FATAL)\b"
+)
+_ASSIGNMENT_LINE = re.compile(r"^\s*[A-Za-z_][A-Za-z0-9_.-]*\s*(?::=|=)\s*.+$")
+_QUOTED_ASSERTION = re.compile(
+    r"(?i)(?:^\s*>|\b(?:said|says|quoted?|according to)\b\s*[:\"]|[\"“”].*\b(?:i|user)\b)"
+)
+_NEGATION = re.compile(r"(?i)\b(?:no|not|never|cannot|can't|doesn't|do not|must not)\b|(?:不|没有|从不|不得)")
+_USER_SUBJECT = re.compile(r"(?i)^\s*(?:the\s+user(?:'s|’s)?|user(?:'s|’s)?)\b|^\s*用户")
+_DURABLE_CLAIM = re.compile(
+    r"(?i)\b(?:prefer(?:s|red)?|values?|avoids?|long[- ]term goal|goal is|aims? to|"
+    r"research direction|trajectory|must|must not|cannot|needs? to|requires?|constraint|"
+    r"is able to|can reliably|demonstrated ability|learned to|acquired .{0,40} skill|"
+    r"identifies as|principle is|background|uses? .{0,80} (?:method|workflow|process|practice|approach)|"
+    r"follows? .{0,80} (?:method|workflow|process|practice|approach))\b|"
+    r"(?:偏好|长期目标|研究方向|成长轨迹|必须|不得|约束|能够|掌握|方法|流程|原则|背景)"
 )
 _WORD = re.compile(r"[A-Za-z0-9_]{3,}|[\u3400-\u9fff]{2,}")
 _STOP_WORDS = frozenset(
@@ -112,6 +146,17 @@ _STOP_WORDS = frozenset(
 
 def _safe_error() -> ValueError:
     return ValueError("capture_safety_contract_invalid")
+
+
+def _looks_like_path(value: str) -> bool:
+    lowered = value.casefold()
+    return (
+        lowered.startswith("file:")
+        or value.startswith(("/", "\\", "../", "..\\", "./", ".\\"))
+        or re.match(r"^[A-Za-z]:[\\/]", value) is not None
+        or "/../" in value
+        or "\\..\\" in value
+    )
 
 
 def _normalize_text(value: str) -> str:
@@ -147,7 +192,10 @@ def _scrub_known_secrets(text: str, labels: tuple[str, ...]) -> tuple[str, int]:
 
     cleaned = text
     for pattern in (
+        _PARTIAL_PRIVATE_KEY,
         _PRIVATE_KEY,
+        _YAML_SECRET_BLOCK,
+        _XML_SECRET,
         _AUTH_COOKIE,
         _BEARER,
         _CONNECTION,
@@ -168,6 +216,19 @@ def _strip_prohibited_content(text: str) -> tuple[str, bool]:
         or "Traceback (most recent call last):" in text
     ):
         return "", True
+    source_lines = text.split("\n")
+    if len(source_lines) >= 8:
+        unsafe_lines = sum(
+            1
+            for line in source_lines
+            if _LOG_LINE.search(line)
+            or _ASSIGNMENT_LINE.search(line)
+            or line.strip().startswith(
+                ("def ", "class ", "import ", "from ", "function ", "const ", "let ")
+            )
+        )
+        if unsafe_lines >= max(4, len(source_lines) // 3):
+            return "", True
     changed = False
     text, fenced_count = _FENCED.subn(" ", text)
     changed = bool(fenced_count)
@@ -217,7 +278,29 @@ def _extract_text(value: Any) -> str | None:
     return "\n".join(parts) if parts else None
 
 
+def _is_subagent_tag(value: Any) -> bool:
+    if isinstance(value, str):
+        return "subagent" in value.casefold()
+    if isinstance(value, Mapping):
+        return any(_is_subagent_tag(item) for item in value.values())
+    if isinstance(value, (list, tuple)):
+        return any(_is_subagent_tag(item) for item in value)
+    return False
+
+
+def _has_subagent_provenance(record: Mapping[str, Any]) -> bool:
+    payload = record.get("payload")
+    containers = (record, payload) if isinstance(payload, Mapping) else (record,)
+    for container in containers:
+        for field_name in ("provenance", "source", "thread_source", "origin", "agent_type"):
+            if field_name in container and _is_subagent_tag(container[field_name]):
+                return True
+    return False
+
+
 def _record_message(record: Mapping[str, Any]) -> tuple[str, str, bool] | None:
+    if _has_subagent_provenance(record):
+        return None
     record_type = record.get("type")
     payload = record.get("payload")
     if not isinstance(payload, dict):
@@ -226,7 +309,7 @@ def _record_message(record: Mapping[str, Any]) -> tuple[str, str, bool] | None:
     content: Any = payload.get("content", payload.get("message", payload.get("text")))
     explicit_final = payload.get("phase") == "final" or payload.get("is_final") is True
     if record_type == "response_item":
-        if payload.get("type") not in {None, "message", "input_text", "output_text"}:
+        if payload.get("type") != "message":
             return None
     elif record_type == "event_msg":
         event_type = payload.get("type")
@@ -236,13 +319,11 @@ def _record_message(record: Mapping[str, Any]) -> tuple[str, str, bool] | None:
             role = "assistant"
         else:
             return None
-    elif record_type == "user_message":
-        role = "user"
-    elif record_type == "assistant_message":
-        role = "assistant"
     else:
         return None
     if role not in {"user", "assistant"}:
+        return None
+    if role == "assistant" and not explicit_final:
         return None
     text = _extract_text(content)
     if text is None:
@@ -261,7 +342,21 @@ def _record_matches_turn(record: Mapping[str, Any], revision_id: str) -> bool:
         turn = payload.get("turn")
         if isinstance(turn, dict) and "id" in turn:
             candidates.append(turn.get("id"))
-    return not candidates or all(candidate == revision_id for candidate in candidates)
+    return bool(candidates) and all(candidate == revision_id for candidate in candidates)
+
+
+def _user_has_high_signal(text: str) -> bool:
+    if text.endswith(("?", "？")) or _HYPOTHETICAL.search(text) or _QUOTED_ASSERTION.search(text):
+        return False
+    return (
+        re.search(
+            r"(?i)\b(?:i|my|we|our)\b.{0,80}\b(?:prefer|goal|must|never|always|"
+            r"constraint|principle|long[- ]term|learned|reusable|method|workflow)\b|"
+            r"(?:我|我的|我们).{0,40}(?:偏好|目标|必须|不得|始终|长期|约束|原则|学会|方法|流程)",
+            text,
+        )
+        is not None
+    )
 
 
 def _units(text: str, maximum: int) -> tuple[str, ...]:
@@ -298,7 +393,7 @@ def _relative_locators(text: str) -> tuple[str, ...]:
     return tuple(locators)
 
 
-def _assistant_kind(text: str) -> tuple[str, int]:
+def _assistant_kind(text: str) -> tuple[str, int] | None:
     lowered = text.casefold()
     if re.search(r"\b(?:next step|next|remaining|todo|follow[- ]?up)\b|(?:下一步|后续|待办)", lowered):
         return "next_step", 3
@@ -310,7 +405,7 @@ def _assistant_kind(text: str) -> tuple[str, int]:
         lowered,
     ):
         return "decision_result", 1
-    return "decision_result", 1
+    return None
 
 
 @dataclass(frozen=True)
@@ -366,14 +461,19 @@ def pre_capsule_gate(
     dropped_safety = 0
     scrubbed_count = 0
     for index, record in enumerate(materialized):
-        if not _record_matches_turn(record, ref.key.revision_id):
-            dropped_class += 1
-            continue
         payload = record.get("payload")
         if record.get("type") == "session_meta" and isinstance(payload, dict):
             title = payload.get("title", payload.get("task_title"))
-            if isinstance(title, str) and title.strip():
+            if (
+                payload.get("session_id") == ref.key.task_id
+                and payload.get("id") == ref.rollout_anchor_id
+                and isinstance(title, str)
+                and title.strip()
+            ):
                 title_candidates.append((index, title))
+            continue
+        if not _record_matches_turn(record, ref.key.revision_id):
+            dropped_class += 1
             continue
         message = _record_message(record)
         if message is None:
@@ -417,16 +517,18 @@ def pre_capsule_gate(
         for offset, unit in enumerate(units):
             source_index = index * 1000 + offset
             if role == "user":
-                durable = re.search(
-                    r"(?i)\b(?:prefer|goal|must|never|always|constraint|long[- ]term)\b|"
-                    r"(?:偏好|目标|必须|不得|始终|长期|约束)",
-                    unit,
-                )
+                if not _user_has_high_signal(unit):
+                    dropped_class += 1
+                    continue
                 safe_records.append(
-                    SafeCapsuleRecord("user_signal", source_index, 0 if durable else 1, unit)
+                    SafeCapsuleRecord("user_signal", source_index, 0, unit)
                 )
             else:
-                kind, priority = _assistant_kind(unit)
+                classified = _assistant_kind(unit)
+                if classified is None:
+                    dropped_class += 1
+                    continue
+                kind, priority = classified
                 safe_records.append(SafeCapsuleRecord(kind, source_index, priority, unit))
             for locator_offset, locator in enumerate(_relative_locators(unit)):
                 safe_records.append(
@@ -467,6 +569,26 @@ class ObservationDraft:
     evidence: tuple[str, ...] = field(repr=False)
     priority: int
     locator: str = field(repr=False)
+
+    def to_mapping(self) -> dict[str, Any]:
+        return {
+            "statement": self.statement,
+            "assertion": {
+                "subject": self.assertion_subject,
+                "mode": self.assertion_mode,
+                "modality": self.modality,
+            },
+            "primary_category": self.primary_category,
+            "kind": self.kind,
+            "scopes": list(self.scopes),
+            "project_scope": self.project_scope,
+            "confidence": self.confidence,
+            "sensitivity": self.sensitivity,
+            "signal_type": self.signal_type,
+            "evidence": list(self.evidence),
+            "priority": self.priority,
+            "locator": self.locator,
+        }
 
     @classmethod
     def from_mapping(cls, value: Any) -> "ObservationDraft":
@@ -510,17 +632,22 @@ class ObservationDraft:
             if mode == "agent_inferred" and confidence != "tentative":
                 raise _safe_error()
             if project_scope is not None and (
-                not isinstance(project_scope, str) or _SCOPE.fullmatch(project_scope) is None
+                not isinstance(project_scope, str)
+                or _PROJECT_SCOPE.fullmatch(project_scope) is None
+                or _looks_like_path(project_scope)
             ):
                 raise _safe_error()
             if not isinstance(scopes_value, list) or not 1 <= len(scopes_value) <= 8:
                 raise _safe_error()
             scopes = tuple(_normalize_text(item) for item in scopes_value)
-            if any(_SCOPE.fullmatch(item) is None for item in scopes) or len(set(scopes)) != len(scopes):
+            if (
+                any(_SCOPE.fullmatch(item) is None or _looks_like_path(item) for item in scopes)
+                or len(set(scopes)) != len(scopes)
+            ):
                 raise _safe_error()
             if not isinstance(evidence_value, list) or not 1 <= len(evidence_value) <= 8:
                 raise _safe_error()
-            evidence = tuple(_normalize_text(item) for item in evidence_value)
+            evidence = tuple(dict.fromkeys(_normalize_text(item) for item in evidence_value))
             if any(not item or len(item) > 600 for item in evidence):
                 raise _safe_error()
             return cls(
@@ -552,16 +679,17 @@ class PersistenceResult:
     over_limit_count: int
 
 
-def _capsule_units(capsule: "TaskCapsule") -> tuple[str, ...]:
-    values: list[str] = []
-    if capsule.task_title:
-        values.append(capsule.task_title)
-    values.extend(capsule.user_signals)
-    values.extend(capsule.decisions_results)
-    values.extend(capsule.reusable_methods)
-    values.extend(capsule.next_steps)
-    values.extend(capsule.file_locators)
-    return tuple(values)
+def _capsule_evidence(capsule: "TaskCapsule") -> dict[str, frozenset[str]]:
+    provenance: dict[str, set[str]] = {}
+    for kind, values in (
+        ("user_signal", capsule.user_signals),
+        ("decision_result", capsule.decisions_results),
+        ("reusable_method", capsule.reusable_methods),
+        ("next_step", capsule.next_steps),
+    ):
+        for value in values:
+            provenance.setdefault(value, set()).add(kind)
+    return {value: frozenset(kinds) for value, kinds in provenance.items()}
 
 
 def _substantive_words(text: str) -> set[str]:
@@ -593,25 +721,39 @@ def _is_atomic(statement: str) -> bool:
 
 
 def _is_personally_relevant(draft: ObservationDraft) -> bool:
-    if draft.kind in {"identity", "principle", "preference", "interest", "capability", "goal", "pattern"}:
-        return True
-    if draft.signal_type in {
-        "explicit_user_state",
-        "decision_or_constraint",
-        "reusable_method",
-        "learning_change",
-        "research_change",
-        "capability_evidence",
-        "open_commitment",
-    }:
-        return True
-    return draft.primary_category != "project" and draft.kind != "context"
+    statement = draft.statement
+    return (
+        _USER_SUBJECT.search(statement) is not None
+        and _DURABLE_CLAIM.search(statement) is not None
+        and _PSYCHOLOGICAL.search(statement) is None
+    )
+
+
+def _evidence_form_is_assertive(evidence: str) -> bool:
+    return not (
+        evidence.endswith(("?", "？"))
+        or _HYPOTHETICAL.search(evidence)
+        or _QUOTED_ASSERTION.search(evidence)
+    )
+
+
+def _provenance_supports_mode(
+    draft: ObservationDraft,
+    evidence_provenance: dict[str, frozenset[str]],
+) -> bool:
+    if draft.assertion_mode == "direct":
+        allowed = frozenset({"user_signal"})
+    elif draft.assertion_mode == "behavior_observed":
+        allowed = frozenset({"decision_result", "reusable_method"})
+    else:
+        allowed = frozenset({"user_signal", "decision_result", "reusable_method"})
+    return all(evidence_provenance[evidence].intersection(allowed) for evidence in draft.evidence)
 
 
 def _draft_is_policy_valid(
     draft: ObservationDraft,
     capsule: "TaskCapsule",
-    evidence_units: frozenset[str],
+    evidence_provenance: dict[str, frozenset[str]],
 ) -> bool:
     if draft.project_scope != capsule.project_scope:
         return False
@@ -625,7 +767,14 @@ def _draft_is_policy_valid(
         return False
     if not _is_personally_relevant(draft):
         return False
-    if any(evidence not in evidence_units for evidence in draft.evidence):
+    if any(evidence not in evidence_provenance for evidence in draft.evidence):
+        return False
+    if not all(_evidence_form_is_assertive(evidence) for evidence in draft.evidence):
+        return False
+    if not _provenance_supports_mode(draft, evidence_provenance):
+        return False
+    statement_negated = _NEGATION.search(draft.statement) is not None
+    if any((_NEGATION.search(evidence) is not None) != statement_negated for evidence in draft.evidence):
         return False
     evidence_words = _substantive_words(" ".join(draft.evidence))
     statement_words = _substantive_words(draft.statement)
@@ -644,17 +793,21 @@ def _canonical_proposition(statement: str) -> str:
 
 def _rank(draft: ObservationDraft) -> tuple[int, int, int, int, str]:
     mode_rank = {"direct": 0, "behavior_observed": 1, "agent_inferred": 3}[draft.assertion_mode]
-    signal_rank = {
-        "explicit_user_state": 0,
-        "decision_or_constraint": 1,
-        "verified_outcome": 1,
-        "reusable_method": 1,
-        "learning_change": 2,
-        "research_change": 2,
-        "capability_evidence": 2,
-        "open_commitment": 2,
-    }[draft.signal_type]
-    return (mode_rank, signal_rank, -len(draft.evidence), draft.priority, draft.locator)
+    semantic_tier = (
+        3
+        if draft.assertion_mode == "agent_inferred"
+        else {
+            "explicit_user_state": 0,
+            "decision_or_constraint": 0,
+            "verified_outcome": 1,
+            "reusable_method": 1,
+            "learning_change": 2,
+            "research_change": 2,
+            "capability_evidence": 1,
+            "open_commitment": 2,
+        }[draft.signal_type]
+    )
+    return (semantic_tier, -len(draft.evidence), draft.priority, mode_rank, draft.locator)
 
 
 def persistence_gate(
@@ -669,20 +822,21 @@ def persistence_gate(
         materialized = tuple(drafts)
     except (TypeError, ValueError):
         return PersistenceResult((), 0, 1, 0, 0)
-    evidence_units = frozenset(_capsule_units(capsule))
+    evidence_provenance = _capsule_evidence(capsule)
     safety_count = 0
     policy_count = 0
     valid: list[ObservationDraft] = []
     for value in materialized:
         try:
-            draft = value if isinstance(value, ObservationDraft) else ObservationDraft.from_mapping(value)
+            mapping = value.to_mapping() if isinstance(value, ObservationDraft) else value
+            draft = ObservationDraft.from_mapping(mapping)
         except (AttributeError, TypeError, ValueError):
             policy_count += 1
             continue
         if _draft_is_unsafe(draft):
             safety_count += 1
             continue
-        if not _draft_is_policy_valid(draft, capsule, evidence_units):
+        if not _draft_is_policy_valid(draft, capsule, evidence_provenance):
             policy_count += 1
             continue
         valid.append(draft)

@@ -445,6 +445,17 @@ class CodexSourceAdapter(SourceAdapter):
             status.st_ctime_ns,
         )
 
+    @staticmethod
+    def _bind_target_record(record: dict[str, Any], revision_id: str) -> dict[str, Any]:
+        payload = record.get("payload")
+        if not isinstance(payload, dict) or "turn_id" in payload:
+            return record
+        bound = dict(record)
+        bound_payload = dict(payload)
+        bound_payload["turn_id"] = revision_id
+        bound["payload"] = bound_payload
+        return bound
+
     def _iter_target_turn_records(self, ref: RevisionRef) -> Iterator[dict[str, Any]]:
         """Yield target-turn records in memory for the future pre-Capsule gate."""
 
@@ -508,10 +519,19 @@ class CodexSourceAdapter(SourceAdapter):
                         continue
                     assert isinstance(payload, dict)
                     turn_id = payload.get("turn_id")
+                    if (
+                        target_active
+                        and record.get("type") == "event_msg"
+                        and payload.get("type") in {"task_started", "task_complete", "task_aborted"}
+                        and turn_id != ref.key.revision_id
+                    ):
+                        raise ValueError("interleaved turn state is ambiguous")
                     if turn_id == ref.key.revision_id and not completed:
                         target_active = True
                     if target_active and not completed:
-                        target_records.append(record)
+                        target_records.append(
+                            self._bind_target_record(record, ref.key.revision_id)
+                        )
                     if (
                         record.get("type") == "event_msg"
                         and payload.get("type") == "task_complete"

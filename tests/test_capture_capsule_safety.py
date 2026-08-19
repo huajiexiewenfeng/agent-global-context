@@ -439,7 +439,7 @@ def test_persistence_gate_canonicalizes_deduplicates_and_uses_stable_rank():
         priority=1,
     )
     inferred = _draft(
-        "The user may prefer deterministic workflows.",
+        "The user prefers deterministic workflows.",
         evidence,
         locator="user:0000",
         mode="agent_inferred",
@@ -643,3 +643,439 @@ def test_codex_load_capsule_fails_closed_with_content_safe_error_on_drift(
         adapter.load_capsule(ref, CapsulePolicy(project_scope="project:stable"))
     assert "DRIFT_PRIVATE_SENTINEL" not in str(caught.value)
     assert "DRIFT_PRIVATE_SENTINEL" not in repr(caught.value)
+
+
+@pytest.mark.parametrize(
+    ("left_secret", "right_secret"),
+    (
+        ('{"password":"JSON_SECRET_ALPHA"}', '{"password":"JSON_SECRET_BRAVO"}'),
+        ("password: YAML_SECRET_ALPHA", "password: YAML_SECRET_BRAVO"),
+        (
+            "password: |\n  YAML_BLOCK_SECRET_ALPHA\n  second-alpha-line",
+            "password: |\n  YAML_BLOCK_SECRET_BRAVO\n  second-bravo-line",
+        ),
+        ("<password>XML_SECRET_ALPHA</password>", "<password>XML_SECRET_BRAVO</password>"),
+        (
+            "-----BEGIN PRIVATE KEY-----\nPARTIAL_PEM_SECRET_ALPHA",
+            "-----BEGIN PRIVATE KEY-----\nPARTIAL_PEM_SECRET_BRAVO",
+        ),
+        (
+            "custom+db://alice:URL_SECRET_ALPHA@example.invalid/database",
+            "custom+db://alice:URL_SECRET_BRAVO@example.invalid/database",
+        ),
+    ),
+)
+def test_structured_secret_changes_have_content_independent_redaction_and_hashes(
+    left_secret: str, right_secret: str
+):
+    from agc_runtime.capture_capsule import CapsulePolicy, build_capsule
+
+    policy = CapsulePolicy(project_scope="project:stable")
+    left = build_capsule(
+        (_record("user", f"I prefer safe workflows.\n{left_secret}"),),
+        _ref(),
+        policy,
+    )
+    right = build_capsule(
+        (_record("user", f"I prefer safe workflows.\n{right_secret}"),),
+        _ref(),
+        policy,
+    )
+
+    assert left.source_fingerprint == right.source_fingerprint
+    assert left.capsule_hash == right.capsule_hash
+    assert left.counts == right.counts
+    surfaces = repr((left, right, left.capsule.to_mapping(), right.capsule.to_mapping()))
+    assert "SECRET_ALPHA" not in surfaces
+    assert "SECRET_BRAVO" not in surfaces
+
+
+@pytest.mark.parametrize(
+    "record",
+    (
+        {
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "user",
+                "turn_id": "turn-target",
+                "provenance": "subagent",
+                "content": "I prefer SUBAGENT_SENTINEL workflows.",
+            },
+        },
+        {
+            "type": "response_item",
+            "payload": {
+                "role": "user",
+                "turn_id": "turn-target",
+                "content": "I prefer UNTYPED_SENTINEL workflows.",
+            },
+        },
+        {
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "user",
+                "content": "I prefer NO_TURN_SENTINEL workflows.",
+            },
+        },
+        {
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "user",
+                "turn_id": "turn-target",
+                "content": "hello thanks continue GREETING_SENTINEL",
+            },
+        },
+    ),
+)
+def test_allowlist_rejects_untrusted_provenance_type_turn_and_low_signal_user(
+    record: dict[str, object]
+):
+    from agc_runtime.capture_capsule import CapsulePolicy, build_capsule
+
+    result = build_capsule(
+        (record,),
+        _ref(),
+        CapsulePolicy(project_scope="project:stable"),
+    )
+
+    assert result.capsule.user_signals == ()
+    assert "SENTINEL" not in repr(result.capsule.to_mapping())
+
+
+def test_allowlist_rejects_generic_assistant_without_explicit_semantic_cue():
+    from agc_runtime.capture_capsule import CapsulePolicy, build_capsule
+
+    result = build_capsule(
+        (
+            _record(
+                "assistant",
+                "Everything looks nice and ready GENERIC_ASSISTANT_SENTINEL.",
+                final=True,
+            ),
+        ),
+        _ref(),
+        CapsulePolicy(project_scope="project:stable"),
+    )
+
+    assert result.capsule.decisions_results == ()
+    assert "GENERIC_ASSISTANT_SENTINEL" not in repr(result.capsule.to_mapping())
+
+
+@pytest.mark.parametrize(
+    "body",
+    (
+        "I prefer this output.\n"
+        + "\n".join(f"2026-08-19T12:00:{index:02d}Z INFO LOG_SENTINEL_{index}" for index in range(30)),
+        "I prefer this implementation.\n"
+        + "\n".join(f"private_value_{index} = CODE_SENTINEL_{index}" for index in range(30)),
+    ),
+)
+def test_allowlist_drops_long_unfenced_log_code_and_assignment_blocks(body: str):
+    from agc_runtime.capture_capsule import CapsulePolicy, build_capsule
+
+    result = build_capsule(
+        (_record("user", body),),
+        _ref(),
+        CapsulePolicy(project_scope="project:stable"),
+    )
+
+    assert result.capsule.user_signals == ()
+    assert "SENTINEL" not in repr(result.capsule.to_mapping())
+    assert result.counts.dropped_safety_count == 1
+
+
+def _write_interleaved_source(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "\n".join(
+            (
+                '{"timestamp":"2026-08-19T10:00:00Z","type":"session_meta",'
+                '"payload":{"id":"rollout-main","session_id":"task-main","source":"cli"}}',
+                '{"timestamp":"2026-08-19T10:01:00Z","type":"event_msg",'
+                '"payload":{"type":"task_started","turn_id":"turn-target"}}',
+                '{"timestamp":"2026-08-19T10:01:10Z","type":"response_item",'
+                '"payload":{"type":"message","role":"user",'
+                '"content":"I prefer deterministic workflows."}}',
+                '{"timestamp":"2026-08-19T10:01:20Z","type":"event_msg",'
+                '"payload":{"type":"task_started","turn_id":"turn-other"}}',
+                '{"timestamp":"2026-08-19T10:01:30Z","type":"response_item",'
+                '"payload":{"type":"message","role":"user",'
+                '"content":"I prefer OTHER_TURN_INTERLEAVED_SENTINEL workflows."}}',
+                '{"timestamp":"2026-08-19T10:01:40Z","type":"event_msg",'
+                '"payload":{"type":"task_complete","turn_id":"turn-other"}}',
+                '{"timestamp":"2026-08-19T10:02:00Z","type":"event_msg",'
+                '"payload":{"type":"task_complete","turn_id":"turn-target"}}',
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def test_codex_load_capsule_fails_closed_on_interleaved_turn_ambiguity(tmp_path: Path):
+    from agc_runtime.capture_capsule import CapsulePolicy
+    from agc_runtime.codex_source_adapter import CodexSourceAdapter
+
+    root = tmp_path / "profile"
+    _write_interleaved_source(root / "sessions" / "task.jsonl")
+    adapter = CodexSourceAdapter(root)
+    ref = next(
+        item
+        for item in adapter.discover(None, _window()).revisions
+        if item.key.revision_id == "turn-target"
+    )
+
+    with pytest.raises(ValueError) as caught:
+        adapter.load_capsule(ref, CapsulePolicy(project_scope="project:stable"))
+    assert "OTHER_TURN_INTERLEAVED_SENTINEL" not in str(caught.value)
+    assert "OTHER_TURN_INTERLEAVED_SENTINEL" not in repr(caught.value)
+
+
+def test_direct_observation_drafts_roundtrip_strict_validation_without_value_leaks():
+    from dataclasses import replace
+
+    from agc_runtime.capture_safety import ObservationDraft, persistence_gate
+
+    result, evidence = _safe_result()
+    valid = ObservationDraft.from_mapping(
+        _draft("The user prefers deterministic privacy-safe workflows.", evidence)
+    )
+    invalid = (
+        replace(valid, statement="X" * 301),
+        replace(valid, primary_category="PRIVATE_CATEGORY_SENTINEL"),
+        replace(valid, assertion_mode="PRIVATE_MODE_SENTINEL"),
+    )
+
+    gated = persistence_gate(invalid, result.capsule)
+
+    assert gated.accepted == ()
+    assert gated.filtered_policy_count == 3
+    assert "PRIVATE" not in repr(gated)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("scopes", ["C:/Users/private"]),
+        ("scopes", [r"\\server\share"]),
+        ("scopes", ["/etc/passwd"]),
+        ("scopes", ["file:///private"]),
+        ("scopes", ["../escape"]),
+        ("locator", "C:/Users/private"),
+        ("locator", r"\\server\share"),
+        ("locator", "/etc/passwd"),
+        ("locator", "file:///private"),
+        ("locator", "../escape"),
+        ("locator", "user:CONTENT SENTINEL"),
+    ),
+)
+def test_draft_scopes_and_locators_reject_path_or_content_shapes(field: str, value: object):
+    from agc_runtime.capture_safety import persistence_gate
+
+    result, evidence = _safe_result()
+    draft = _draft("The user prefers deterministic privacy-safe workflows.", evidence)
+    draft[field] = value
+
+    gated = persistence_gate((draft,), result.capsule)
+
+    assert gated.accepted == ()
+    assert gated.filtered_policy_count == 1
+    assert "private" not in repr(gated).casefold()
+    assert "SENTINEL" not in repr(gated)
+
+
+@pytest.mark.parametrize(
+    ("evidence", "statement", "mode"),
+    (
+        (
+            "Do you prefer deterministic workflows?",
+            "The user prefers deterministic workflows.",
+            "direct",
+        ),
+        (
+            'A colleague said "I prefer deterministic workflows."',
+            "The user prefers deterministic workflows.",
+            "direct",
+        ),
+        (
+            "If needed, I might prefer deterministic workflows.",
+            "The user prefers deterministic workflows.",
+            "direct",
+        ),
+        (
+            "I do not prefer remote work.",
+            "The user prefers remote work.",
+            "direct",
+        ),
+        (
+            "Result: the user prefers deterministic workflows.",
+            "The user prefers deterministic workflows.",
+            "direct",
+        ),
+    ),
+)
+def test_grounding_rejects_question_quote_modality_polarity_and_wrong_provenance(
+    evidence: str, statement: str, mode: str
+):
+    from dataclasses import replace
+
+    from agc_runtime.capture_safety import persistence_gate
+
+    result, _base_evidence = _safe_result()
+    if evidence.startswith("Result:"):
+        capsule = replace(result.capsule, user_signals=(), decisions_results=(evidence,))
+    else:
+        capsule = replace(result.capsule, user_signals=(evidence,), decisions_results=())
+    draft = _draft(statement, evidence, mode=mode)
+
+    gated = persistence_gate((draft,), capsule)
+
+    assert gated.accepted == ()
+    assert gated.filtered_policy_count == 1
+
+
+@pytest.mark.parametrize(
+    "statement",
+    (
+        "PostgreSQL stores the project data.",
+        "React supports component hooks.",
+        "The user is impulsive.",
+        "The user prefers Rust and remote work.",
+    ),
+)
+def test_personal_relevance_and_atomicity_ignore_claimed_labels(statement: str):
+    from dataclasses import replace
+
+    from agc_runtime.capture_safety import persistence_gate
+
+    result, _evidence = _safe_result()
+    capsule = replace(result.capsule, user_signals=(statement,), decisions_results=())
+    draft = _draft(
+        statement,
+        statement,
+        kind="preference",
+        signal_type="explicit_user_state",
+    )
+
+    gated = persistence_gate((draft,), capsule)
+
+    assert gated.accepted == ()
+    assert gated.filtered_safety_count + gated.filtered_policy_count == 1
+
+
+def test_ranking_keeps_verified_outcome_above_direct_research_changes():
+    from dataclasses import replace
+
+    from agc_runtime.capture_safety import persistence_gate
+
+    result, _evidence = _safe_result()
+    research_evidence = tuple(
+        f"My long-term research direction now prioritizes topic {index}."
+        for index in range(8)
+    )
+    verified_evidence = "Result: the user demonstrated ability to run deterministic verification."
+    capsule = replace(
+        result.capsule,
+        user_signals=research_evidence,
+        decisions_results=(verified_evidence,),
+        reusable_methods=(),
+        next_steps=(),
+    )
+    research = tuple(
+        _draft(
+            f"The user's long-term research direction now prioritizes topic {index}.",
+            evidence,
+            locator=f"user:{index:04d}",
+            signal_type="research_change",
+            kind="goal",
+            category="research",
+        )
+        for index, evidence in enumerate(research_evidence)
+    )
+    verified = _draft(
+        "The user demonstrated ability to run deterministic verification.",
+        verified_evidence,
+        locator="final:9999",
+        signal_type="verified_outcome",
+        kind="capability",
+        category="work",
+        mode="behavior_observed",
+    )
+
+    gated = persistence_gate((*research, verified), capsule)
+
+    assert len(gated.accepted) == 8
+    assert any(item.statement == verified["statement"] for item in gated.accepted)
+    assert gated.over_limit_count == 1
+
+
+def test_ranking_deduplicates_evidence_before_stable_locator_tie_break():
+    from dataclasses import replace
+
+    from agc_runtime.capture_safety import persistence_gate
+
+    result, evidence = _safe_result()
+    second_evidence = "I prefer deterministic privacy-safe review workflows."
+    capsule = replace(result.capsule, user_signals=(evidence, second_evidence))
+    first = _draft(
+        "The user prefers deterministic privacy-safe workflows.",
+        evidence,
+        locator="user:0001",
+    )
+    second = _draft(
+        "The user prefers deterministic privacy-safe review workflows.",
+        second_evidence,
+        locator="user:0002",
+    )
+    second["evidence"] = [second_evidence, second_evidence]
+
+    gated = persistence_gate((second, first), capsule)
+
+    assert len(gated.accepted) == 2
+    assert gated.accepted[0].locator == "user:0001"
+    assert gated.accepted[1].evidence == (second_evidence,)
+
+
+def test_ranking_keeps_explicitly_marked_inference_in_the_lowest_tier():
+    from dataclasses import replace
+
+    from agc_runtime.capture_safety import persistence_gate
+
+    result, _evidence = _safe_result()
+    inferred_evidence = tuple(
+        f"I prefer tentative workflow topic {index}." for index in range(8)
+    )
+    research_evidence = "My research direction now prioritizes deterministic verification."
+    capsule = replace(
+        result.capsule,
+        user_signals=(*inferred_evidence, research_evidence),
+        decisions_results=(),
+        reusable_methods=(),
+        next_steps=(),
+    )
+    inferred = tuple(
+        _draft(
+            f"The user prefers tentative workflow topic {index}.",
+            evidence,
+            locator=f"user:{index:04d}",
+            mode="agent_inferred",
+        )
+        for index, evidence in enumerate(inferred_evidence)
+    )
+    research = _draft(
+        "The user's research direction now prioritizes deterministic verification.",
+        research_evidence,
+        locator="user:9999",
+        signal_type="research_change",
+        kind="interest",
+        category="research",
+    )
+
+    gated = persistence_gate((*inferred, research), capsule)
+
+    assert len(gated.accepted) == 8
+    assert any(item.statement == research["statement"] for item in gated.accepted)
+    assert gated.over_limit_count == 1
