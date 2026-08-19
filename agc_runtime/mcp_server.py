@@ -14,6 +14,7 @@ def create_server(memory_root: Path) -> "MCPServer":
     from mcp.server.mcpserver import MCPServer
 
     from agc_runtime.admin_service import dispatch_admin
+    from agc_runtime.capture_status_service import bind_capture_status
     from agc_runtime.paths import MemoryPaths
     from agc_runtime.read_service import dispatch_read
     from agc_runtime.write_service import dispatch_write
@@ -27,18 +28,9 @@ def create_server(memory_root: Path) -> "MCPServer":
             request.get("action") == "capture_status"
             and response["status"] == "accepted"
         ):
-            data = response["data"]
-            data["memory_root"] = {
-                **data["memory_root"],
-                "assessment": "verified",
-                "matches_host_binding": True,
-                "evidence": {"kind": "mcp_memory_root"},
-            }
-            data["activation_reasons"] = [
-                reason
-                for reason in data["activation_reasons"]
-                if reason != "memory_root_binding_not_assessed"
-            ]
+            response["data"] = bind_capture_status(
+                response["data"], evidence_kind="mcp_memory_root"
+            )
         return response
 
     @server.tool(name="agc.read")

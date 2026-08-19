@@ -1,0 +1,402 @@
+"""Contract tests for the explicit one-shot Capture census command."""
+
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+import json
+import os
+from pathlib import Path
+import socket
+import subprocess
+import sys
+
+import pytest
+
+from agc_runtime.capture_contracts import CaptureReceipt
+from agc_runtime.capture_transaction import read_json
+from agc_runtime.paths import MemoryPaths
+
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+SENTINEL = "private-source-text-must-not-cross-census-boundary"
+
+
+def _invoke(*arguments: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, "-m", "agc_runtime.capture_cli", *arguments],
+        cwd=REPOSITORY_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
+def _payload(result: subprocess.CompletedProcess[str]) -> dict[str, object]:
+    assert result.stderr == ""
+    assert len(result.stdout.splitlines()) == 1
+    return json.loads(result.stdout)
+
+
+def _write_config(
+    memory_root: Path,
+    source_root: Path,
+    *,
+    enabled: bool = True,
+    mode: str = "scanner_only",
+    paused: bool = False,
+    excluded_task_ids: tuple[str, ...] = (),
+    excluded_project_ids: tuple[str, ...] = (),
+) -> None:
+    memory_root.mkdir(parents=True, exist_ok=True)
+    default = (REPOSITORY_ROOT / "agc_runtime" / "default_config.yaml").read_text(
+        encoding="utf-8"
+    )
+    configured = (
+        default.replace("enabled: false", f"enabled: {str(enabled).lower()}", 1)
+        .replace("mode: off", f"mode: {mode}", 1)
+        .replace("paused: false", f"paused: {str(paused).lower()}", 1)
+        .replace("sources: []", f"sources:\n    - {source_root.as_posix()}", 1)
+        .replace(
+            "task_ids: []",
+            "task_ids: " + json.dumps(list(excluded_task_ids)),
+            1,
+        )
+        .replace(
+            "project_ids: []",
+            "project_ids: " + json.dumps(list(excluded_project_ids)),
+            1,
+        )
+    )
+    (memory_root / "config.yaml").write_text(configured, encoding="utf-8")
+
+
+def _write_completed_task(
+    source_root: Path,
+    *,
+    task_id: str = "task-alpha",
+    revision_id: str = "turn-alpha",
+) -> None:
+    sessions = source_root / "sessions"
+    sessions.mkdir(parents=True, exist_ok=True)
+    completed_at = datetime.now(timezone.utc).replace(microsecond=0) - timedelta(
+        minutes=1
+    )
+    started_at = completed_at - timedelta(minutes=1)
+    records = (
+        {
+            "timestamp": started_at.isoformat().replace("+00:00", "Z"),
+            "type": "session_meta",
+            "payload": {
+                "id": "rollout-alpha",
+                "session_id": task_id,
+                "source": "cli",
+            },
+        },
+        {
+            "timestamp": started_at.isoformat().replace("+00:00", "Z"),
+            "type": "response_item",
+            "payload": {"message": SENTINEL},
+        },
+        {
+            "timestamp": completed_at.isoformat().replace("+00:00", "Z"),
+            "type": "event_msg",
+            "payload": {"type": "task_complete", "turn_id": revision_id},
+        },
+    )
+    (sessions / "synthetic.jsonl").write_text(
+        "".join(json.dumps(item) + "\n" for item in records), encoding="utf-8"
+    )
+
+
+def _assert_content_did_not_persist(memory_root: Path) -> None:
+    for path in memory_root.rglob("*"):
+        if path.is_file():
+            assert SENTINEL.encode("utf-8") not in path.read_bytes()
+
+
+def test_probe_is_read_only_while_disabled_and_imports_no_source_or_scanner(
+    tmp_path: Path,
+):
+    memory_root = tmp_path / "absent-memory"
+    blocked = (
+        "agc_runtime.capture_source",
+        "agc_runtime.capture_scanner",
+        "agc_runtime.codex_source_adapter",
+    )
+    script = f"""
+import builtins
+import json
+real_import = builtins.__import__
+blocked = {blocked!r}
+def guarded(name, *args, **kwargs):
+    if any(name == item or name.startswith(item + '.') for item in blocked):
+        raise AssertionError('deferred Capture import')
+    return real_import(name, *args, **kwargs)
+builtins.__import__ = guarded
+from agc_runtime.capture_cli import main
+raise SystemExit(main(['probe', '--root', {str(memory_root)!r}]))
+"""
+
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=REPOSITORY_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    payload = _payload(result)
+    assert result.returncode == 0
+    assert payload["tool"] == "agc.capture"
+    assert payload["action"] == "probe"
+    assert payload["status"] == "accepted"
+    assert payload["data"]["state"]["enabled"] is False
+    assert payload["data"]["scanner"]["assessment"] == "not_assessed"
+    assert payload["data"]["memory_root"]["assessment"] == "verified"
+    assert str(memory_root) not in result.stdout
+    assert not memory_root.exists()
+
+
+@pytest.mark.parametrize("entrypoint", ["status", "probe"])
+def test_disabled_configured_status_and_probe_do_not_import_or_touch_sources(
+    tmp_path: Path, entrypoint: str
+):
+    memory_root = tmp_path / "memory"
+    source_root = tmp_path / "configured-source"
+    source_root.mkdir()
+    _write_config(memory_root, source_root, enabled=False, mode="off")
+    before = {
+        item.relative_to(tmp_path): item.read_bytes()
+        for item in tmp_path.rglob("*")
+        if item.is_file()
+    }
+    invocation = (
+        f"from agc_runtime.capture_status_service import capture_status\n"
+        f"sys.stdout.write(json.dumps(capture_status(Path({str(memory_root)!r}))) + '\\n')"
+        if entrypoint == "status"
+        else (
+            f"from agc_runtime.capture_cli import main\n"
+            f"raise SystemExit(main(['probe', '--root', {str(memory_root)!r}]))"
+        )
+    )
+    script = f"""
+import builtins
+import json
+import os
+from pathlib import Path
+import sys
+blocked = ('agc_runtime.capture_source', 'agc_runtime.capture_scanner', 'agc_runtime.codex_source_adapter')
+real_import = builtins.__import__
+def guarded_import(name, *args, **kwargs):
+    if any(name == item or name.startswith(item + '.') for item in blocked):
+        raise AssertionError('deferred Capture import')
+    return real_import(name, *args, **kwargs)
+builtins.__import__ = guarded_import
+source = str(Path({str(source_root)!r}))
+def guarded(name, original):
+    def check(self, *args, **kwargs):
+        if str(self) == source or str(self).startswith(source + os.sep):
+            raise AssertionError('disabled source filesystem access: ' + name)
+        return original(self, *args, **kwargs)
+    return check
+for name in ('resolve', 'is_dir', 'iterdir', 'glob', 'rglob'):
+    setattr(Path, name, guarded(name, getattr(Path, name)))
+{invocation}
+"""
+
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=REPOSITORY_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    payload = _payload(result)
+    assert result.returncode == 0
+    data = payload["data"] if entrypoint == "probe" else payload
+    assert data["state"]["enabled"] is False
+    assert data["source_roots"]["configured_count"] == 1
+    assert data["source_roots"]["assessment"] == "unavailable"
+    after = {
+        item.relative_to(tmp_path): item.read_bytes()
+        for item in tmp_path.rglob("*")
+        if item.is_file()
+    }
+    assert after == before
+
+
+@pytest.mark.parametrize(
+    ("arguments", "code"),
+    [
+        (("scan", "--root", "ROOT", "--mode", "census"), "invalid_invocation"),
+        (("cycle", "--root", "ROOT"), "invalid_invocation"),
+        (("scan", "--root", "ROOT", "--mode", "runner", "--once"), "invalid_invocation"),
+        (("scan", "--root", "ROOT", "--mode", "census", "--once", "--source-root", SENTINEL), "invalid_invocation"),
+    ],
+)
+def test_invalid_or_expansive_forms_emit_one_content_safe_failure(
+    tmp_path: Path, arguments: tuple[str, ...], code: str
+):
+    memory_root = tmp_path / "memory"
+    concrete = tuple(str(memory_root) if item == "ROOT" else item for item in arguments)
+
+    result = _invoke(*concrete)
+
+    payload = _payload(result)
+    assert result.returncode != 0
+    assert payload["status"] == "failed"
+    assert payload["error"]["code"] == code
+    assert SENTINEL not in result.stdout
+    assert str(memory_root) not in result.stdout
+    assert not memory_root.exists()
+
+
+def test_scan_refuses_disabled_capture_without_mutation(tmp_path: Path):
+    memory_root = tmp_path / "memory"
+
+    result = _invoke("scan", "--root", str(memory_root), "--mode", "census", "--once")
+
+    payload = _payload(result)
+    assert result.returncode != 0
+    assert payload["error"]["code"] == "capture_disabled"
+    assert not memory_root.exists()
+
+
+@pytest.mark.parametrize(
+    ("mode", "paused", "expected_code"),
+    [
+        ("runner", False, "capture_runner_unsupported"),
+        ("scanner_only", True, "capture_paused"),
+    ],
+)
+def test_scan_refuses_runner_and_paused_configuration(
+    tmp_path: Path, mode: str, paused: bool, expected_code: str
+):
+    memory_root = tmp_path / "memory"
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    _write_config(memory_root, source_root, mode=mode, paused=paused)
+    before = {item.relative_to(tmp_path): item.read_bytes() for item in tmp_path.rglob("*") if item.is_file()}
+
+    result = _invoke("cycle", "--root", str(memory_root), "--once")
+
+    payload = _payload(result)
+    assert result.returncode != 0
+    assert payload["error"]["code"] == expected_code
+    after = {item.relative_to(tmp_path): item.read_bytes() for item in tmp_path.rglob("*") if item.is_file()}
+    assert after == before
+
+
+def test_census_incremental_and_cycle_are_one_shot_scanner_only_flows(tmp_path: Path):
+    memory_root = tmp_path / "memory"
+    source_root = tmp_path / "source"
+    _write_completed_task(source_root)
+    _write_config(memory_root, source_root)
+
+    census = _invoke("scan", "--root", str(memory_root), "--mode", "census", "--once")
+    incremental = _invoke(
+        "scan", "--root", str(memory_root), "--mode", "incremental", "--once"
+    )
+    cycle = _invoke("cycle", "--root", str(memory_root), "--once")
+
+    census_payload = _payload(census)
+    incremental_payload = _payload(incremental)
+    cycle_payload = _payload(cycle)
+    assert (census.returncode, incremental.returncode, cycle.returncode) == (0, 0, 0)
+    assert census_payload["data"]["scan"]["known_key_count"] == 1
+    assert census_payload["data"]["scan"]["accounted_key_count"] == 1
+    assert census_payload["data"]["scan"]["silent_loss_count"] == 0
+    assert incremental_payload["data"]["scan"]["replay_count"] == 1
+    assert cycle_payload["data"]["scan"]["replay_count"] == 1
+    assert cycle_payload["data"]["mode"] == "incremental"
+    assert all(SENTINEL not in item.stdout for item in (census, incremental, cycle))
+    assert all(str(source_root) not in item.stdout for item in (census, incremental, cycle))
+    _assert_content_did_not_persist(memory_root)
+
+
+def test_validated_task_exclusion_applies_on_first_discovery_without_project_guess(
+    tmp_path: Path,
+):
+    memory_root = tmp_path / "memory"
+    source_root = tmp_path / "source"
+    _write_completed_task(source_root, task_id="task-excluded")
+    _write_config(
+        memory_root,
+        source_root,
+        excluded_task_ids=("task-excluded",),
+        excluded_project_ids=("project-unavailable",),
+    )
+
+    result = _invoke("scan", "--root", str(memory_root), "--mode", "census", "--once")
+
+    payload = _payload(result)
+    assert result.returncode == 0
+    assert payload["data"]["exclusions"] == {
+        "task_id_count": 1,
+        "project_id_count": 1,
+        "project_id_assessment": "not_assessed",
+    }
+    receipt_files = tuple(MemoryPaths.from_root(memory_root).capture.receipts.glob("*.json"))
+    assert len(receipt_files) == 1
+    receipt = CaptureReceipt.from_mapping(read_json(receipt_files[0]))
+    assert receipt.status == "excluded"
+    assert receipt.exclusion_reason == "configured_task_exclusion"
+
+
+def test_scan_busy_and_invalid_config_fail_with_fixed_content_safe_codes(tmp_path: Path):
+    from agc_runtime.locking import capture_write_lock
+
+    memory_root = tmp_path / "memory"
+    source_root = tmp_path / "source"
+    _write_completed_task(source_root)
+    _write_config(memory_root, source_root)
+    paths = MemoryPaths.from_root(memory_root)
+    with capture_write_lock(paths):
+        busy = _invoke("cycle", "--root", str(memory_root), "--once")
+        busy_probe = _invoke("probe", "--root", str(memory_root))
+    busy_payload = _payload(busy)
+    assert busy.returncode != 0
+    assert busy_payload["error"]["code"] == "capture_busy"
+    busy_probe_payload = _payload(busy_probe)
+    assert busy_probe.returncode != 0
+    assert busy_probe_payload["error"]["code"] == "capture_busy"
+
+    scanned = _invoke("cycle", "--root", str(memory_root), "--once")
+    assert scanned.returncode == 0, scanned.stdout
+    run_file = next((paths.capture.root / "census-runs").glob("*/run.json"))
+    run_file.write_text('{"private":"must-not-leak"}\n', encoding="utf-8")
+    corrupt_probe = _invoke("probe", "--root", str(memory_root))
+    corrupt_probe_payload = _payload(corrupt_probe)
+    assert corrupt_probe.returncode != 0
+    assert corrupt_probe_payload["error"]["code"] == "capture_integrity_failed"
+    assert "private" not in corrupt_probe.stdout
+
+    (memory_root / "config.yaml").write_text(
+        f"invalid: {SENTINEL}\n", encoding="utf-8"
+    )
+    invalid = _invoke("cycle", "--root", str(memory_root), "--once")
+    invalid_payload = _payload(invalid)
+    assert invalid.returncode != 0
+    assert invalid_payload["error"]["code"] == "invalid_runtime_config"
+    assert SENTINEL not in invalid.stdout
+    assert str(memory_root) not in invalid.stdout
+
+
+def test_scan_does_not_expose_model_daemon_or_semantic_request_surface(tmp_path: Path):
+    memory_root = tmp_path / "memory"
+    for option in ("--model", "--daemon", "--capsule", "--source-root"):
+        result = _invoke(
+            "scan",
+            "--root",
+            str(memory_root),
+            "--mode",
+            "census",
+            "--once",
+            option,
+            SENTINEL,
+        )
+        payload = _payload(result)
+        assert result.returncode != 0
+        assert payload["error"]["code"] == "invalid_invocation"
+        assert SENTINEL not in result.stdout

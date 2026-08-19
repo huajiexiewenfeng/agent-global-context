@@ -57,6 +57,7 @@ def test_package_exposes_the_pinned_mcp_stdio_entry_point():
     assert "mcp==2.0.0" in project["optional-dependencies"]["test"]
     assert project["scripts"]["agc-mcp"] == "agc_runtime.mcp_server:main"
     assert project["scripts"]["agc-capture-hook"] == "agc_runtime.capture_hook:main"
+    assert project["scripts"]["agc-capture"] == "agc_runtime.capture_cli:main"
 
 
 def test_core_cli_import_does_not_require_mcp():

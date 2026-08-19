@@ -558,6 +558,52 @@ def test_explicit_exclusion_policy_converges_an_existing_discovered_receipt(
     assert receipt.exclusion_reason == "configured_task_exclusion"
 
 
+def test_configured_task_id_exclusion_applies_after_one_discovery_and_on_replay(
+    tmp_path: Path,
+):
+    revision = _revision("first-seen-excluded")
+    adapter = SyntheticAdapter((revision,))
+    paths = MemoryPaths.from_root(tmp_path / "memory")
+    scanner = CaptureScanner(
+        CaptureStore(paths, clock=lambda: STARTED),
+        (adapter,),
+        excluded_task_ids=(revision.key.task_id,),
+    )
+
+    first = scanner.scan(run_started_at=STARTED)
+    second = scanner.scan(run_started_at=STARTED)
+
+    receipt = CaptureStore(paths).read_receipt(receipt_id_for(revision.key))
+    assert adapter.discover_count == 2
+    assert first.created_receipt_count == 1
+    assert second.replay_count == 1
+    assert receipt.status == "excluded"
+    assert receipt.exclusion_reason == "configured_task_exclusion"
+
+
+def test_force_full_ignores_the_durable_hint_without_clearing_scan_state(tmp_path: Path):
+    revision = _revision("force-full")
+    adapter = SyntheticAdapter((revision,))
+    paths = MemoryPaths.from_root(tmp_path / "memory")
+    scanner = CaptureScanner(CaptureStore(paths, clock=lambda: STARTED), (adapter,))
+
+    scanner.scan(run_started_at=STARTED)
+    before = CaptureStore(paths).load_scan_state(
+        binding=SourceBindingKey(1, "synthetic", ROOT_ID),
+        lookback_started_at="2026-08-06T12:00:00Z",
+    )
+    scanner.scan(run_started_at=STARTED, force_full=True)
+    after = CaptureStore(paths).load_scan_state(
+        binding=SourceBindingKey(1, "synthetic", ROOT_ID),
+        lookback_started_at="2026-08-06T12:00:00Z",
+    )
+
+    assert adapter.received_hints == [None, None]
+    assert before.hint is not None
+    assert after.hint is not None
+    assert after.state_version == before.state_version + 1
+
+
 def test_restart_rebuilds_accounting_from_frozen_truth_when_discovery_is_empty(
     tmp_path: Path,
 ):

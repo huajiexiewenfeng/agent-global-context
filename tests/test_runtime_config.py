@@ -106,6 +106,24 @@ def test_capture_config_enforces_mode_source_and_schema_v1_subagent_invariants(t
             load_runtime_config(paths)
 
 
+def test_disabled_capture_rejects_lexical_duplicate_sources_without_touching_them(
+    tmp_path: Path,
+):
+    paths = initialized_paths(tmp_path)
+    config_file = paths.root / "config.yaml"
+    source = tmp_path / "does-not-need-to-exist"
+    configured = config_file.read_text(encoding="utf-8").replace(
+        "sources: []",
+        f"sources:\n    - {source.as_posix()}\n    - {str(source).upper()}",
+    )
+    atomic_write_text(config_file, configured)
+
+    with pytest.raises(ValueError, match="duplicate roots"):
+        load_runtime_config(paths)
+
+    assert not source.exists()
+
+
 @pytest.mark.parametrize(
     ("duplicate", "key"),
     [

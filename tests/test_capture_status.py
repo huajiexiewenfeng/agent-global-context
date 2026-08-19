@@ -1,6 +1,13 @@
 """Contract tests for Capture status diagnostics."""
 
+from datetime import datetime, timedelta, timezone
+import json
 import inspect
+from pathlib import Path
+import subprocess
+import sys
+
+import pytest
 
 import agc_runtime.admin_service as admin_service
 import agc_runtime.capture_status_service as capture_status_service
@@ -11,10 +18,55 @@ from agc_runtime.paths import MemoryPaths
 from agc_runtime.utf8_io import atomic_write_text
 
 
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _unload_deferred_status_modules():
+    yield
+    for name in (
+        "agc_runtime.codex_source_adapter",
+        "agc_runtime.capture_scanner",
+        "agc_runtime.capture_ledger",
+        "agc_runtime.capture_source",
+    ):
+        sys.modules.pop(name, None)
+
+
+def _configured_status_root(tmp_path: Path) -> tuple[MemoryPaths, Path]:
+    memory_root = tmp_path / "memory"
+    source_root = tmp_path / "source"
+    sessions = source_root / "sessions"
+    sessions.mkdir(parents=True)
+    completed = datetime.now(timezone.utc).replace(microsecond=0) - timedelta(minutes=1)
+    started = completed - timedelta(minutes=1)
+    records = (
+        {"timestamp": started.isoformat().replace("+00:00", "Z"), "type": "session_meta", "payload": {"id": "rollout-status", "session_id": "task-status", "source": "cli"}},
+        {"timestamp": completed.isoformat().replace("+00:00", "Z"), "type": "event_msg", "payload": {"type": "task_complete", "turn_id": "turn-status"}},
+    )
+    (sessions / "status.jsonl").write_text(
+        "".join(json.dumps(item) + "\n" for item in records), encoding="utf-8"
+    )
+    default = (REPOSITORY_ROOT / "agc_runtime" / "default_config.yaml").read_text(encoding="utf-8")
+    memory_root.mkdir()
+    (memory_root / "config.yaml").write_text(
+        default.replace("enabled: false", "enabled: true", 1)
+        .replace("mode: off", "mode: scanner_only", 1)
+        .replace("sources: []", f"sources:\n    - {source_root.as_posix()}", 1),
+        encoding="utf-8",
+    )
+    return MemoryPaths.from_root(memory_root), source_root
+
+
 def test_capture_status_is_diagnosable_while_disabled(tmp_path):
-    status = capture_status(tmp_path)
+    memory_root = tmp_path / "memory"
+    status = capture_status(memory_root)
 
     assert status["activation_ready"] is False
+    assert status["scanner"]["assessment"] == "not_assessed"
+    assert status["scanner"]["code"] == "capture_disabled"
+    assert status["scanner"]["operation_eligible"] is False
+    assert not memory_root.exists()
 
 
 def test_capture_status_is_explicit_admin_route_without_path_or_user_content(tmp_path):
@@ -74,3 +126,85 @@ def test_direct_admin_api_has_no_host_evidence_injection_surface(tmp_path):
     assert tuple(inspect.signature(capture_status).parameters) == ("value",)
     assert not hasattr(capture_status_service, "HostBindingEvidence")
     assert not hasattr(admin_service, "make_host_bound_admin_dispatch")
+
+
+def test_capture_status_reports_truthful_durable_scanner_metrics_without_paths(tmp_path):
+    paths, source_root = _configured_status_root(tmp_path)
+    result = subprocess.run(
+        [sys.executable, "-m", "agc_runtime.capture_cli", "scan", "--root", str(paths.root), "--mode", "census", "--once"],
+        cwd=REPOSITORY_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout
+
+    status = capture_status(paths)
+
+    scanner = status["scanner"]
+    assert scanner["assessment"] == "ready"
+    assert scanner["code"] == "scanner_ready"
+    assert scanner["source_health"] == "healthy"
+    assert scanner["latest_census"] == {
+        "assessment": "available",
+        "run_count": 1,
+        "key_count": 1,
+    }
+    assert scanner["accounting"] == {
+        "known_key_count": 1,
+        "accounted_key_count": 1,
+        "pending_key_count": 0,
+        "silent_loss_count": 0,
+    }
+    assert scanner["dirty_marker_count"] == 0
+    assert scanner["scan_state"]["assessment"] == "available"
+    assert scanner["scan_state"]["binding_count"] == 1
+    assert scanner["scan_state"]["max_state_version"] == 2
+    assert scanner["operation_eligible"] is False
+    assert "memory_root_binding_not_assessed" in scanner["operation_reasons"]
+    rendered = json.dumps(status)
+    assert str(paths.root) not in rendered
+    assert str(source_root) not in rendered
+
+
+def test_capture_status_does_not_guess_ready_when_layout_has_no_scanner_state(tmp_path):
+    from agc_runtime.capture_store import CaptureStore
+
+    paths, _source_root = _configured_status_root(tmp_path)
+    CaptureStore(paths).ensure_layout()
+
+    status = capture_status(paths)
+
+    assert status["scanner"]["assessment"] == "absent"
+    assert status["scanner"]["code"] == "scanner_state_absent"
+    assert status["scanner"]["source_health"] == "not_assessed"
+    assert status["scanner"]["latest_census"]["assessment"] == "absent"
+    assert status["scanner"]["scan_state"]["assessment"] == "absent"
+
+
+def test_capture_status_reports_busy_and_corrupt_with_fixed_codes(tmp_path):
+    from agc_runtime.locking import capture_write_lock
+
+    paths, _source_root = _configured_status_root(tmp_path)
+    first = subprocess.run(
+        [sys.executable, "-m", "agc_runtime.capture_cli", "cycle", "--root", str(paths.root), "--once"],
+        cwd=REPOSITORY_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert first.returncode == 0, first.stdout
+
+    with capture_write_lock(paths):
+        busy = capture_status(paths)
+    assert busy["scanner"]["assessment"] == "busy"
+    assert busy["scanner"]["code"] == "scanner_busy"
+    assert busy["scanner"]["operation_eligible"] is False
+
+    run_file = next((paths.capture.root / "census-runs").glob("*/run.json"))
+    run_file.write_text('{"private":"must-not-leak"}\n', encoding="utf-8")
+    corrupt = capture_status(paths)
+    assert corrupt["scanner"]["assessment"] == "corrupt"
+    assert corrupt["scanner"]["code"] == "scanner_state_corrupt"
+    assert corrupt["scanner"]["operation_eligible"] is False
+    assert "private" not in json.dumps(corrupt)

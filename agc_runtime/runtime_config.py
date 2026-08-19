@@ -178,17 +178,28 @@ def _string_list(value: Any, name: str) -> tuple[str, ...]:
     return tuple(value)
 
 
-def _source_roots(value: Any) -> tuple[str, ...]:
+def _source_roots(value: Any, *, active: bool) -> tuple[str, ...]:
     sources = _string_list(value, "capture.sources")
     if not sources:
+        return sources
+    lexical_identities: set[str] = set()
+    for source in sources:
+        path = Path(source)
+        if not path.is_absolute():
+            raise ValueError("capture.sources entries must be an absolute directory")
+        lexical_identity = str(path).casefold()
+        if lexical_identity in lexical_identities:
+            raise ValueError("capture.sources must not contain duplicate roots")
+        lexical_identities.add(lexical_identity)
+    if not active:
+        # Disabled Capture validates only inert configuration shape. Filesystem
+        # identity and the deferred Source contract belong to activation.
         return sources
     identities: set[str] = set()
     from agc_runtime.capture_source import canonical_source_root, source_root_id_for
 
     for source in sources:
         path = Path(source)
-        if not path.is_absolute():
-            raise ValueError("capture.sources entries must be an absolute directory")
         try:
             canonical_source_root(path)
             identity = source_root_id_for(path)
@@ -298,7 +309,7 @@ def _parse_runtime_config(value: Any) -> RuntimeConfig:
     )
     if include_subagents:
         raise ValueError("capture.include_subagents must be false for schema version 1")
-    sources = _source_roots(capture["sources"])
+    sources = _source_roots(capture["sources"], active=enabled)
     if enabled and not sources:
         raise ValueError("enabled capture requires at least one capture.sources entry")
     hook_enabled = _bool(hook["enabled"], "capture.hook.enabled")

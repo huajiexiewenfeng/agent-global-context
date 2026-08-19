@@ -23,6 +23,7 @@ test = [
 agc = "agc_runtime.cli:main"
 agc-mcp = "agc_runtime.mcp_server:main"
 agc-capture-hook = "agc_runtime.capture_hook:main"
+agc-capture = "agc_runtime.capture_cli:main"
 
 [tool.setuptools.packages.find]
 include = ["agc_runtime*"]

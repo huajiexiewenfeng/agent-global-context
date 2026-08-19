@@ -1,6 +1,7 @@
 import asyncio
 import importlib
 import json
+import sys
 
 import pytest
 
@@ -21,6 +22,18 @@ from agc_runtime.paths import MemoryPaths
 
 
 UTC = "2026-08-13T12:00:00Z"
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _unload_deferred_status_modules():
+    yield
+    for name in (
+        "agc_runtime.codex_source_adapter",
+        "agc_runtime.capture_scanner",
+        "agc_runtime.capture_ledger",
+        "agc_runtime.capture_source",
+    ):
+        sys.modules.pop(name, None)
 
 
 def _seed_visible_capture(paths: MemoryPaths) -> CollectedObservation:
@@ -269,6 +282,7 @@ def test_mcp_capture_status_proves_only_the_bound_memory_root(tmp_path):
     assert data["memory_root"]["matches_host_binding"] is True
     assert data["memory_root"]["evidence"] == {"kind": "mcp_memory_root"}
     assert "memory_root_binding_not_assessed" not in data["activation_reasons"]
+    assert "memory_root_binding_not_assessed" not in data["scanner"]["operation_reasons"]
     assert {
         "capture_disabled",
         "capture_mode_off",
@@ -286,6 +300,51 @@ def test_mcp_capture_status_proves_only_the_bound_memory_root(tmp_path):
     assert MemoryPaths.from_root(memory_root).capture.cursor_hmac_key.read_bytes().hex() not in str(data)
     assert str(memory_root) not in str(data)
     assert str(rogue_root) not in str(data)
+    assert not rogue_root.exists()
+
+
+def test_mcp_bound_status_recomputes_scanner_eligibility_but_direct_status_does_not(
+    tmp_path,
+):
+    mcp_server_module = _mcp_server_module()
+    memory_root = tmp_path / "bound-memory"
+    rogue_root = tmp_path / "rogue-memory"
+    source_root = tmp_path / "synthetic-source"
+    source_root.mkdir()
+    server = mcp_server_module.create_server(memory_root)
+    _call(server, "agc.admin", {"action": "init"})
+    config_path = memory_root / "config.yaml"
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8")
+        .replace("enabled: false", "enabled: true", 1)
+        .replace("mode: off", "mode: scanner_only", 1)
+        .replace("sources: []", f"sources:\n    - {source_root.as_posix()}", 1),
+        encoding="utf-8",
+    )
+
+    mcp = _call(
+        server,
+        "agc.admin",
+        {"action": "capture_status", "root": str(rogue_root)},
+    )
+    direct = dispatch_admin(
+        MemoryPaths.from_root(memory_root), {"action": "capture_status"}
+    )
+
+    assert mcp["data"]["scanner"]["operation_eligible"] is True
+    assert mcp["data"]["scanner"]["operation_reasons"] == []
+    assert direct.data["scanner"]["operation_eligible"] is False
+    assert direct.data["scanner"]["operation_reasons"] == [
+        "memory_root_binding_not_assessed"
+    ]
+    assert {tool.name for tool in _list_tools(server)} == {
+        "agc.read",
+        "agc.write",
+        "agc.admin",
+    }
+    assert str(memory_root) not in str(mcp)
+    assert str(source_root) not in str(mcp)
+    assert str(rogue_root) not in str(mcp)
     assert not rogue_root.exists()
 
 

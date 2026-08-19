@@ -56,6 +56,7 @@ class CaptureScanner:
         adapters: Iterable[SourceAdapter],
         *,
         excluded_keys: Iterable[CaptureKey] = (),
+        excluded_task_ids: Iterable[str] = (),
     ) -> None:
         self.store = store
         unique: dict[tuple[str, str], tuple[AdapterDescriptor, SourceAdapter]] = {}
@@ -67,8 +68,14 @@ class CaptureScanner:
         self._excluded_keys = frozenset(
             CaptureKey.from_mapping(key.to_mapping()) for key in excluded_keys
         )
+        task_ids = tuple(excluded_task_ids)
+        if any(not isinstance(item, str) or not item for item in task_ids):
+            raise ValueError("excluded_task_ids must contain non-empty strings")
+        self._excluded_task_ids = frozenset(task_ids)
 
-    def scan(self, *, run_started_at: str) -> ScanReport:
+    def scan(self, *, run_started_at: str, force_full: bool = False) -> ScanReport:
+        if not isinstance(force_full, bool):
+            raise ValueError("force_full must be a boolean")
         started = _utc(run_started_at)
         if started.utcoffset() != timedelta(0):
             raise ValueError("run_started_at must be UTC")
@@ -110,7 +117,7 @@ class CaptureScanner:
                 and item[1].source_root_id == binding.source_root_id
             )
             raw_batch = adapter.discover(
-                None if binding_markers else state.hint, window
+                None if force_full or binding_markers else state.hint, window
             )
             batch = DiscoveryBatch.from_mapping(raw_batch.to_mapping())
             if batch.binding != binding or batch.window != window:
@@ -208,7 +215,10 @@ class CaptureScanner:
                     replay += 1
                     continue
                 self.store._point("before:census:receipt")
-                excluded = revision.key in self._excluded_keys
+                excluded = (
+                    revision.key in self._excluded_keys
+                    or revision.key.task_id in self._excluded_task_ids
+                )
                 try:
                     result = self.store.register_census_receipt(
                         receipt_for_revision(
