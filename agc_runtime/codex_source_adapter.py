@@ -1,4 +1,4 @@
-"""Census-only adapter for the versioned Codex JSONL source format."""
+"""Versioned Codex source discovery and in-memory target-turn loading."""
 
 from __future__ import annotations
 
@@ -109,8 +109,17 @@ class CodexSourceAdapter(SourceAdapter):
         raise CapabilityUnavailable("stop_hook_not_installed")
 
     def load_capsule(self, ref: RevisionRef, policy: Any) -> Any:
-        del ref, policy
-        raise CapabilityUnavailable("semantic_capture_not_installed")
+        from agc_runtime.capture_capsule import CapsulePolicy, build_capsule
+
+        if not isinstance(policy, CapsulePolicy):
+            raise CapabilityUnavailable("semantic_capture_not_installed")
+        self._validate_ref(ref)
+        try:
+            return build_capsule(self._iter_target_turn_records(ref), ref, policy)
+        except _SourceIdentityMismatch:
+            raise ValueError("capsule_source_identity_changed") from None
+        except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError):
+            raise ValueError("capsule_source_unavailable") from None
 
     def discover(self, hint: ScanHint | None, window: TimeWindow) -> DiscoveryBatch:
         self._validate_hint(hint)
@@ -425,12 +434,26 @@ class CodexSourceAdapter(SourceAdapter):
             raise ValueError("locator must identify a JSONL source file")
         return resolved
 
+    @staticmethod
+    def _source_signature(path: Path) -> tuple[int, int, int, int, int]:
+        status = path.stat()
+        return (
+            status.st_dev,
+            status.st_ino,
+            status.st_size,
+            status.st_mtime_ns,
+            status.st_ctime_ns,
+        )
+
     def _iter_target_turn_records(self, ref: RevisionRef) -> Iterator[dict[str, Any]]:
         """Yield target-turn records in memory for the future pre-Capsule gate."""
 
         self._validate_ref(ref)
         path = self._path_for_locator(ref.locator)
+        settled_signature = self._source_signature(path)
         scan = self._scan_file(path)
+        if self._source_signature(path) != settled_signature:
+            raise ValueError("source changed during target validation")
         if scan.diagnostic_code in {"unknown_source_shape", "conflicting_source_identity"}:
             raise _SourceIdentityMismatch("source identity does not match revision")
         if scan.diagnostic_code is not None or scan.identity is None:
@@ -508,6 +531,8 @@ class CodexSourceAdapter(SourceAdapter):
             raise _SourceIdentityMismatch("source identity does not match revision")
         if loaded_completions != dict(scan.completions):
             raise ValueError("critical source records changed during target load")
+        if self._source_signature(path) != settled_signature:
+            raise ValueError("source changed during target load")
         if not completed:
             raise ValueError("target turn is not complete")
         yield from target_records
