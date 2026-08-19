@@ -143,7 +143,7 @@ class CaptureScanner:
                     binding, created_at=started_at, code="census_run_conflict"
                 )
 
-            for code in batch.diagnostic_codes:
+            for code in sorted(batch.diagnostic_codes)[-1:]:
                 self.store.record_source_quarantine(
                     binding, created_at=started_at, code=code
                 )

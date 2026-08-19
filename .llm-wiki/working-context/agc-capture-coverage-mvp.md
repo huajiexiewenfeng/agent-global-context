@@ -35,7 +35,7 @@
 - excluded_scope:
   - production and test edits before plan confirmation
   - Observation aggregation, Candidate/Formal Memory mutation, semantic Recall changes, Trace/Eval/Loop, external memory engines, and full-history replay
-- current_gate: Capture Core Task 6 package-gate review
+- current_gate: Codex Source Census Task 6 verified; Extractor/Runner remains the next inactive implementation gate
 - requested_stage_or_bridge: Subagent-Driven Development directly on `main`, with per-task TDD and independent review
 - constraints:
   - current task behavior remains failure-open
@@ -63,16 +63,25 @@
 - Source-contract review: main-task/revision identity, active/archive reconciliation, transcript-format drift, and Hook/Scanner separation.
 - Documentation integrity: strict UTF-8/no-BOM scan for changed Markdown, `git diff --check`, and link/path existence checks.
 - Implementation planning gate: every acceptance criterion must map to one independently testable plan task before execution can be confirmed.
-- Future implementation gate: focused TDD per Capture contract, complete existing suite, package build, installer checks, deployed-profile diagnostics, synthetic seven-day census, crash/replay tests, sensitive-content tests, and foreground-latency measurement.
+- Remaining implementation gates: Extractor/Runner focused TDD, token-budget
+  and model-call evidence, real-profile shadow-backfill diagnostics, continuous
+  hosting, Hook trust and foreground-latency measurement, host route
+  activation, and binary downgrade prevention.
 
 ## Execution Status
 
-- requirement: planned
+- requirement: in progress; Capture Core and Codex Source Census implemented, overall MVP not complete
 - written_spec: approved
 - implementation_plan: confirmed
-- development: Capture Core Task 6 and review fixes complete; the only production delta is a backward-compatible CLI version alias
-- testing: focused `11 passed`; complete `514 passed, 1 warning`; installed wheel passes both version spellings, admin validation, provenance, and exactly-three-tools probes
-- next_gate: Capture Core exit gate satisfied; proceed to the Codex Source Census plan without enabling Capture
+- development: Capture Core and Codex Source Census Tasks 1-6 complete; Source
+  Census Task 6 added a narrowly authorized same-quarantine replay fix and no
+  Extractor/Runner/model/host behavior
+- testing: Source Census focused `3 passed`; ordered adjacent `99 passed`;
+  complete `647 passed, 1 warning`; clean installed wheel proves
+  `agc-capture` and exactly three MCP tools
+- next_gate: keep Capture inactive; proceed only to the Extractor/Runner plan,
+  with real-profile shadow backfill and Host rollout still requiring later
+  explicit gates
 
 ## Capture Core Task 6 Verification
 
@@ -168,3 +177,98 @@ alone and cannot safely restore post-Capture data. Host rollout must retain a
 Capture-capable Runtime and block that binary downgrade. Capture remains inert
 and is not yet usable. The CLI-version mismatch is resolved; the next stage is
 the Codex Source Census plan, still without enabling Capture.
+
+## Codex Source Census Task 6 Verification
+
+### Synthetic truth and replay
+
+- The synthetic configured root ends with `10` JSONL files / `3297` bytes and
+  no real prompt, answer, credential, profile, or copied transcript. It covers
+  ordinary completion, two revisions of one continued task, exact
+  active/archive replay and an archive move, explicit subagent exclusion,
+  incomplete/aborted and partial tails, unknown format, configured task
+  exclusion, transient sharing failure, late/out-of-order completion, missed
+  Hook delivery, and one delivered dirty marker.
+- The first one-shot Census run reports `5` known, `5` accounted, `0` silent
+  loss, and retains the unresolved locked marker. The second one-shot cycle
+  reports `7` known, `7` accounted, `0` silent loss, creates the two recovered
+  Receipts, and acknowledges the marker only while the matching key is present
+  in the locked strict snapshot's accounted set.
+- Final strict state is `7` Census keys, `7` Receipts/Ledger entries (`6`
+  discovered, `1` excluded), `0` Observations, `0` tombstones, `1`
+  content-free Source Quarantine, and `0` dirty markers. Source Health remains
+  truthfully degraded for unkeyed anomalies; those anomalies never enter the
+  denominator.
+- Third-cycle exact replay creates `0` Receipts and reports `7` replays. Census
+  key membership/correctness metadata, Receipt, Ledger, tombstone, quarantine,
+  conflict, and normalized scan-state correctness deltas are all zero. New
+  frozen-run identity and scan time/state version are explicit permitted
+  bookkeeping; active/archive locator movement is not Revision identity.
+
+### RED / review fix / GREEN
+
+```powershell
+& '.\.venv\Scripts\python.exe' -m pytest `
+  tests/test_capture_census_end_to_end.py -q -p no:cacheprovider `
+  --basetemp 'D:\tmp\agc-capture-source-red-6'
+# exit 1; 1 failed at the intentional unimplemented E2E scaffold
+
+# Completed E2E against be1fc4b:
+# exit 1; exact replay changed only Source Quarantine.created_at
+
+# Focused corrupt-quarantine contract before fail-closed fix:
+# exit 1; malformed durable quarantine was silently overwritten
+
+& '.\.venv\Scripts\python.exe' -m pytest `
+  tests/test_capture_census_end_to_end.py -q -p no:cacheprovider `
+  --basetemp 'D:\tmp\agc-capture-source-focused-final-6'
+# exit 0; 3 passed in 3.70s
+```
+
+The narrowly authorized production correction makes exact
+same-binding/same-code Source Quarantine replay byte-stable, retains the
+existing different-code single-slot replacement with a new timestamp, rejects
+malformed existing quarantine state without mutation, and collapses one
+batch's diagnostic list to its deterministic final single-slot value. It does
+not change Source discovery, Census identity, model/Runner/Hook activation, or
+formal-memory behavior.
+
+### Complete and package gates
+
+```powershell
+# disabled-boundary-first adjacent Source Census/Core suite
+# exit 0; 99 passed in 35.04s
+
+& '.\.venv\Scripts\python.exe' -m pytest -q -p no:cacheprovider `
+  --basetemp 'D:\tmp\agc-capture-source-full-final-6'
+# exit 0; 647 passed, 1 expected warning in 301.09s
+
+# clean copied-source wheel build/install, installed agc-capture probe,
+# installed-module provenance, and exact-three-MCP-tools node
+# exit 0; 2 passed in 10.93s
+```
+
+The one expected warning is the existing duplicate-name ZIP adversarial case.
+An earlier reverse custom adjacent order produced only the documented
+disabled-Core `sys.modules` precondition failure after Source suites; the
+disabled-boundary-first order passed all `99`. An earlier full E2E comparison
+included the permitted active/archive locator representative and was corrected
+to compare Revision membership/correctness fields while separately requiring
+one replay identity.
+
+### Isolation and pending gates
+
+Guards are installed before deferred imports and execution. Model/provider,
+network, subprocess, Extractor, Runner, Task Capsule, target-turn loader,
+Observation write, formal write, Hook installation, service/scheduler, and
+unconfigured-root enumeration counters all remain `0`. The real Stop Hook is
+also exercised with an injected marker-write failure and remains silent while
+Scanner discovery still accounts the Revision. Ordinary Recall stays empty;
+Candidate/Formal Memory/Event counts and the Formal Catalog byte hash are
+unchanged; source content, prompt, last-assistant, raw-exception, and absolute
+path sentinels have zero response/Capture-persistence hits.
+
+Extractor/Runner, token-budget/model-call proof, real-profile shadow backfill,
+continuous hosting, Hook trust and foreground p95 latency, host route
+activation, and binary downgrade prevention remain pending. No live profile
+was read or activated, and the overall Capture Coverage MVP is not complete.

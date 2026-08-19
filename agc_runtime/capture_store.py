@@ -591,6 +591,18 @@ class CaptureStore:
         with capture_write_lock(self.paths):
             self._ensure_layout_locked()
             path = self.capture.quarantines / f"source-{self._binding_digest(binding)}.json"
+            if path.exists():
+                try:
+                    existing = SourceQuarantine.from_mapping(read_json(path))
+                except (OSError, TypeError, ValueError) as error:
+                    raise ValueError("invalid_source_quarantine") from error
+                if (
+                    existing.adapter_id != quarantine.adapter_id
+                    or existing.source_root_id != quarantine.source_root_id
+                ):
+                    raise ValueError("source_quarantine_binding_conflict")
+                if existing.code == quarantine.code:
+                    return existing
             atomic_write_json(path, quarantine.to_mapping())
         return quarantine
 

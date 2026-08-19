@@ -93,8 +93,8 @@
 | source | done | confirmed v2 North Star, current Runtime evidence, and 2026-08-13 user decisions | 2026-08-13 |
 | design | done | approved written specification in `docs/superpowers/specs/2026-08-13-agent-global-context-high-coverage-capture-design.md` | 2026-08-13 |
 | plan | done | four dependency-ordered TDD plans with AC-01 through AC-20 traceability | 2026-08-13 |
-| development | done | Capture Core Tasks 1-6 implemented on `main`; Task 6 review adds only a backward-compatible `agc --version` alias and strengthened disabled-core evidence, with no Source/model/Runner/Hook behavior | 2026-08-14 |
-| testing | done | Task 6 focused: `11 passed`; complete suite: `514 passed`, one intentional duplicate-ZIP warning; clean wheel install proved both version forms, admin validation, wheel provenance, and exactly three MCP tools | 2026-08-14 |
+| development | in progress | Capture Core and Codex Source Census Tasks 1-6 are implemented on `main`; the Source Census Task 6 E2E required one narrow replay fix for the existing single-slot Source Quarantine, while Extractor/Runner and Host rollout remain unimplemented and inactive | 2026-08-19 |
+| testing | in progress | Source Census Task 6 focused: `3 passed`; ordered adjacent: `99 passed`; complete suite: `647 passed`, one intentional duplicate-ZIP warning; clean installed-wheel `agc-capture` and exactly-three-MCP-tools gate: `2 passed` | 2026-08-19 |
 | archive | pending |  | 2026-08-13 |
 
 ## Capture Core Task 6 Evidence
@@ -148,9 +148,60 @@
   restore or govern Capture data, and host-level binary downgrade prevention
   remains deferred. Capture is not usable or activated by this evidence.
 
+## Codex Source Census Task 6 Evidence
+
+- Scope: a synthetic-only E2E in `tests/test_capture_census_end_to_end.py`,
+  lifecycle evidence, and a narrowly authorized replay correction in
+  `CaptureStore.record_source_quarantine` / `CaptureScanner`. No live profile,
+  Extractor, Runner, model/provider, host route, scheduler, service, or formal
+  write path was enabled.
+- Corpus: one configured Codex root with `10` final JSONL files / `3297` bytes
+  covers ordinary main completion, two continued revisions, exact
+  active/archive replay plus archive move, subagent, incomplete/aborted and
+  partial tails, unknown source shape, one configured exclusion, one transient
+  sharing failure, and one late/out-of-order completion. A separate configured
+  marker and a failed/missed Hook delivery prove that dirty state is only a
+  hint and Scanner reconciliation is correctness authority.
+- Accounting: cycle 1 records `5/5` known/accounted keys while the locked key's
+  marker remains durable. Cycle 2 converges to `7/7`, `0` silent loss,
+  `6` discovered plus `1` excluded Receipt, `7` Ledger entries, `0`
+  tombstones, `1` content-free Source Quarantine, and `0` dirty markers. The
+  marker unlink guard observes matching durable Receipt/Ledger accounting
+  before acknowledgement.
+- Replay: the third exact cycle creates `0` Receipts and replays `7`; Census
+  key membership and correctness metadata, Receipts, Ledger, tombstones,
+  quarantines, conflicts, and scan-state correctness remain unchanged except
+  allowed run/timestamp/version bookkeeping. Active/archive locator movement
+  remains non-identity metadata and continued turn ids remain distinct.
+- Authentic product RED: after the intentional scaffold RED, the completed E2E
+  failed because exact replay refreshed Source Quarantine `created_at`. The
+  minimal fix preserves same-binding/same-code quarantine bytes, permits the
+  existing different-code single-slot replacement contract, fails closed on a
+  malformed existing quarantine, and persists only the deterministic final
+  diagnostic for one binding/batch.
+- Isolation: ordinary Recall remains empty, Capture Observation count is `0`,
+  Candidate/Formal Memory/Event counts and the Formal Catalog hash remain
+  unchanged, response and Capture persistence contain none of the synthetic
+  content/path/exception sentinels, and every model/provider/network,
+  subprocess, extractor, Task Capsule, target-turn load, Observation write,
+  formal write, Hook-install, service/scheduler, and unconfigured-root guard
+  remains `0`.
+- Verification: focused `3 passed in 3.70s`; disabled-boundary-first adjacent
+  `99 passed in 35.04s`; natural-order complete suite `647 passed, 1 warning in
+  301.09s`; clean copied-source wheel install plus installed `agc-capture`
+  probe and exact `agc.admin`/`agc.read`/`agc.write` surface `2 passed in
+  10.93s`. The warning is the intentional duplicate-name ZIP adversarial case.
+- Remaining gates: Extractor/Runner behavior, token-budget and model-call
+  evidence, real-profile shadow backfill, continuous hosting, Hook trust and
+  foreground p95 latency, host route activation, and binary downgrade
+  prevention remain pending explicit gates. This does not complete or activate
+  the overall Capture Coverage MVP.
+
 ## Open Questions
 
-- Real-profile Scanner enablement, Hook trust, Shadow Backfill, and continuous Runner activation remain separate explicit human gates even after implementation.
+- Extractor/Runner enablement, real-profile Scanner shadow backfill, Hook
+  trust/foreground latency, continuous hosting, host route activation, and
+  binary downgrade prevention remain separate explicit human gates.
 
 ## Notes
 
