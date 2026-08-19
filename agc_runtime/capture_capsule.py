@@ -39,6 +39,15 @@ def _sha256(value: Mapping[str, Any]) -> str:
     return hashlib.sha256(_canonical_json(value)).hexdigest()
 
 
+def _canonical_sensitive_label(value: str) -> str:
+    return unicodedata.normalize("NFC", value).strip().casefold()
+
+
+def _sensitive_label_fingerprint(value: str) -> str:
+    canonical = _canonical_sensitive_label(value)
+    return hashlib.sha256(("capsule-sensitive-label-v1\x00" + canonical).encode("utf-8")).hexdigest()
+
+
 @dataclass(frozen=True)
 class CapsulePolicy:
     schema_version: int = CAPTURE_SCHEMA_VERSION
@@ -84,6 +93,10 @@ class CapsulePolicy:
             or not labels_valid
         ):
             raise _contract_error()
+        canonical_labels = tuple(
+            dict.fromkeys(_canonical_sensitive_label(label) for label in self.sensitive_labels)
+        )
+        object.__setattr__(self, "sensitive_labels", canonical_labels)
 
 
 @dataclass(frozen=True)
@@ -105,6 +118,9 @@ class TaskCapsule:
     reusable_methods: tuple[str, ...] = field(default=(), repr=False)
     next_steps: tuple[str, ...] = field(default=(), repr=False)
     file_locators: tuple[str, ...] = field(default=(), repr=False)
+    _sensitive_label_fingerprints: tuple[str, ...] = field(
+        default=(), repr=False, compare=False
+    )
 
     def to_mapping(self) -> dict[str, Any]:
         return {
@@ -174,6 +190,9 @@ def _empty_capsule(ref: RevisionRef, policy: CapsulePolicy) -> TaskCapsule:
         identity_quality=ref.identity_quality,
         completed_at=ref.completed_at,
         project_scope=policy.project_scope,
+        _sensitive_label_fingerprints=tuple(
+            _sensitive_label_fingerprint(label) for label in policy.sensitive_labels
+        ),
     )
 
 

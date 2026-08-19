@@ -685,6 +685,7 @@ def test_structured_secret_changes_have_content_independent_redaction_and_hashes
     assert left.source_fingerprint == right.source_fingerprint
     assert left.capsule_hash == right.capsule_hash
     assert left.counts == right.counts
+    assert left.counts.scrubbed_secret_count == 1
     surfaces = repr((left, right, left.capsule.to_mapping(), right.capsule.to_mapping()))
     assert "SECRET_ALPHA" not in surfaces
     assert "SECRET_BRAVO" not in surfaces
@@ -1079,3 +1080,294 @@ def test_ranking_keeps_explicitly_marked_inference_in_the_lowest_tier():
     assert len(gated.accepted) == 8
     assert any(item.statement == research["statement"] for item in gated.accepted)
     assert gated.over_limit_count == 1
+
+
+@pytest.mark.parametrize(
+    ("left_value", "right_value"),
+    (
+        (
+            '{"Private-Note":"LABEL_SECRET_ALPHA"}',
+            '{"Private-Note":"LABEL_SECRET_BRAVO"}',
+        ),
+        (
+            '"Private-Note": LABEL_SECRET_ALPHA',
+            '"Private-Note": LABEL_SECRET_BRAVO',
+        ),
+        (
+            "<Private-Note>LABEL_SECRET_ALPHA</Private-Note>",
+            "<Private-Note>LABEL_SECRET_BRAVO</Private-Note>",
+        ),
+    ),
+)
+def test_configured_sensitive_label_structures_have_content_independent_hashes(
+    left_value: str,
+    right_value: str,
+):
+    from agc_runtime.capture_capsule import CapsulePolicy, build_capsule
+
+    policy = CapsulePolicy(
+        project_scope="project:stable",
+        sensitive_labels=("Private-Note",),
+    )
+    left = build_capsule(
+        (_record("user", f"I prefer safe workflows with {left_value}."),),
+        _ref(),
+        policy,
+    )
+    right = build_capsule(
+        (_record("user", f"I prefer safe workflows with {right_value}."),),
+        _ref(),
+        policy,
+    )
+
+    assert left.source_fingerprint == right.source_fingerprint
+    assert left.capsule_hash == right.capsule_hash
+    assert left.counts == right.counts
+    assert left.counts.scrubbed_secret_count == 1
+    assert "LABEL_SECRET" not in repr((left.capsule.to_mapping(), right.capsule.to_mapping()))
+
+
+def test_configured_sensitive_label_in_title_has_content_independent_hashes():
+    from agc_runtime.capture_capsule import CapsulePolicy, build_capsule
+
+    policy = CapsulePolicy(
+        project_scope="project:stable",
+        sensitive_labels=("Private-Note",),
+    )
+
+    def result(secret: str):
+        return build_capsule(
+            (
+                {
+                    "type": "session_meta",
+                    "payload": {
+                        "id": "rollout-main",
+                        "session_id": "task-main",
+                        "title": f'Capture {{"Private-Note":"{secret}"}}',
+                    },
+                },
+            ),
+            _ref(),
+            policy,
+        )
+
+    left = result("TITLE_LABEL_ALPHA")
+    right = result("TITLE_LABEL_BRAVO")
+
+    assert left.source_fingerprint == right.source_fingerprint
+    assert left.capsule_hash == right.capsule_hash
+    assert left.counts == right.counts
+    assert left.counts.scrubbed_secret_count == 1
+    assert "TITLE_LABEL" not in repr((left.capsule.to_mapping(), right.capsule.to_mapping()))
+
+
+def test_persistence_gate_rejects_capsule_policy_sensitive_labels_without_label_text_leak():
+    from agc_runtime.capture_capsule import CapsulePolicy, build_capsule
+    from agc_runtime.capture_safety import persistence_gate
+
+    evidence = "I prefer deterministic privacy-safe workflows."
+    result = build_capsule(
+        (_record("user", evidence),),
+        _ref(),
+        CapsulePolicy(
+            project_scope="project:stable",
+            sensitive_labels=("Private-Note",),
+        ),
+    )
+    gated = persistence_gate(
+        (
+            _draft("Private-Note: POST_GATE_LABEL_SENTINEL", evidence),
+            _draft(
+                "The user prefers workflows with Private-Note: INLINE_LABEL_SENTINEL.",
+                evidence,
+                locator="user:0002",
+            ),
+        ),
+        result.capsule,
+    )
+
+    assert gated.accepted == ()
+    assert gated.filtered_safety_count == 2
+    assert "Private-Note" not in repr(result.capsule)
+    assert "POST_GATE_LABEL_SENTINEL" not in repr(gated)
+
+
+@pytest.mark.parametrize(
+    "content",
+    (
+        ["I prefer UNTYPED_LIST_STRING_SENTINEL workflows."],
+        [{"text": "I prefer UNTYPED_LIST_MAPPING_SENTINEL workflows."}],
+        [
+            {
+                "type": "unknown_text",
+                "text": "I prefer UNKNOWN_LIST_TYPE_SENTINEL workflows.",
+            }
+        ],
+    ),
+)
+def test_content_parts_require_an_explicit_supported_text_type(content: list[object]):
+    from agc_runtime.capture_capsule import CapsulePolicy, build_capsule
+
+    record = _record("user", "placeholder")
+    assert isinstance(record["payload"], dict)
+    record["payload"]["content"] = content
+    result = build_capsule(
+        (record,),
+        _ref(),
+        CapsulePolicy(project_scope="project:stable"),
+    )
+
+    assert result.capsule.user_signals == ()
+    assert "SENTINEL" not in repr(result.capsule.to_mapping())
+
+
+@pytest.mark.parametrize(
+    "body",
+    (
+        "I prefer safe workflows.\n```python\nUNTERMINATED_FENCE_SENTINEL = 1",
+        "I prefer safe workflows.\n"
+        + "\n".join(
+            f'{{"item":{index},"value":"JSON_MAPPING_SENTINEL"}}' for index in range(4)
+        ),
+        "I prefer safe workflows.\n"
+        + "\n".join(f"workflow.process(METHOD_CALL_SENTINEL_{index})" for index in range(6)),
+        "I prefer safe workflows.\n2026-08-20T10:00:00Z INFO LOG_CUE_SENTINEL",
+    ),
+)
+def test_structural_payloads_drop_the_whole_cued_record(body: str):
+    from agc_runtime.capture_capsule import CapsulePolicy, build_capsule
+
+    result = build_capsule(
+        (_record("user", body),),
+        _ref(),
+        CapsulePolicy(project_scope="project:stable"),
+    )
+
+    assert result.capsule.user_signals == ()
+    assert result.counts.dropped_safety_count == 1
+    assert "SENTINEL" not in repr(result.capsule.to_mapping())
+
+
+def test_interrogative_user_signal_without_question_mark_is_rejected_pre_and_post_gate():
+    from dataclasses import replace
+
+    from agc_runtime.capture_capsule import CapsulePolicy, build_capsule
+    from agc_runtime.capture_safety import persistence_gate
+
+    question = "Do you prefer deterministic workflows"
+    result = build_capsule(
+        (_record("user", question),),
+        _ref(),
+        CapsulePolicy(project_scope="project:stable"),
+    )
+    assert result.capsule.user_signals == ()
+
+    adversarial_capsule = replace(result.capsule, user_signals=(question,))
+    gated = persistence_gate(
+        (_draft("The user prefers deterministic workflows.", question),),
+        adversarial_capsule,
+    )
+    assert gated.accepted == ()
+    assert gated.filtered_policy_count == 1
+
+
+@pytest.mark.parametrize(
+    ("evidence", "statement"),
+    (
+        ("I don't prefer remote work.", "The user prefers remote work."),
+        ("I hardly ever prefer remote work.", "The user prefers remote work."),
+        ("I avoid remote work.", "The user does not prefer remote work."),
+        ("I hardly ever avoid remote work.", "The user avoid remote work."),
+    ),
+)
+def test_grounding_preserves_broad_polarity_and_durable_predicate_class(
+    evidence: str,
+    statement: str,
+):
+    from dataclasses import replace
+
+    from agc_runtime.capture_safety import persistence_gate
+
+    result, _base_evidence = _safe_result()
+    capsule = replace(result.capsule, user_signals=(evidence,), decisions_results=())
+    gated = persistence_gate((_draft(statement, evidence),), capsule)
+
+    assert gated.accepted == ()
+    assert gated.filtered_policy_count == 1
+
+
+@pytest.mark.parametrize(
+    ("evidence", "statement"),
+    (
+        (
+            "Result: PostgreSQL stores project data.",
+            "The user prefers PostgreSQL for project data.",
+        ),
+        (
+            "Result: React supports component hooks.",
+            "The user prefers React component hooks.",
+        ),
+    ),
+)
+def test_assistant_project_or_third_party_results_cannot_ground_user_preferences(
+    evidence: str,
+    statement: str,
+):
+    from dataclasses import replace
+
+    from agc_runtime.capture_safety import persistence_gate
+
+    result, _base_evidence = _safe_result()
+    capsule = replace(
+        result.capsule,
+        user_signals=(),
+        decisions_results=(evidence,),
+        reusable_methods=(),
+    )
+    draft = _draft(
+        statement,
+        evidence,
+        mode="behavior_observed",
+        signal_type="verified_outcome",
+    )
+    gated = persistence_gate((draft,), capsule)
+
+    assert gated.accepted == ()
+    assert gated.filtered_policy_count == 1
+
+
+@pytest.mark.parametrize(
+    ("evidence", "statement"),
+    (
+        (
+            "I prefer Rust, I prefer remote work.",
+            "The user prefers Rust, prefers remote work.",
+        ),
+        (
+            "I prefer Rust: I prefer remote work.",
+            "The user prefers Rust: prefers remote work.",
+        ),
+        (
+            "I prefer Rust / I prefer remote work.",
+            "The user prefers Rust / prefers remote work.",
+        ),
+        (
+            "I prefer Rust. I prefer remote work.",
+            "The user prefers Rust. The user prefers remote work.",
+        ),
+    ),
+)
+def test_atomicity_rejects_repeated_durable_predicates_across_separators(
+    evidence: str,
+    statement: str,
+):
+    from dataclasses import replace
+
+    from agc_runtime.capture_safety import persistence_gate
+
+    result, _base_evidence = _safe_result()
+    capsule = replace(result.capsule, user_signals=(evidence,), decisions_results=())
+    gated = persistence_gate((_draft(statement, evidence),), capsule)
+
+    assert gated.accepted == ()
+    assert gated.filtered_policy_count == 1

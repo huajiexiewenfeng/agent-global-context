@@ -7,6 +7,8 @@ import unicodedata
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping, TYPE_CHECKING
 
+from agc_runtime.capture_capsule import _sensitive_label_fingerprint
+
 if TYPE_CHECKING:
     from agc_runtime.capture_capsule import CapsulePolicy, TaskCapsule
     from agc_runtime.capture_contracts import RevisionRef
@@ -122,25 +124,70 @@ _LOG_LINE = re.compile(
     r"(?:TRACE|DEBUG|INFO|WARN(?:ING)?|ERROR|FATAL)\b"
 )
 _ASSIGNMENT_LINE = re.compile(r"^\s*[A-Za-z_][A-Za-z0-9_.-]*\s*(?::=|=)\s*.+$")
+_SERIALIZED_LINE = re.compile(
+    r"^\s*(?:\{.*[\"'][^\r\n]+[\"']\s*:.*\}|\[.*\]|[\"']?[^:\r\n]{1,64}[\"']?\s*:\s*.+)\s*$"
+)
+_METHOD_CALL_LINE = re.compile(
+    r"^\s*[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+\s*\([^\r\n]*\)\s*;?\s*$"
+)
 _QUOTED_ASSERTION = re.compile(
     r"(?i)(?:^\s*>|\b(?:said|says|quoted?|according to)\b\s*[:\"]|[\"“”].*\b(?:i|user)\b)"
 )
-_NEGATION = re.compile(r"(?i)\b(?:no|not|never|cannot|can't|doesn't|do not|must not)\b|(?:不|没有|从不|不得)")
-_USER_SUBJECT = re.compile(r"(?i)^\s*(?:the\s+user(?:'s|’s)?|user(?:'s|’s)?)\b|^\s*用户")
-_DURABLE_CLAIM = re.compile(
-    r"(?i)\b(?:prefer(?:s|red)?|values?|avoids?|long[- ]term goal|goal is|aims? to|"
-    r"research direction|trajectory|must|must not|cannot|needs? to|requires?|constraint|"
-    r"is able to|can reliably|demonstrated ability|learned to|acquired .{0,40} skill|"
-    r"identifies as|principle is|background|uses? .{0,80} (?:method|workflow|process|practice|approach)|"
-    r"follows? .{0,80} (?:method|workflow|process|practice|approach))\b|"
-    r"(?:偏好|长期目标|研究方向|成长轨迹|必须|不得|约束|能够|掌握|方法|流程|原则|背景)"
+_INTERROGATIVE_START = re.compile(
+    r"(?i)^\s*(?:do|does|did|can|could|would|should|is|are|am|was|were|why|how|"
+    r"what|when|where|who|which|will|have|has|had)\b|^\s*(?:是否|能否|可以|为什么|怎么|如何|什么|哪里|谁)"
 )
+_NEGATION = re.compile(
+    r"(?i)\b(?:no|not|never|cannot|can't|don't|doesn't|didn't|isn't|aren't|wasn't|"
+    r"weren't|won't|wouldn't|couldn't|shouldn't|do not|does not|did not|must not)\b|"
+    r"(?:不|没有|从不|不得)"
+)
+_DOWN_TONER = re.compile(r"(?i)\b(?:hardly|hardly ever|rarely|seldom|scarcely|barely)\b|(?:很少|几乎不)")
+_USER_SUBJECT = re.compile(r"(?i)^\s*(?:the\s+user(?:'s|’s)?|user(?:'s|’s)?)\b|^\s*用户")
 _WORD = re.compile(r"[A-Za-z0-9_]{3,}|[\u3400-\u9fff]{2,}")
 _STOP_WORDS = frozenset(
     {
         "the", "user", "and", "for", "with", "that", "this", "from", "has", "have",
         "prefer", "prefers", "may",
     }
+)
+
+_DURABLE_PREDICATES: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("preference", re.compile(r"(?i)\b(?:prefer(?:s|red)?|values?)\b|(?:偏好|看重)")),
+    ("avoidance", re.compile(r"(?i)\bavoids?\b|(?:避免|回避)")),
+    ("goal", re.compile(r"(?i)\b(?:long[- ]term\s+)?goal\b|\baims?\s+to\b|(?:长期目标|目标是)")),
+    (
+        "constraint",
+        re.compile(
+            r"(?i)\b(?:must(?:\s+not)?|cannot|needs?\s+to|requires?|"
+            r"is\s+constrained\s+to|has\s+a\s+constraint)\b|"
+            r"(?:必须|不得|不能|需要|要求|约束)"
+        ),
+    ),
+    (
+        "ability",
+        re.compile(
+            r"(?i)\b(?:is\s+able\s+to|can\s+reliably|demonstrated\s+ability)\b|"
+            r"(?:能够|可以可靠|证明了?能力)"
+        ),
+    ),
+    (
+        "method",
+        re.compile(
+            r"(?i)\b(?:uses?|follows?|reuses?)\b.{0,80}\b"
+            r"(?:method|workflow|process|practice|approach)\b|"
+            r"(?:使用|遵循|复用).{0,40}(?:方法|流程|实践)"
+        ),
+    ),
+    (
+        "trajectory",
+        re.compile(
+            r"(?i)\b(?:research\s+direction|trajectory|learned\s+to|"
+            r"acquired\s+.{0,40}\s+skill)\b|(?:研究方向|成长轨迹|学会|掌握)"
+        ),
+    ),
+    ("principle", re.compile(r"(?i)\bprinciple\b|(?:原则)")),
+    ("identity", re.compile(r"(?i)\b(?:identifies\s+as|background)\b|(?:身份|背景)")),
 )
 
 
@@ -173,11 +220,20 @@ def _normalize_text(value: str) -> str:
     return "\n".join(compact).strip()
 
 
-def _sensitive_label_pattern(labels: tuple[str, ...]) -> re.Pattern[str] | None:
+def _sensitive_label_patterns(labels: tuple[str, ...]) -> tuple[re.Pattern[str], ...]:
     if not labels:
-        return None
-    return re.compile(
-        r"(?im)\b(?:" + "|".join(re.escape(label) for label in labels) + r")\b\s*[:=]\s*[^\r\n]+"
+        return ()
+    keys = r"(?:" + "|".join(re.escape(label) for label in labels) + r")"
+    return (
+        re.compile(
+            r"(?im)^(?P<indent>[ \t]*)[\"']?" + keys + r"[\"']?\s*:\s*[|>][^\r\n]*"
+            r"(?:\r?\n(?P=indent)[ \t]+[^\r\n]*)+"
+        ),
+        re.compile(r"(?is)<\s*" + keys + r"\b[^>]*>.*?</\s*" + keys + r"\s*>"),
+        re.compile(
+            r"(?i)[\"']?" + keys + r"[\"']?\s*[:=]\s*"
+            r"(?:\"[^\"\r\n]*\"|'[^'\r\n]*'|[^\r\n,;}]+)"
+        ),
     )
 
 
@@ -204,19 +260,58 @@ def _scrub_known_secrets(text: str, labels: tuple[str, ...]) -> tuple[str, int]:
         _JWT,
     ):
         cleaned = replace(pattern, cleaned)
-    label_pattern = _sensitive_label_pattern(labels)
-    if label_pattern is not None:
+    for label_pattern in _sensitive_label_patterns(labels):
         cleaned = replace(label_pattern, cleaned)
     return cleaned, count
+
+
+_XML_LABEL_KEY = re.compile(r"(?i)<\s*([^<>\s/]{1,64})(?:\s[^>]*)?>")
+
+
+def _structured_label_candidates(text: str) -> frozenset[str]:
+    candidates = {match.group(1) for match in _XML_LABEL_KEY.finditer(text)}
+    for separator in re.finditer(r"[:=]", text):
+        prefix = text[max(0, separator.start() - 66) : separator.start()].rstrip()
+        prefix = prefix.rstrip("\"'").lstrip("{[,; \t\r\n\"'")
+        if 1 <= len(prefix) <= 64:
+            candidates.add(prefix)
+        for boundary in re.finditer(r"[\s{\[,;]", prefix):
+            candidate = prefix[boundary.end() :].strip(" \t\r\n\"'")
+            if 1 <= len(candidate) <= 64:
+                candidates.add(candidate)
+    return frozenset(candidates)
+
+
+def _contains_sensitive_label(text: str, fingerprints: tuple[str, ...]) -> bool:
+    if not fingerprints:
+        return False
+    allowed = frozenset(fingerprints)
+    return any(
+        _sensitive_label_fingerprint(candidate) in allowed
+        for candidate in _structured_label_candidates(text)
+    )
 
 
 def _strip_prohibited_content(text: str) -> tuple[str, bool]:
     if (
         re.search(r"(?m)^\s*(?:diff --git|@@ |\*\*\* (?:Begin|End) Patch)", text)
         or "Traceback (most recent call last):" in text
+        or text.count("```") % 2
     ):
         return "", True
     source_lines = text.split("\n")
+    log_lines = sum(1 for line in source_lines if _LOG_LINE.search(line))
+    serialized_lines = sum(1 for line in source_lines if _SERIALIZED_LINE.search(line))
+    assignment_lines = sum(1 for line in source_lines if _ASSIGNMENT_LINE.search(line))
+    method_call_lines = sum(1 for line in source_lines if _METHOD_CALL_LINE.search(line))
+    if (
+        log_lines
+        or serialized_lines >= 3
+        or assignment_lines >= 3
+        or method_call_lines >= 3
+        or len(re.findall(r"\{[^{}\r\n]{1,400}:[^{}\r\n]{1,400}\}", text)) >= 3
+    ):
+        return "", True
     if len(source_lines) >= 8:
         unsafe_lines = sum(
             1
@@ -267,14 +362,16 @@ def _extract_text(value: Any) -> str | None:
         return None
     parts: list[str] = []
     for item in value:
-        if isinstance(item, str):
-            parts.append(item)
-        elif isinstance(item, dict):
-            item_type = item.get("type")
-            if item_type in {None, "text", "input_text", "output_text"}:
-                candidate = item.get("text", item.get("content"))
-                if isinstance(candidate, str):
-                    parts.append(candidate)
+        if not isinstance(item, Mapping) or item.get("type") not in {
+            "text",
+            "input_text",
+            "output_text",
+        }:
+            return None
+        candidate = item.get("text")
+        if not isinstance(candidate, str):
+            return None
+        parts.append(candidate)
     return "\n".join(parts) if parts else None
 
 
@@ -345,18 +442,38 @@ def _record_matches_turn(record: Mapping[str, Any], revision_id: str) -> bool:
     return bool(candidates) and all(candidate == revision_id for candidate in candidates)
 
 
-def _user_has_high_signal(text: str) -> bool:
-    if text.endswith(("?", "？")) or _HYPOTHETICAL.search(text) or _QUOTED_ASSERTION.search(text):
-        return False
-    return (
-        re.search(
-            r"(?i)\b(?:i|my|we|our)\b.{0,80}\b(?:prefer|goal|must|never|always|"
-            r"constraint|principle|long[- ]term|learned|reusable|method|workflow)\b|"
-            r"(?:我|我的|我们).{0,40}(?:偏好|目标|必须|不得|始终|长期|约束|原则|学会|方法|流程)",
-            text,
+def _durable_predicate_matches(text: str) -> tuple[tuple[str, int, int], ...]:
+    matches: list[tuple[str, int, int]] = []
+    for predicate_class, pattern in _DURABLE_PREDICATES:
+        matches.extend(
+            (predicate_class, match.start(), match.end()) for match in pattern.finditer(text)
         )
-        is not None
-    )
+    return tuple(sorted(matches, key=lambda item: (item[1], item[2], item[0])))
+
+
+def _single_durable_predicate_class(text: str) -> str | None:
+    matches = _durable_predicate_matches(text)
+    return matches[0][0] if len(matches) == 1 else None
+
+
+def _polarity_class(text: str) -> str:
+    if _DOWN_TONER.search(text):
+        return "down_toned"
+    if _NEGATION.search(text):
+        return "negative"
+    return "positive"
+
+
+def _user_has_high_signal(text: str) -> bool:
+    if (
+        text.endswith(("?", "？"))
+        or _INTERROGATIVE_START.search(text)
+        or _HYPOTHETICAL.search(text)
+        or _QUOTED_ASSERTION.search(text)
+    ):
+        return False
+    first_person = re.search(r"(?i)\b(?:i|my|we|our)\b|(?:我|我的|我们)", text) is not None
+    return first_person and _single_durable_predicate_class(text) is not None
 
 
 def _units(text: str, maximum: int) -> tuple[str, ...]:
@@ -700,10 +817,12 @@ def _substantive_words(text: str) -> set[str]:
     }
 
 
-def _draft_is_unsafe(draft: ObservationDraft) -> bool:
+def _draft_is_unsafe(draft: ObservationDraft, capsule: "TaskCapsule") -> bool:
     if draft.sensitivity not in {"normal", "personal"}:
         return True
     combined = "\n".join((draft.statement, *draft.evidence))
+    if _contains_sensitive_label(combined, capsule._sensitive_label_fingerprints):
+        return True
     scrubbed, count = _scrub_known_secrets(combined, ())
     if count or scrubbed != combined:
         return True
@@ -716,6 +835,8 @@ def _draft_is_unsafe(draft: ObservationDraft) -> bool:
 def _is_atomic(statement: str) -> bool:
     if _MULTI_CLAIM.search(statement):
         return False
+    if len(_durable_predicate_matches(statement)) != 1:
+        return False
     terminal = re.findall(r"[.!?。！？]", statement.rstrip(".!?。！？"))
     return not terminal
 
@@ -724,7 +845,7 @@ def _is_personally_relevant(draft: ObservationDraft) -> bool:
     statement = draft.statement
     return (
         _USER_SUBJECT.search(statement) is not None
-        and _DURABLE_CLAIM.search(statement) is not None
+        and _single_durable_predicate_class(statement) is not None
         and _PSYCHOLOGICAL.search(statement) is None
     )
 
@@ -732,6 +853,7 @@ def _is_personally_relevant(draft: ObservationDraft) -> bool:
 def _evidence_form_is_assertive(evidence: str) -> bool:
     return not (
         evidence.endswith(("?", "？"))
+        or _INTERROGATIVE_START.search(evidence)
         or _HYPOTHETICAL.search(evidence)
         or _QUOTED_ASSERTION.search(evidence)
     )
@@ -740,6 +862,7 @@ def _evidence_form_is_assertive(evidence: str) -> bool:
 def _provenance_supports_mode(
     draft: ObservationDraft,
     evidence_provenance: dict[str, frozenset[str]],
+    predicate_class: str,
 ) -> bool:
     if draft.assertion_mode == "direct":
         allowed = frozenset({"user_signal"})
@@ -747,7 +870,30 @@ def _provenance_supports_mode(
         allowed = frozenset({"decision_result", "reusable_method"})
     else:
         allowed = frozenset({"user_signal", "decision_result", "reusable_method"})
-    return all(evidence_provenance[evidence].intersection(allowed) for evidence in draft.evidence)
+    for evidence in draft.evidence:
+        provenance = evidence_provenance[evidence]
+        if not provenance.intersection(allowed):
+            return False
+        assistant_provenance = provenance.intersection(
+            {"decision_result", "reusable_method", "next_step"}
+        )
+        if assistant_provenance and predicate_class in {
+            "preference",
+            "avoidance",
+            "goal",
+            "principle",
+            "identity",
+        }:
+            return False
+        if "reusable_method" in assistant_provenance and predicate_class != "method":
+            return False
+        if "decision_result" in assistant_provenance and predicate_class not in {
+            "constraint",
+            "ability",
+            "trajectory",
+        }:
+            return False
+    return True
 
 
 def _draft_is_policy_valid(
@@ -757,7 +903,11 @@ def _draft_is_policy_valid(
 ) -> bool:
     if draft.project_scope != capsule.project_scope:
         return False
-    if draft.statement.endswith(("?", "？")) or _HYPOTHETICAL.search(draft.statement):
+    if (
+        draft.statement.endswith(("?", "？"))
+        or _INTERROGATIVE_START.search(draft.statement)
+        or _HYPOTHETICAL.search(draft.statement)
+    ):
         return False
     if not _is_atomic(draft.statement):
         return False
@@ -771,10 +921,18 @@ def _draft_is_policy_valid(
         return False
     if not all(_evidence_form_is_assertive(evidence) for evidence in draft.evidence):
         return False
-    if not _provenance_supports_mode(draft, evidence_provenance):
+    predicate_class = _single_durable_predicate_class(draft.statement)
+    if predicate_class is None:
         return False
-    statement_negated = _NEGATION.search(draft.statement) is not None
-    if any((_NEGATION.search(evidence) is not None) != statement_negated for evidence in draft.evidence):
+    if not all(
+        _single_durable_predicate_class(evidence) == predicate_class
+        for evidence in draft.evidence
+    ):
+        return False
+    if not _provenance_supports_mode(draft, evidence_provenance, predicate_class):
+        return False
+    statement_polarity = _polarity_class(draft.statement)
+    if any(_polarity_class(evidence) != statement_polarity for evidence in draft.evidence):
         return False
     evidence_words = _substantive_words(" ".join(draft.evidence))
     statement_words = _substantive_words(draft.statement)
@@ -833,7 +991,7 @@ def persistence_gate(
         except (AttributeError, TypeError, ValueError):
             policy_count += 1
             continue
-        if _draft_is_unsafe(draft):
+        if _draft_is_unsafe(draft, capsule):
             safety_count += 1
             continue
         if not _draft_is_policy_valid(draft, capsule, evidence_provenance):

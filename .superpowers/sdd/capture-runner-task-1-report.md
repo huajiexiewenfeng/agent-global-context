@@ -28,7 +28,9 @@ Tests are in `tests/test_capture_capsule_safety.py`.
   field is `repr=False`; only its schema version appears in `repr`. It contains
   the bound Revision identity, completion/project metadata, selected target-turn
   user signals, final decisions/results, reusable methods, next steps, and safe
-  relative high-level locators.
+  relative high-level locators. Configured sensitive-label text is not carried
+  forward; only domain-separated, non-serialized, comparison-neutral label
+  fingerprints remain in memory for the post-extractor safety gate.
 - `CapsuleResult` contains no raw records or excerpts. It returns the hidden
   Capsule, distinct versioned `source_fingerprint` and `capsule_hash`, exact
   source schema versions, the deterministic estimate, and content-free
@@ -44,7 +46,10 @@ Tests are in `tests/test_capture_capsule_safety.py`.
   selects only the last final assistant message, scrubs known credential patterns before
   selection/hashing, removes private absolute paths, and drops reasoning,
   encrypted/tool/attachment/other-turn records plus code, diff, traceback,
-  terminal, log, quoted-source, and serialized-payload blocks.
+  terminal, log, quoted-source, and serialized-payload blocks. Content-part
+  lists accept only explicitly typed text parts; unknown/untyped parts,
+  unbalanced fences, repeated serialized mappings, dense method calls, and any
+  log-shaped line fail closed for the whole record.
 - The known-secret corpus covers JSON/YAML scalar and block assignments, XML
   elements, partial and complete PEM blocks, password and generic token assignments,
   OpenAI/AWS-style environment names, Bearer/Basic authorization, API keys,
@@ -61,7 +66,11 @@ Tests are in `tests/test_capture_capsule_safety.py`.
   unsupported psychological inference, non-atomic/multi-claim statements,
   project-scope mismatch, and ungrounded evidence. Evidence must equal a whole
   Capsule signal rather than a substring and cover at least 75% of the claim's
-  substantive lexical units.
+  substantive lexical units. Declarative user evidence must match the claim's
+  durable predicate class and polarity/down-toner class. Assistant result and
+  method provenance cannot be recast as preferences, goals, identity, or
+  personality, and repeated durable predicates are non-atomic regardless of
+  comma, colon, slash, or sentence separators.
 - Direct DTOs round-trip through the same strict mapping validator. Evidence is
   deduplicated before scoring. Accepted drafts are canonically deduplicated
   within the Revision, ranked first by the specified semantic tier (verified
@@ -155,6 +164,36 @@ inference unconditionally the lowest semantic tier produced the final GREEN:
 Task 1 plus Codex Source Adapter: 73 passed in 0.71s
 ```
 
+### Second independent security review RED/GREEN
+
+A second **independent reviewer message** against main commit `7d363f5`
+reported one Critical and four Important remaining gaps: structured configured
+labels and the persistence label-policy handoff; fail-open content parts and
+structural payloads; interrogative/polarity/provenance grounding; and repeated
+predicate atomicity.
+
+The first adversarial subset, before any second-review production change, was:
+
+```text
+15 failed, 6 passed, 59 deselected in 0.42s
+```
+
+The six baseline-green cases represented already-conservative behavior. The
+configured-label fixtures were then corrected to keep the structured value in
+the same high-signal unit; their authentic focused RED was `5 failed`. Minimal
+fixes produced label `5 passed`, typed-content/structural `7 passed`, and
+semantic/provenance/atomicity `10 passed`.
+
+Two self-review edges received separate RED/GREEN cycles: compositional
+`hardly ever avoid` polarity (`1 failed, 3 passed` before the fix) and inline
+configured `label:` fingerprint matching (`1 failed` before the fix). Final
+second-review focused evidence is:
+
+```text
+Task Capsule and safety file: 81 passed in 0.29s
+Task 1 plus Codex Source Adapter: 96 passed in 0.78s
+```
+
 The managed-root sentinel tripwire initially had one Windows-only test harness
 failure because `Path.write_text` produced CRLF rather than the asserted LF.
 The product made no write. The assertion was corrected to require byte-exact
@@ -166,7 +205,7 @@ Final Source Adapter, Source Contracts, Census, Scanner, and disabled-boundary
 adjacent suite, in its required census-before-adapter import order:
 
 ```text
-46 passed in 17.99s
+46 passed in 20.23s
 ```
 
 A deliberately contaminated reverse order produced only the repository's
@@ -176,7 +215,7 @@ required order passed without a product change.
 Final natural-order complete repository suite:
 
 ```text
-706 passed, 1 expected warning in 296.72s
+729 passed, 1 expected warning in 296.29s
 ```
 
 The warning is the existing intentional duplicate-name ZIP adversarial
@@ -185,7 +224,7 @@ fixture.
 Clean package evidence:
 
 - Existing offline wheel/install plus exact MCP surface nodes: `2 passed in
-  11.14s`; the server exposes only `agc.admin`, `agc.read`, and `agc.write`.
+  11.61s`; the server exposes only `agc.admin`, `agc.read`, and `agc.write`.
 - A fresh `python -m build --wheel --no-isolation` succeeded and explicitly
   packaged `capture_capsule.py`, `capture_safety.py`, and the updated source
   adapter.
