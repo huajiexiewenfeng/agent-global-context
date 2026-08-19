@@ -14,7 +14,7 @@ import os
 import re
 import secrets
 from pathlib import Path
-from typing import Callable, Sequence
+from typing import TYPE_CHECKING, Callable, Sequence
 
 from agc_runtime.capture_contracts import (
     CAPTURE_SCHEMA_VERSION, CAPTURE_STATUSES, CaptureKey, CaptureLease, CaptureReceipt,
@@ -25,6 +25,9 @@ from agc_runtime.capture_contracts import (
 from agc_runtime.capture_transaction import atomic_write_bytes, atomic_write_json, read_json, safe_unlink
 from agc_runtime.locking import capture_write_lock
 from agc_runtime.paths import MemoryPaths
+
+if TYPE_CHECKING:
+    from agc_runtime.capture_source import CensusRun, ScanHint, ScanState, SourceBindingKey, TimeWindow
 
 
 _CAPTURE_ID = re.compile(r"^(?:cr|co|ct)_[0-9a-f]{64}$")
@@ -274,11 +277,229 @@ class CaptureStore:
         digest = hashlib.sha256(f"{key.adapter_id}\0{key.source_root_id}".encode("utf-8")).hexdigest()
         return self.capture.conflicts / f"source-{digest}.json"
 
+    @staticmethod
+    def _binding_digest(binding: SourceBindingKey) -> str:
+        from agc_runtime.capture_ledger import binding_digest
+
+        return binding_digest(binding.adapter_id, binding.source_root_id)
+
+    def _scan_state_path(self, binding: SourceBindingKey) -> Path:
+        return self.capture.scan_state / f"state-{self._binding_digest(binding)}.json"
+
+    def _census_run_path(self, census_id: str) -> Path:
+        return self.capture.root / "census-runs" / f"{census_id}.json"
+
     def _read_receipt(self, receipt_id: str) -> CaptureReceipt:
         return CaptureReceipt.from_mapping(read_json(self._receipt_path(receipt_id)))
 
     def read_receipt(self, receipt_id: str) -> CaptureReceipt:
         return self._read_receipt(receipt_id)
+
+    def freeze_census(
+        self,
+        *,
+        binding: SourceBindingKey,
+        window: TimeWindow,
+        started_at: str,
+        revisions: Sequence[RevisionRef],
+        source_quarantine_count: int = 0,
+    ) -> CensusRun:
+        """Durably freeze a content-free Census before Receipt accounting."""
+
+        from agc_runtime.capture_ledger import persist_revision
+        from agc_runtime.capture_source import CensusRun, SourceBindingKey, TimeWindow
+
+        binding = SourceBindingKey.from_mapping(binding.to_mapping())
+        window = TimeWindow.from_mapping(window.to_mapping())
+        run_start = _parse_utc(started_at)
+        if (
+            _parse_utc(window.end_at) != run_start
+            or _parse_utc(window.start_at) != run_start - timedelta(days=7)
+        ):
+            raise ValueError("census must use the exact seven-day run window")
+        validated = tuple(RevisionRef.from_mapping(item.to_mapping()) for item in revisions)
+        if any(
+            item.key.adapter_id != binding.adapter_id
+            or item.key.source_root_id != binding.source_root_id
+            for item in validated
+        ):
+            raise ValueError("census revision does not match binding")
+        if source_quarantine_count < 0:
+            raise ValueError("source_quarantine_count must not be negative")
+        digest = hashlib.sha256(
+            json.dumps(
+                {
+                    "binding": binding.to_mapping(),
+                    "started_at": started_at,
+                    "window": window.to_mapping(),
+                },
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("ascii")
+        ).hexdigest()[:32]
+        census_id = f"census-{digest}"
+        with capture_write_lock(self.paths):
+            self._ensure_layout_locked()
+            for revision in validated:
+                persist_revision(self.capture.census, revision)
+            census = CensusRun.from_mapping(
+                {
+                    "schema_version": CAPTURE_SCHEMA_VERSION,
+                    "census_id": census_id,
+                    "binding": binding.to_mapping(),
+                    "window": window.to_mapping(),
+                    "started_at": started_at,
+                    "frozen_at": self._clock(),
+                    "revision_keys": [item.key.to_mapping() for item in validated],
+                    "source_quarantine_count": source_quarantine_count,
+                }
+            )
+            atomic_write_json(self._census_run_path(census_id), census.to_mapping())
+            return census
+
+    def load_scan_state(
+        self, *, binding: SourceBindingKey, lookback_started_at: str
+    ) -> ScanState:
+        from agc_runtime.capture_source import ScanState, SourceBindingKey
+
+        binding = SourceBindingKey.from_mapping(binding.to_mapping())
+        path = self._scan_state_path(binding)
+        if path.exists():
+            state = ScanState.from_mapping(read_json(path))
+            if state.binding != binding:
+                raise ValueError("scan state binding mismatch")
+            return state
+        return ScanState.from_mapping(
+            {
+                "schema_version": CAPTURE_SCHEMA_VERSION,
+                "binding": binding.to_mapping(),
+                "state_version": 1,
+                "hint": None,
+                "last_scan_at": None,
+                "lookback_started_at": lookback_started_at,
+            }
+        )
+
+    def advance_scan_state(
+        self,
+        *,
+        binding: SourceBindingKey,
+        expected_version: int,
+        hint: ScanHint | None,
+        last_scan_at: str,
+        lookback_started_at: str,
+    ) -> ScanState:
+        from agc_runtime.capture_source import ScanState, SourceBindingKey
+
+        binding = SourceBindingKey.from_mapping(binding.to_mapping())
+        try:
+            desired = ScanState.from_mapping(
+                {
+                    "schema_version": CAPTURE_SCHEMA_VERSION,
+                    "binding": binding.to_mapping(),
+                    "state_version": expected_version + 1,
+                    "hint": hint.to_mapping() if hint else None,
+                    "last_scan_at": last_scan_at,
+                    "lookback_started_at": lookback_started_at,
+                }
+            )
+        except ValueError as error:
+            if "SourceBindingKey" in str(error):
+                raise ValueError("scan state binding mismatch") from error
+            raise
+        with capture_write_lock(self.paths):
+            self._ensure_layout_locked()
+            path = self._scan_state_path(binding)
+            current_version = 1
+            if path.exists():
+                current = ScanState.from_mapping(read_json(path))
+                if current.binding != binding:
+                    raise ValueError("scan state binding mismatch")
+                current_version = current.state_version
+            if current_version != expected_version:
+                raise ValueError("scan_state_conflict")
+            atomic_write_json(path, desired.to_mapping())
+        return desired
+
+    def ready_revisions(self) -> tuple[CaptureReceipt, ...]:
+        ready = {"discovered", "queued", "retryable"}
+        return tuple(
+            sorted(
+                (item for item in self.iter_receipts() if item.status in ready),
+                key=lambda item: item.receipt_id,
+            )
+        )
+
+    def is_key_accounted(self, key: CaptureKey) -> bool:
+        key = CaptureKey.from_mapping(key.to_mapping())
+        receipt = self._receipt_path(receipt_id_for(key))
+        tombstone = self._path(self.capture.tombstones, tombstone_id_for(key), _CAPTURE_ID)
+        if tombstone.exists():
+            try:
+                return (
+                    CaptureSuppressionTombstone.from_mapping(read_json(tombstone)).capture_key
+                    == key
+                )
+            except (OSError, TypeError, ValueError):
+                return False
+        ledger = self._ledger_path(receipt_id_for(key))
+        if not receipt.exists() or not ledger.exists():
+            return False
+        try:
+            current = CaptureReceipt.from_mapping(read_json(receipt))
+            entry = LedgerEntry.from_mapping(read_json(ledger))
+        except (OSError, TypeError, ValueError):
+            return False
+        return (
+            current.key == key
+            and entry.capture_key == key
+            and entry.receipt_id == current.receipt_id
+            and entry.status == current.status
+        )
+
+    def record_source_quarantine(
+        self, binding: SourceBindingKey, *, created_at: str, code: str
+    ) -> SourceQuarantine:
+        from agc_runtime.capture_ledger import source_quarantine_for
+        from agc_runtime.capture_source import SourceBindingKey
+
+        binding = SourceBindingKey.from_mapping(binding.to_mapping())
+        quarantine = source_quarantine_for(binding, created_at=created_at, code=code)
+        with capture_write_lock(self.paths):
+            self._ensure_layout_locked()
+            path = self.capture.quarantines / f"source-{self._binding_digest(binding)}.json"
+            atomic_write_json(path, quarantine.to_mapping())
+        return quarantine
+
+    def register_quarantined_revision(
+        self, revision: RevisionRef, *, discovered_at: str, code: str
+    ) -> CaptureReceipt:
+        from agc_runtime.capture_ledger import quarantined_receipt, receipt_for_revision
+
+        revision = RevisionRef.from_mapping(revision.to_mapping())
+        receipt_id = receipt_id_for(revision.key)
+        with capture_write_lock(self.paths):
+            self._ensure_layout_locked()
+            target = self._receipt_path(receipt_id)
+            if target.exists():
+                current = self._read_receipt(receipt_id)
+                if current.status == "quarantined":
+                    return current
+                receipt = quarantined_receipt(
+                    current, updated_at=discovered_at, code=code
+                )
+            else:
+                receipt = receipt_for_revision(
+                    revision,
+                    discovered_at=discovered_at,
+                    status="quarantined",
+                    error_code=code,
+                )
+            self._write_receipt(receipt)
+            self._write_ledger(receipt, status="quarantined", processed_at=None)
+            self._write_source_conflict(receipt.key, discovered_at)
+            return receipt
 
     def iter_receipts(self) -> tuple[CaptureReceipt, ...]:
         """Return strictly decoded receipts for the isolated read service."""
@@ -530,6 +751,7 @@ class CaptureStore:
             target = self._receipt_path(receipt.receipt_id)
             if not target.exists():
                 self._write_receipt(receipt)
+                self._point("after:discovery:receipt")
                 self._write_ledger(receipt, status=receipt.status, processed_at=None)
                 return ReconcileResult(receipt.status, True, receipt.receipt_id)
             current = self._read_receipt(receipt.receipt_id)
@@ -538,6 +760,26 @@ class CaptureStore:
             if current.source_fingerprint == receipt.source_fingerprint:
                 if current.status == "complete" and not self._manifest_valid(current):
                     raise ValueError("complete receipt has no valid immutable manifest")
+                ledger_path = self._ledger_path(current.receipt_id)
+                repair_ledger = not ledger_path.exists()
+                if not repair_ledger:
+                    try:
+                        ledger = LedgerEntry.from_mapping(read_json(ledger_path))
+                        repair_ledger = (
+                            ledger.capture_key != current.key
+                            or ledger.receipt_id != current.receipt_id
+                            or ledger.status != current.status
+                        )
+                    except (OSError, TypeError, ValueError):
+                        repair_ledger = True
+                if repair_ledger:
+                    self._write_ledger(
+                        current,
+                        status=current.status,
+                        processed_at=(
+                            current.updated_at if current.status == "complete" else None
+                        ),
+                    )
                 return ReconcileResult(current.status, False, current.receipt_id)
             self._write_source_conflict(current.key, receipt.updated_at)
             if current.status == "complete":
