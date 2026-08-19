@@ -100,6 +100,21 @@ def _freeze_census(store: CaptureStore, revisions: tuple[RevisionRef, ...]):
     )
 
 
+def _partial_census_stage(
+    paths: MemoryPaths, revision: RevisionRef, *, token: str
+) -> tuple[Path, Path, bytes]:
+    stage = (
+        paths.capture.root
+        / "census-runs"
+        / f".census-mid-publication.{token}.tmp"
+    )
+    member = stage / "members" / f"{receipt_id_for(revision.key)}.json"
+    member.parent.mkdir(parents=True)
+    data = json.dumps(revision.to_mapping(), sort_keys=True).encode("utf-8")
+    member.write_bytes(data)
+    return stage, member, data
+
+
 def _request(target: dict) -> dict:
     return {"action": "capture_forget", "authorization": "explicit_user_request", "target": target}
 
@@ -344,6 +359,77 @@ def test_empty_census_run_directory_is_recreated_by_forget_rollback_or_recovery(
 
     assert run_path.is_dir()
     assert store.frozen_revisions() == (revision,)
+
+
+def test_revision_forget_ignores_unrelated_mid_publication_census_stage(
+    tmp_path: Path,
+):
+    paths, _store, _receipt_value, _observations = _populated(tmp_path)
+    unrelated_key = CaptureKey(
+        _key().adapter_id,
+        _key().source_root_id,
+        "unrelated-stage-task",
+        "unrelated-stage-revision",
+    )
+    stage, member, before = _partial_census_stage(
+        paths, _revision(unrelated_key), token="unrelated"
+    )
+
+    response = dispatch_write(
+        paths, _request({"type": "revision", **_key().to_mapping()})
+    )
+
+    assert response.status == "accepted", response
+    assert stage.is_dir()
+    assert member.read_bytes() == before
+
+
+def test_revision_forget_scrubs_target_from_partial_mid_publication_census_stage(
+    tmp_path: Path,
+):
+    paths, _store, receipt, _observations = _populated(tmp_path)
+    stage, _member, _before = _partial_census_stage(
+        paths, _revision(_key()), token="target"
+    )
+
+    response = dispatch_write(
+        paths, _request({"type": "revision", **_key().to_mapping()})
+    )
+
+    assert response.status == "accepted", response
+    assert not stage.exists()
+    tombstone = paths.capture.tombstones / f"{tombstone_id_for(_key())}.json"
+    needles = (_key().task_id, _key().revision_id, receipt.receipt_id)
+    for path in paths.capture.root.rglob("*"):
+        if path.is_file() and path != tombstone:
+            text = path.read_bytes().decode("utf-8", errors="ignore")
+            assert all(needle not in text for needle in needles), path
+
+
+@pytest.mark.parametrize("recovery", ["rollback", "restart"])
+def test_partial_target_census_stage_is_restored_by_forget_rollback_or_recovery(
+    tmp_path: Path, recovery: str
+):
+    paths, _store, _receipt_value, _observations = _populated(tmp_path)
+    stage, member, original = _partial_census_stage(
+        paths, _revision(_key()), token=recovery
+    )
+    before = capture_forget_service._read_primary(paths)
+    after = capture_forget_service._updated_revision(before, _key())
+    transaction = CaptureForgetTransaction(paths)
+    operation_count = sum(
+        before.get(name) != after.get(name) for name in set(before) | set(after)
+    )
+    transaction.begin(operation_count)
+    capture_forget_service._apply_files(transaction, paths, before, after)
+    assert not stage.exists()
+
+    if recovery == "rollback":
+        transaction.rollback()
+    else:
+        assert CaptureForgetTransaction.recover(paths) == 1
+
+    assert member.read_bytes() == original
 
 
 def test_revision_forget_fails_closed_on_foreign_observation_in_target_manifest(tmp_path: Path):

@@ -133,7 +133,12 @@ def _runtime_artifact_matches(value: dict[str, Any], key: CaptureKey, receipt_id
 
 
 def _backup_projection(entries: dict[str, bytes]) -> dict[str, bytes]:
-    return {name: data for name, data in entries.items() if managed_backup._capture_name_allowed(name)}
+    return {
+        name: data
+        for name, data in entries.items()
+        if managed_backup._capture_name_allowed(name)
+        and not managed_backup._has_temporary_component(name)
+    }
 
 
 def _mapping_binds_observation(value: Any, observation_id: str) -> bool:
@@ -356,11 +361,46 @@ def _forget_revision_from_census_runs(
     if not grouped:
         return dict(entries)
 
+    result = dict(entries)
+    canonical_groups: dict[str, dict[str, bytes]] = {}
+    target_needles = (
+        receipt_id_for(key).encode("ascii"),
+        key.task_id.encode("utf-8"),
+        key.revision_id.encode("utf-8"),
+    )
+    for directory, objects in grouped.items():
+        if directory.startswith(".census-") and directory.endswith(".tmp"):
+            contains_target = False
+            for relative, data in objects.items():
+                if any(needle in relative.encode("utf-8") or needle in data for needle in target_needles):
+                    contains_target = True
+                    break
+                if relative.startswith("members/") and relative.count("/") == 1:
+                    try:
+                        if RevisionRef.from_mapping(_strict_json(data)).key == key:
+                            contains_target = True
+                            break
+                    except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+                        # Hidden staging is non-authoritative. Raw identity
+                        # needles above still make target-bearing corruption
+                        # removable; unrelated partial state must not block
+                        # an authorized forget.
+                        pass
+            if contains_target:
+                group_prefix = f"{prefix}{directory}/"
+                for name in tuple(result):
+                    if name.startswith(group_prefix):
+                        result.pop(name, None)
+            continue
+        canonical_groups[directory] = objects
+
+    if not canonical_groups:
+        return result
+
     from agc_runtime.capture_ledger import validate_frozen_census_run
     from agc_runtime.capture_source import CensusRun
 
-    result = dict(entries)
-    for directory, objects in grouped.items():
+    for directory, objects in canonical_groups.items():
         if "run.json" not in objects:
             raise ValueError("frozen Census run is missing metadata")
         census = CensusRun.from_mapping(_strict_json(objects["run.json"]))

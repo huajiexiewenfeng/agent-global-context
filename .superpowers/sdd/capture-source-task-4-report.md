@@ -110,6 +110,13 @@ The first attempt used pytest's default per-user temporary root and failed in
 fixture setup with `PermissionError`. That was classified as environment-only,
 then rerun with an explicit `D:\tmp` basetemp to obtain the product REDs above.
 
+Final review RED covered a true mid-publication tree containing only a valid
+`members/*.json` and no `run.json`: `4 failed`. Both unrelated and target-bearing
+hidden stages incorrectly returned `capture_forget_target_not_found`, while the
+rollback/restart variants failed at the same strict metadata check. After the
+hidden-stage branch and backup-projection alignment, the exact group reached
+`4 passed`.
+
 ## Contract Evidence
 
 - The Scanner computes and freezes `[run_started_at - 7 days, run_started_at]`.
@@ -161,6 +168,12 @@ then rerun with an explicit `D:\tmp` basetemp to obtain the product REDs above.
   suppression tombstone. Observation-forget behavior is unchanged. The
   recoverable forget transaction is the atomic boundary; rollback and restart
   recovery recreate removed run directories from strict before-images.
+- Hidden `.census-*.tmp` publication stages are non-authoritative. An unrelated
+  partial stage remains byte-exact and cannot block forget or backup
+  validation. If a strict member or a raw receipt/task/revision identity binds
+  the stage to the target, the entire abandoned stage is scrubbed; transaction
+  rollback and restart recovery restore it byte-exact if deletion is
+  interrupted. Canonical non-hidden runs retain strict fail-closed validation.
 - Durable Source Quarantines continue to degrade health after the transient
   adapter diagnostic disappears. Diagnostics also block hint advancement for
   the affected run.
@@ -254,6 +267,20 @@ agent_global_context_runtime-0.2.0-py3-none-any.whl`; isolated `python -I`
 imports loaded `capture_ledger`, `capture_store`, `managed_backup`, and
 `capture_forget_service` directly from that wheel.
 
+Final hidden-stage verification:
+
+```text
+Exact partial-stage group: 4 passed in 2.32s
+Hard Forget suite: 39 passed in 19.37s
+Combined Task 4/forget/backup/admin gate: 168 passed, 1 expected warning in 70.69s
+Adjacent Capture Core/source/forget gate: 364 passed, 1 expected warning in 82.51s
+Natural-order full repository suite: 600 passed, 1 expected warning in 324.25s
+```
+
+The final source rebuilt the wheel successfully, and isolated `python -I`
+loaded `capture_forget_service` from the wheel path. Compilation, cached diff,
+strict UTF-8/no-BOM, and forbidden-boundary import checks were also clean.
+
 ## Failure Classification During Verification
 
 An early full run used the bundled Python 3.12 runtime and reported eight
@@ -287,3 +314,12 @@ when no Census-run existed. The helper now enumerates the namespace first and
 returns without a deferred import when it is empty. The isolated disabled-mode
 boundary then passed, the targeted Hard Forget/recovery nodes passed, the fresh
 adjacent run passed all `360`, and the natural full run passed all `596`.
+
+During final hidden-stage verification, one rerun produced a setup-only missing
+lease file before the staged behavior executed (`3 passed, 1 failed`). It was
+classified as an environment filesystem race in a reused Windows pytest temp
+root. A new unique basetemp passed all four exact cases. A separate initial
+GREEN attempt exposed a product issue: forget's durable backup projection still
+included the unrelated temporary stage even though managed backup enumeration
+excluded it. Projection now applies the same temporary-component exclusion;
+fresh forget, focused, adjacent, and full runs are all clean.
