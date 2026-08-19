@@ -13,6 +13,7 @@ from agc_runtime.capture_source import (
     AdapterDescriptor,
     DiscoveryBatch,
     ScanHint,
+    SourceAdapter,
     SourceBindingKey,
     SourceProbe,
     StopHookEnvelope,
@@ -80,7 +81,7 @@ def _identifier(value: Any) -> str | None:
     return value
 
 
-class CodexSourceAdapter:
+class CodexSourceAdapter(SourceAdapter):
     """Discover completed main-task turns under one configured Codex root."""
 
     adapter_id = ADAPTER_ID
@@ -115,6 +116,7 @@ class CodexSourceAdapter:
         self._validate_hint(hint)
         window = TimeWindow.from_mapping(window.to_mapping())
         revisions: dict[tuple[str, str], RevisionRef] = {}
+        conflicting_revisions: set[tuple[str, str]] = set()
         diagnostics: set[str] = set()
 
         for locator, path in self._source_files(diagnostics):
@@ -151,9 +153,15 @@ class CodexSourceAdapter:
                     }
                 )
                 identity = (revision.key.task_id, revision.key.revision_id)
-                # sessions is enumerated before archived_sessions, so an archive move
-                # is an exact replay and retains the active relative locator.
-                revisions.setdefault(identity, revision)
+                if identity in conflicting_revisions:
+                    continue
+                prior = revisions.get(identity)
+                if prior is None:
+                    revisions[identity] = revision
+                elif not self._same_census_revision(prior, revision):
+                    revisions.pop(identity)
+                    conflicting_revisions.add(identity)
+                    diagnostics.add("conflicting_revision_identity")
 
         ordered = tuple(
             revisions[key]
@@ -264,22 +272,16 @@ class CodexSourceAdapter:
                         elif current != identity:
                             return _FileScan(None, (), "conflicting_source_identity")
                     elif record_type == "event_msg":
-                        payload = record.get("payload")
-                        if not isinstance(payload, dict):
-                            return _FileScan(None, (), "unknown_completion_shape")
-                        event_type = payload.get("type")
-                        if event_type == "task_complete":
+                        completion, diagnostic = self._critical_completion(record)
+                        if diagnostic is not None:
+                            return _FileScan(None, (), diagnostic)
+                        if completion is not None:
                             if identity is None:
                                 return _FileScan(None, (), "unknown_source_shape")
-                            revision_id = _identifier(payload.get("turn_id"))
-                            completed_at = record.get("timestamp")
-                            if revision_id is None or _utc(completed_at) is None:
-                                return _FileScan(None, (), "unknown_completion_shape")
+                            revision_id, completed_at = completion
                             prior = completions.setdefault(revision_id, completed_at)
                             if prior != completed_at:
                                 return _FileScan(None, (), "unknown_completion_shape")
-                        elif event_type not in {"task_started", "task_aborted"} and self._has_turn_identity(payload):
-                            return _FileScan(None, (), "unknown_completion_shape")
                     del record
         except PermissionError:
             return _FileScan(None, (), "source_locked")
@@ -318,10 +320,51 @@ class CodexSourceAdapter:
 
     @staticmethod
     def _has_turn_identity(payload: dict[str, Any]) -> bool:
-        if _identifier(payload.get("turn_id")) is not None:
+        if "turn_id" in payload:
             return True
         turn = payload.get("turn")
-        return isinstance(turn, dict) and _identifier(turn.get("id")) is not None
+        return isinstance(turn, dict) and "id" in turn
+
+    @staticmethod
+    def _has_invalid_turn_identity(payload: dict[str, Any]) -> bool:
+        if "turn_id" in payload and _identifier(payload.get("turn_id")) is None:
+            return True
+        turn = payload.get("turn")
+        return (
+            isinstance(turn, dict)
+            and "id" in turn
+            and _identifier(turn.get("id")) is None
+        )
+
+    def _critical_completion(
+        self, record: dict[str, Any]
+    ) -> tuple[tuple[str, str] | None, str | None]:
+        payload = record.get("payload")
+        if not isinstance(payload, dict):
+            return None, "unknown_completion_shape"
+        event_type = payload.get("type")
+        if self._has_invalid_turn_identity(payload):
+            return None, "unknown_completion_shape"
+        if event_type == "task_complete":
+            revision_id = _identifier(payload.get("turn_id"))
+            completed_at = record.get("timestamp")
+            if revision_id is None or _utc(completed_at) is None:
+                return None, "unknown_completion_shape"
+            return (revision_id, completed_at), None
+        if event_type not in {"task_started", "task_aborted"} and self._has_turn_identity(payload):
+            return None, "unknown_completion_shape"
+        return None, None
+
+    @staticmethod
+    def _same_census_revision(left: RevisionRef, right: RevisionRef) -> bool:
+        return (
+            left.key == right.key
+            and left.rollout_anchor_id == right.rollout_anchor_id
+            and left.completed_at == right.completed_at
+            and left.identity_quality == right.identity_quality
+            and left.adapter_version == right.adapter_version
+            and left.source_schema_version == right.source_schema_version
+        )
 
     @staticmethod
     def _source_identity(
@@ -400,6 +443,8 @@ class CodexSourceAdapter:
         target_active = False
         completed = False
         seen_metadata = False
+        loaded_identity: tuple[str, str, str, str] | None = None
+        loaded_completions: dict[str, str] = {}
         try:
             with path.open("r", encoding="utf-8", newline="") as handle:
                 for line, final in self._source_lines(handle):
@@ -409,27 +454,24 @@ class CodexSourceAdapter:
                     if record is None:
                         continue
                     if record.get("type") == "session_meta":
-                        if self._source_identity(record) != expected_identity:
+                        current_identity = self._source_identity(record)
+                        if current_identity != expected_identity:
                             raise _SourceIdentityMismatch("source identity does not match revision")
+                        loaded_identity = current_identity
                         if not seen_metadata:
                             target_records.append(record)
                             seen_metadata = True
                         continue
                     payload = record.get("payload")
                     if record.get("type") == "event_msg":
-                        if not isinstance(payload, dict):
+                        completion, diagnostic = self._critical_completion(record)
+                        if diagnostic is not None:
                             raise ValueError("critical source record changed during target load")
-                        event_type = payload.get("type")
-                        if event_type == "task_complete" and (
-                            _identifier(payload.get("turn_id")) is None
-                            or _utc(record.get("timestamp")) is None
-                        ):
-                            raise ValueError("critical source record changed during target load")
-                        if (
-                            event_type not in {"task_complete", "task_started", "task_aborted"}
-                            and self._has_turn_identity(payload)
-                        ):
-                            raise ValueError("critical source record changed during target load")
+                        if completion is not None:
+                            revision_id, completed_at = completion
+                            prior = loaded_completions.setdefault(revision_id, completed_at)
+                            if prior != completed_at:
+                                raise ValueError("critical source record changed during target load")
                     elif not isinstance(payload, dict):
                         continue
                     assert isinstance(payload, dict)
@@ -451,6 +493,12 @@ class CodexSourceAdapter:
             raise ValueError("source is locked") from error
         except (OSError, UnicodeError, json.JSONDecodeError) as error:
             raise ValueError("source is unreadable") from error
+        if loaded_identity is None:
+            raise _SourceIdentityMismatch("source identity does not match revision")
+        if loaded_identity != scan.identity:
+            raise _SourceIdentityMismatch("source identity does not match revision")
+        if loaded_completions != dict(scan.completions):
+            raise ValueError("critical source records changed during target load")
         if not completed:
             raise ValueError("target turn is not complete")
         yield from target_records

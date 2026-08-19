@@ -310,3 +310,119 @@ def test_target_iterator_fails_closed_on_critical_drift_between_validation_and_l
         "unreadable",
         "source_unreadable",
     )
+
+
+def test_target_iterator_requires_metadata_during_second_pass(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from agc_runtime.codex_source_adapter import CodexSourceAdapter
+
+    root = _profile(tmp_path)
+    adapter = CodexSourceAdapter(root)
+    ref = next(
+        item for item in adapter.discover(None, _window()).revisions if item.key.revision_id == "turn-2"
+    )
+    source = root / ref.locator
+    original_scan = adapter._scan_file
+
+    def scan_then_remove_metadata(path: Path):
+        result = original_scan(path)
+        lines = source.read_text(encoding="utf-8").splitlines()
+        source.write_text("\n".join(lines[1:]) + "\n", encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(adapter, "_scan_file", scan_then_remove_metadata)
+
+    probe = adapter.probe(ref)
+    assert (probe.source_kind, probe.completion_state) == ("unknown", "unreadable")
+    assert probe.diagnostic_code in {"source_identity_mismatch", "source_unreadable"}
+
+
+def test_target_iterator_compares_non_target_completions_during_second_pass(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from agc_runtime.codex_source_adapter import CodexSourceAdapter
+
+    root = _profile(tmp_path)
+    adapter = CodexSourceAdapter(root)
+    ref = next(
+        item for item in adapter.discover(None, _window()).revisions if item.key.revision_id == "turn-2"
+    )
+    source = root / ref.locator
+    original_scan = adapter._scan_file
+
+    def scan_then_conflict(path: Path):
+        result = original_scan(path)
+        with source.open("a", encoding="utf-8", newline="") as handle:
+            handle.write(
+                '{"timestamp":"2026-08-10T10:09:00Z","type":"event_msg",'
+                '"payload":{"type":"task_complete","turn_id":"turn-1"}}\n'
+            )
+        return result
+
+    monkeypatch.setattr(adapter, "_scan_file", scan_then_conflict)
+
+    probe = adapter.probe(ref)
+    assert (probe.source_kind, probe.completion_state, probe.diagnostic_code) == (
+        "unknown",
+        "unreadable",
+        "source_unreadable",
+    )
+
+
+@pytest.mark.parametrize(
+    "event_payload",
+    (
+        '{"type":"task_started","turn_id":""}',
+        '{"type":"future_turn_state","turn_id":"bad id"}',
+    ),
+)
+def test_present_invalid_turn_identity_invalidates_the_whole_source(
+    tmp_path: Path, event_payload: str
+):
+    from agc_runtime.codex_source_adapter import CodexSourceAdapter
+
+    root = _profile(tmp_path)
+    uncertain = root / "sessions" / "invalid-turn-identity.jsonl"
+    uncertain.write_text(
+        "\n".join(
+            (
+                '{"timestamp":"2026-08-17T10:00:00Z","type":"session_meta",'
+                '"payload":{"id":"rollout-invalid-turn","session_id":"task-invalid-turn","source":"cli"}}',
+                '{"timestamp":"2026-08-17T10:00:10Z","type":"event_msg","payload":'
+                + event_payload
+                + "}",
+                '{"timestamp":"2026-08-17T10:01:00Z","type":"event_msg",'
+                '"payload":{"type":"task_complete","turn_id":"turn-valid"}}',
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    batch = CodexSourceAdapter(root).discover(None, _window())
+
+    assert ("task-invalid-turn", "turn-valid") not in {
+        (ref.key.task_id, ref.key.revision_id) for ref in batch.revisions
+    }
+    assert "unknown_completion_shape" in batch.diagnostic_codes
+
+
+def test_same_key_with_different_completion_metadata_fails_closed(tmp_path: Path):
+    from agc_runtime.codex_source_adapter import CodexSourceAdapter
+
+    root = _profile(tmp_path)
+    archived = root / "archived_sessions" / "main-archived-copy.jsonl"
+    archived.write_text(
+        archived.read_text(encoding="utf-8").replace(
+            '"2026-08-10T10:02:00Z"', '"2026-08-10T10:02:30Z"'
+        ),
+        encoding="utf-8",
+    )
+
+    batch = CodexSourceAdapter(root).discover(None, _window())
+
+    assert ("task-main", "turn-1") not in {
+        (ref.key.task_id, ref.key.revision_id) for ref in batch.revisions
+    }
+    assert "conflicting_revision_identity" in batch.diagnostic_codes
