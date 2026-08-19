@@ -174,6 +174,60 @@ def test_capture_backup_round_trip_is_allowlisted_and_keeps_recall_isolated(tmp_
     assert not list(paths.memories.rglob("*.md"))
 
 
+def test_interrupted_census_staging_is_excluded_from_backup_and_later_freeze_converges(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from agc_runtime import capture_transaction
+
+    paths, store, _observation_value = _populated(tmp_path)
+    revision = replace(
+        _revision(),
+        key=CaptureKey(
+            "synthetic_adapter", ROOT_ID, "staging-secret-task", "staging-secret-revision"
+        ),
+        rollout_anchor_id="staging-secret-anchor",
+        locator="sessions/staging-secret.jsonl",
+    )
+    original_rename = capture_transaction.os.rename
+    original_rmtree = capture_transaction.shutil.rmtree
+    monkeypatch.setattr(
+        capture_transaction.os,
+        "rename",
+        lambda _source, _target: (_ for _ in ()).throw(OSError("publish failed")),
+    )
+    monkeypatch.setattr(capture_transaction.shutil, "rmtree", lambda _path: None)
+
+    with pytest.raises(OSError, match="publish failed"):
+        _freeze_census(store, (revision,))
+
+    monkeypatch.setattr(capture_transaction.os, "rename", original_rename)
+    monkeypatch.setattr(capture_transaction.shutil, "rmtree", original_rmtree)
+    runs = paths.capture.root / "census-runs"
+    staging = [path for path in runs.iterdir() if path.name.startswith(".")]
+    assert len(staging) == 1
+    assert (staging[0] / "run.json").is_file()
+
+    backup = dispatch_admin(paths, {"action": "backup"})
+
+    assert backup.status == "accepted", backup
+    with zipfile.ZipFile(backup.data["backup_path"]) as archive:
+        names = archive.namelist()
+        text = b"".join(archive.read(name) for name in names).decode(
+            "utf-8", errors="ignore"
+        )
+    assert not any(
+        any(part.casefold().endswith(".tmp") for part in Path(name).parts)
+        for name in names
+    )
+    assert revision.key.task_id not in text
+    assert revision.key.revision_id not in text
+    assert receipt_id_for(revision.key) not in text
+
+    census = _freeze_census(store, (revision,))
+    assert census.revision_keys == (revision.key,)
+    assert store.frozen_revisions() == (revision,)
+
+
 @pytest.mark.parametrize(
     "corruption",
     [

@@ -5,8 +5,9 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import replace
+from datetime import datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Sequence
 
 from agc_runtime.capture_contracts import (
     CAPTURE_SCHEMA_VERSION,
@@ -20,7 +21,7 @@ from agc_runtime.capture_contracts import (
 from agc_runtime.capture_transaction import atomic_write_json, read_json
 
 if TYPE_CHECKING:
-    from agc_runtime.capture_source import SourceBindingKey
+    from agc_runtime.capture_source import CensusRun, SourceBindingKey, TimeWindow
 
 
 def _receipt_path(census_directory: Path, revision: RevisionRef) -> Path:
@@ -38,6 +39,65 @@ def same_revision_metadata(left: RevisionRef, right: RevisionRef) -> bool:
         and left.adapter_version == right.adapter_version
         and left.source_schema_version == right.source_schema_version
     )
+
+
+def canonical_census_id(
+    binding: "SourceBindingKey", window: "TimeWindow", started_at: str
+) -> str:
+    """Return the deterministic identity of a frozen Census run."""
+
+    digest = hashlib.sha256(
+        json.dumps(
+            {
+                "binding": binding.to_mapping(),
+                "started_at": started_at,
+                "window": window.to_mapping(),
+            },
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("ascii")
+    ).hexdigest()[:32]
+    return f"census-{digest}"
+
+
+def validate_frozen_census_run(
+    census: "CensusRun", revisions: Sequence[RevisionRef], *, run_id: str
+) -> None:
+    """Validate identity, window, membership, and binding for live or archived runs."""
+
+    run_start = datetime.fromisoformat(census.started_at.replace("Z", "+00:00"))
+    window_start = datetime.fromisoformat(census.window.start_at.replace("Z", "+00:00"))
+    window_end = datetime.fromisoformat(census.window.end_at.replace("Z", "+00:00"))
+    frozen_at = datetime.fromisoformat(census.frozen_at.replace("Z", "+00:00"))
+    if (
+        census.census_id != run_id
+        or canonical_census_id(census.binding, census.window, census.started_at)
+        != run_id
+        or window_end != run_start
+        or window_start != run_start - timedelta(days=7)
+        or frozen_at < run_start
+    ):
+        raise ValueError("frozen Census run identity or window is invalid")
+    ordered = tuple(
+        sorted(
+            revisions,
+            key=lambda item: (
+                item.key.adapter_id,
+                item.key.source_root_id,
+                item.key.task_id,
+                item.key.revision_id,
+            ),
+        )
+    )
+    if tuple(item.key for item in ordered) != census.revision_keys:
+        raise ValueError("frozen Census membership does not match run")
+    if any(
+        item.key.adapter_id != census.binding.adapter_id
+        or item.key.source_root_id != census.binding.source_root_id
+        for item in ordered
+    ):
+        raise ValueError("frozen Census member binding does not match run")
 
 
 def persist_revision(census_directory: Path, revision: RevisionRef) -> str:
@@ -149,9 +209,11 @@ def binding_digest(adapter_id: str, source_root_id: str) -> str:
 
 __all__ = [
     "binding_digest",
+    "canonical_census_id",
     "persist_revision",
     "quarantined_receipt",
     "receipt_for_revision",
     "same_revision_metadata",
     "source_quarantine_for",
+    "validate_frozen_census_run",
 ]

@@ -303,6 +303,7 @@ class CaptureStore:
     def _read_frozen_run(
         self, path: Path
     ) -> tuple[CensusRun, tuple[RevisionRef, ...]]:
+        from agc_runtime.capture_ledger import validate_frozen_census_run
         from agc_runtime.capture_source import CensusRun
 
         if not path.is_dir() or path.name.startswith("."):
@@ -329,8 +330,7 @@ class CaptureStore:
                 raise ValueError("frozen Census member binding mismatch")
             revisions.append(revision)
         ordered = tuple(sorted(revisions, key=self._revision_sort_key))
-        if tuple(item.key for item in ordered) != census.revision_keys:
-            raise ValueError("frozen Census membership mismatch")
+        validate_frozen_census_run(census, ordered, run_id=path.name)
         return census, ordered
 
     def frozen_revision_records(
@@ -391,7 +391,7 @@ class CaptureStore:
     ) -> CensusRun:
         """Durably freeze a content-free Census before Receipt accounting."""
 
-        from agc_runtime.capture_ledger import same_revision_metadata
+        from agc_runtime.capture_ledger import canonical_census_id, same_revision_metadata
         from agc_runtime.capture_source import CensusRun, SourceBindingKey, TimeWindow
 
         binding = SourceBindingKey.from_mapping(binding.to_mapping())
@@ -416,19 +416,7 @@ class CaptureStore:
             raise ValueError("census revision does not match binding")
         if source_quarantine_count < 0:
             raise ValueError("source_quarantine_count must not be negative")
-        digest = hashlib.sha256(
-            json.dumps(
-                {
-                    "binding": binding.to_mapping(),
-                    "started_at": started_at,
-                    "window": window.to_mapping(),
-                },
-                ensure_ascii=True,
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode("ascii")
-        ).hexdigest()[:32]
-        census_id = f"census-{digest}"
+        census_id = canonical_census_id(binding, window, started_at)
         with capture_write_lock(self.paths):
             self._ensure_layout_locked()
             run_path = self._census_run_path(census_id)

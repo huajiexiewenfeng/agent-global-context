@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import json
 from pathlib import Path
 import sys
 
 import pytest
 
-from agc_runtime.capture_contracts import CaptureKey, RevisionRef
+from agc_runtime.capture_contracts import CaptureKey, RevisionRef, receipt_id_for
 from agc_runtime.capture_store import CaptureStore
 from agc_runtime.paths import MemoryPaths
 
@@ -255,6 +256,76 @@ def test_census_directory_publication_failure_leaves_no_partial_truth(
     assert store.frozen_revisions(binding=_binding()) == ()
     runs = store.paths.capture.root / "census-runs"
     assert not runs.exists() or list(runs.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    [
+        "noncanonical_id",
+        "wrong_window",
+        "frozen_before_started",
+        "run_binding",
+        "member_binding",
+        "membership",
+        "invalid_member_ref",
+    ],
+)
+def test_live_frozen_census_corruption_fails_closed_and_never_becomes_truth(
+    tmp_path: Path, corruption: str
+):
+    store = CaptureStore(MemoryPaths.from_root(tmp_path / "memory"), clock=lambda: STARTED)
+    window = TimeWindow.from_mapping(
+        {
+            "schema_version": 1,
+            "start_at": "2026-08-06T12:00:00Z",
+            "end_at": STARTED,
+        }
+    )
+    revision = _revision()
+    census = store.freeze_census(
+        binding=_binding(), window=window, started_at=STARTED, revisions=(revision,)
+    )
+    run_path = store.paths.capture.root / "census-runs" / census.census_id
+    run_file = run_path / "run.json"
+    member_file = run_path / "members" / f"{receipt_id_for(revision.key)}.json"
+    run = json.loads(run_file.read_text(encoding="utf-8"))
+    member = json.loads(member_file.read_text(encoding="utf-8"))
+
+    if corruption == "noncanonical_id":
+        replacement = "census-" + "f" * 32
+        run["census_id"] = replacement
+        run_file.write_text(json.dumps(run), encoding="utf-8")
+        run_path = run_path.rename(run_path.parent / replacement)
+    elif corruption == "wrong_window":
+        run["window"]["start_at"] = "2026-08-06T12:00:01Z"
+        run_file.write_text(json.dumps(run), encoding="utf-8")
+    elif corruption == "frozen_before_started":
+        run["frozen_at"] = "2026-08-13T11:59:59Z"
+        run_file.write_text(json.dumps(run), encoding="utf-8")
+    elif corruption == "run_binding":
+        run["binding"]["source_root_id"] = "2" * 64
+        run_file.write_text(json.dumps(run), encoding="utf-8")
+    elif corruption == "member_binding":
+        member["capture_key"]["source_root_id"] = "2" * 64
+        changed = RevisionRef.from_mapping(member)
+        member_file.unlink()
+        (run_path / "members" / f"{receipt_id_for(changed.key)}.json").write_text(
+            json.dumps(member), encoding="utf-8"
+        )
+        run["revision_keys"] = [changed.key.to_mapping()]
+        run_file.write_text(json.dumps(run), encoding="utf-8")
+    elif corruption == "membership":
+        run["revision_keys"] = []
+        run_file.write_text(json.dumps(run), encoding="utf-8")
+    else:
+        member["rollout_anchor_id"] = ""
+        member_file.write_text(json.dumps(member), encoding="utf-8")
+
+    with pytest.raises(ValueError):
+        store.frozen_revision_records()
+    snapshot = store.read_snapshot()
+    assert snapshot.integrity_state == "degraded"
+    assert snapshot.census == ()
 
 
 def test_ready_revisions_are_durable_unfinished_receipts(tmp_path: Path):

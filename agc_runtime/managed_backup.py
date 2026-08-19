@@ -13,9 +13,8 @@ import re
 import stat
 import tempfile
 import zipfile
-from datetime import datetime, timedelta
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from agc_runtime.capture_contracts import (
     CAPTURE_SCHEMA_VERSION, CaptureReceipt, CaptureSuppressionTombstone,
@@ -24,10 +23,6 @@ from agc_runtime.capture_contracts import (
 )
 from agc_runtime.capture_transaction import read_json
 from agc_runtime.paths import MemoryPaths
-
-if TYPE_CHECKING:
-    from agc_runtime.capture_source import CensusRun
-
 
 ARCHIVE_SCHEMA_VERSION = 2
 CAPTURE_BACKUP_CAPABILITY = "capture-backup-v1"
@@ -118,6 +113,10 @@ def _runtime_name_excluded(name: str) -> bool:
     )
 
 
+def _has_temporary_component(name: str) -> bool:
+    return any(part.casefold().endswith(".tmp") for part in PurePosixPath(name).parts)
+
+
 def _validate_backup_files_for_write(files: list[tuple[str, bytes]]) -> None:
     if len(files) > _MAX_ARCHIVE_FILES:
         raise ValueError("backup file count exceeds safe limit")
@@ -146,7 +145,7 @@ def backup_files(paths: MemoryPaths) -> list[tuple[str, bytes]]:
         if resolved == root or not resolved.is_relative_to(root):
             raise ValueError("managed backup path escapes the memory root")
         relative = resolved.relative_to(root).as_posix()
-        if _runtime_name_excluded(relative) or relative.casefold().endswith(".tmp"):
+        if _runtime_name_excluded(relative) or _has_temporary_component(relative):
             continue
         if not _capture_name_allowed(relative):
             continue
@@ -233,22 +232,6 @@ def _json(entries: dict[str, bytes], name: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError("invalid Capture archive object")
     return value
-
-
-def _canonical_census_id(census: CensusRun) -> str:
-    digest = hashlib.sha256(
-        json.dumps(
-            {
-                "binding": census.binding.to_mapping(),
-                "started_at": census.started_at,
-                "window": census.window.to_mapping(),
-            },
-            ensure_ascii=True,
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("ascii")
-    ).hexdigest()[:32]
-    return f"census-{digest}"
 
 
 def _validate_capture_entries(entries: dict[str, bytes], value: dict[str, Any]) -> None:
@@ -377,18 +360,9 @@ def _validate_capture_entries(entries: dict[str, bytes], value: dict[str, Any]) 
             raise ValueError("unsupported Capture archive path")
     if set(census_runs) != set(census_members):
         raise ValueError("orphan frozen Census run or member")
+    from agc_runtime.capture_ledger import validate_frozen_census_run
+
     for run_id, census in census_runs.items():
-        run_start = datetime.fromisoformat(census.started_at[:-1] + "+00:00")
-        window_start = datetime.fromisoformat(
-            census.window.start_at[:-1] + "+00:00"
-        )
-        window_end = datetime.fromisoformat(census.window.end_at[:-1] + "+00:00")
-        if (
-            window_end != run_start
-            or window_start != run_start - timedelta(days=7)
-            or _canonical_census_id(census) != run_id
-        ):
-            raise ValueError("frozen Census run identity or window is invalid")
         members = tuple(
             sorted(
                 census_members[run_id].values(),
@@ -400,14 +374,7 @@ def _validate_capture_entries(entries: dict[str, bytes], value: dict[str, Any]) 
                 ),
             )
         )
-        if tuple(item.key for item in members) != census.revision_keys:
-            raise ValueError("frozen Census membership does not match run")
-        if any(
-            item.key.adapter_id != census.binding.adapter_id
-            or item.key.source_root_id != census.binding.source_root_id
-            for item in members
-        ):
-            raise ValueError("frozen Census member binding does not match run")
+        validate_frozen_census_run(census, members, run_id=run_id)
     receipt_keys: set[tuple[str, str, str, str]] = set()
     referenced: set[str] = set()
     for receipt_id, receipt in receipts.items():
@@ -460,7 +427,7 @@ def _validate_manifest(value: Any, entries: dict[str, bytes]) -> None:
             raise ValueError("backup contains excluded transient runtime namespace")
         if not _capture_name_allowed(path):
             raise ValueError("backup contains protected or non-canonical Capture path")
-        if path.casefold().endswith(".tmp"):
+        if _has_temporary_component(path):
             raise ValueError("backup contains excluded temporary path")
         if not isinstance(digest, str) or not _SHA256.fullmatch(digest):
             raise ValueError("backup manifest checksum is invalid")

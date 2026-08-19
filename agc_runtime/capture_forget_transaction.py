@@ -20,7 +20,7 @@ from agc_runtime.capture_transaction import _flush_parent, atomic_write_bytes, a
 from agc_runtime.paths import MemoryPaths
 
 
-_PRIMARY_NAMESPACES = frozenset({"receipts", "observations", "ledger", "census", "tombstones", "quarantines", "conflicts", "indexes", "dirty", "journals", "staging", "leases", "scan-state", "budgets"})
+_PRIMARY_NAMESPACES = frozenset({"receipts", "observations", "ledger", "census", "census-runs", "tombstones", "quarantines", "conflicts", "indexes", "dirty", "journals", "staging", "leases", "scan-state", "budgets"})
 
 
 def _managed_target(paths: MemoryPaths, path: Path) -> str:
@@ -82,6 +82,20 @@ class CaptureForgetTransaction:
         self._point(f"before:{boundary}")
         safe_unlink(path)
         self._point(f"after:{boundary}")
+
+    def remove_empty_census_directory(self, path: Path) -> None:
+        """Durably remove an empty run directory without widening forget scope."""
+
+        root = (self.paths.capture.root / "census-runs").resolve()
+        if path.is_symlink() or not path.is_dir():
+            raise ValueError("invalid frozen Census directory")
+        resolved = path.resolve()
+        if resolved == root or not resolved.is_relative_to(root):
+            raise ValueError("invalid frozen Census directory")
+        if any(path.iterdir()):
+            raise ValueError("frozen Census directory is not empty")
+        path.rmdir()
+        _flush_parent(path.parent)
 
     def rollback(self) -> None:
         for path, data in reversed(tuple(self._before.items())):

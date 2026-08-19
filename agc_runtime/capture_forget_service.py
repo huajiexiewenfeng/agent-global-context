@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -235,7 +236,13 @@ def _updated_revision(entries: dict[str, bytes], key: CaptureKey) -> dict[str, b
     tombstone_name = f".runtime/capture/tombstones/{tombstone_id_for(key)}.json"
     target_observations: set[str] = set()
     observations: dict[str, CollectedObservation] = {}
-    needles: set[bytes] = {receipt_id.encode("ascii")}
+    needles: set[bytes] = {
+        receipt_id.encode("ascii"),
+        key.task_id.encode("utf-8"),
+        key.revision_id.encode("utf-8"),
+    }
+
+    result = _forget_revision_from_census_runs(result, key)
 
     # Discover observations from their strict source identity rather than from
     # a possibly missing or damaged private manifest.
@@ -331,6 +338,79 @@ def _updated_revision(entries: dict[str, bytes], key: CaptureKey) -> dict[str, b
     return result
 
 
+def _forget_revision_from_census_runs(
+    entries: dict[str, bytes], key: CaptureKey
+) -> dict[str, bytes]:
+    """Remove one revision from every strict immutable Census run copy."""
+
+    prefix = ".runtime/capture/census-runs/"
+    grouped: dict[str, dict[str, bytes]] = {}
+    for name, data in entries.items():
+        if not name.startswith(prefix):
+            continue
+        relative = name[len(prefix) :]
+        parts = relative.split("/")
+        if len(parts) < 2 or not parts[0]:
+            raise ValueError("invalid frozen Census artifact path")
+        grouped.setdefault(parts[0], {})["/".join(parts[1:])] = data
+    if not grouped:
+        return dict(entries)
+
+    from agc_runtime.capture_ledger import validate_frozen_census_run
+    from agc_runtime.capture_source import CensusRun
+
+    result = dict(entries)
+    for directory, objects in grouped.items():
+        if "run.json" not in objects:
+            raise ValueError("frozen Census run is missing metadata")
+        census = CensusRun.from_mapping(_strict_json(objects["run.json"]))
+        revisions: list[RevisionRef] = []
+        member_names: dict[CaptureKey, str] = {}
+        for relative, data in objects.items():
+            if relative == "run.json":
+                continue
+            if not relative.startswith("members/") or relative.count("/") != 1:
+                raise ValueError("invalid frozen Census artifact path")
+            revision = RevisionRef.from_mapping(_strict_json(data))
+            expected = f"members/{receipt_id_for(revision.key)}.json"
+            if relative != expected or revision.key in member_names:
+                raise ValueError("invalid frozen Census member binding")
+            revisions.append(revision)
+            member_names[revision.key] = relative
+
+        validation_id = census.census_id if directory.startswith(".") else directory
+        validate_frozen_census_run(census, revisions, run_id=validation_id)
+        if key not in member_names:
+            continue
+
+        remaining = tuple(
+            sorted(
+                (revision for revision in revisions if revision.key != key),
+                key=lambda item: (
+                    item.key.adapter_id,
+                    item.key.source_root_id,
+                    item.key.task_id,
+                    item.key.revision_id,
+                ),
+            )
+        )
+        group_prefix = f"{prefix}{directory}/"
+        if not remaining:
+            for name in tuple(result):
+                if name.startswith(group_prefix):
+                    result.pop(name, None)
+            continue
+
+        target_name = f"{group_prefix}{member_names[key]}"
+        result.pop(target_name, None)
+        updated = CensusRun.from_mapping(
+            replace(census, revision_keys=tuple(item.key for item in remaining)).to_mapping()
+        )
+        validate_frozen_census_run(updated, remaining, run_id=validation_id)
+        result[f"{group_prefix}run.json"] = canonical_json_bytes(updated.to_mapping())
+    return result
+
+
 def _rewrite_backup(entries: dict[str, bytes], target_kind: str, target: str | CaptureKey) -> tuple[dict[str, bytes], str | None]:
     if target_kind == "observation":
         return _updated_observation(entries, target)
@@ -338,6 +418,7 @@ def _rewrite_backup(entries: dict[str, bytes], target_kind: str, target: str | C
 
 
 def _apply_files(tx: CaptureForgetTransaction, paths: MemoryPaths, before: dict[str, bytes], after: dict[str, bytes]) -> None:
+    empty_candidates: set[Path] = set()
     for name in sorted(set(before) | set(after), key=lambda item: item.encode("utf-8")):
         if before.get(name) == after.get(name):
             continue
@@ -346,6 +427,17 @@ def _apply_files(tx: CaptureForgetTransaction, paths: MemoryPaths, before: dict[
             tx.write(path, after[name], boundary="primary")
         else:
             tx.delete(path, boundary="primary")
+            if name.startswith(".runtime/capture/census-runs/"):
+                root = paths.capture.root / "census-runs"
+                candidate = path.parent
+                while candidate != root:
+                    empty_candidates.add(candidate)
+                    candidate = candidate.parent
+    for directory in sorted(
+        empty_candidates, key=lambda item: len(item.parts), reverse=True
+    ):
+        if directory.exists() and not any(directory.iterdir()):
+            tx.remove_empty_census_directory(directory)
 
 
 def capture_forget(paths: MemoryPaths, request: dict[str, Any]) -> ToolResponse:

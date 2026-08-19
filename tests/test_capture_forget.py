@@ -10,7 +10,7 @@ import pytest
 
 from agc_runtime import capture_forget_service, capture_forget_transaction, managed_backup
 from agc_runtime.admin_service import dispatch_admin
-from agc_runtime.capture_contracts import CaptureKey, CaptureReceipt, CollectedObservation, SourceQuarantine, TokenUsage, observation_fingerprint_for, observation_id_for, receipt_id_for, tombstone_id_for
+from agc_runtime.capture_contracts import CaptureKey, CaptureReceipt, CollectedObservation, RevisionRef, SourceQuarantine, TokenUsage, observation_fingerprint_for, observation_id_for, receipt_id_for, tombstone_id_for
 from agc_runtime.capture_store import CaptureStore
 from agc_runtime.capture_forget_transaction import CaptureForgetTransaction
 from agc_runtime.locking import capture_write_lock
@@ -72,6 +72,32 @@ def _populated(tmp_path: Path) -> tuple[MemoryPaths, CaptureStore, CaptureReceip
         "filtered_counts": {"safety": 0, "policy": 0, "over_limit": 0}, "duplicate_suppression_count": 0, "zero_reason": None})
     store.commit_extraction(lease, observations, complete)
     return paths, store, receipt, observations
+
+
+def _revision(key: CaptureKey) -> RevisionRef:
+    return RevisionRef.from_mapping(
+        {
+            "schema_version": 1,
+            "capture_key": key.to_mapping(),
+            "rollout_anchor_id": f"rollout-{key.revision_id}",
+            "completed_at": UTC,
+            "locator": f"sessions/{key.revision_id}.jsonl",
+            "identity_quality": "session_id",
+            "adapter_version": "1",
+            "source_schema_version": "1",
+        }
+    )
+
+
+def _freeze_census(store: CaptureStore, revisions: tuple[RevisionRef, ...]):
+    from agc_runtime.capture_source import SourceBindingKey, TimeWindow
+
+    return store.freeze_census(
+        binding=SourceBindingKey(1, _key().adapter_id, _key().source_root_id),
+        window=TimeWindow(1, "2026-08-06T12:00:00Z", UTC),
+        started_at=UTC,
+        revisions=revisions,
+    )
 
 
 def _request(target: dict) -> dict:
@@ -222,6 +248,102 @@ def test_revision_capture_forget_leaves_only_content_free_suppression_tombstone(
     assert not (paths.capture.receipts / f"{receipt.receipt_id}.json").exists()
     assert not list(paths.capture.observations.glob("*.json"))
     assert not list(paths.capture.indexes.glob("*.json"))
+
+
+def test_revision_forget_rewrites_authoritative_census_run_and_every_backup(
+    tmp_path: Path,
+):
+    paths, store, receipt, _observations = _populated(tmp_path)
+    target = _revision(_key())
+    remaining_key = CaptureKey(
+        _key().adapter_id, _key().source_root_id, "task-remaining", "revision-remaining"
+    )
+    remaining = _revision(remaining_key)
+    census = _freeze_census(store, (target, remaining))
+    first_backup = Path(dispatch_admin(paths, {"action": "backup"}).data["backup_path"])
+    nested_backup = paths.backups / "nested" / "managed-copy.zip"
+    nested_backup.parent.mkdir(parents=True)
+    shutil.copy2(first_backup, nested_backup)
+
+    response = dispatch_write(
+        paths, _request({"type": "revision", **_key().to_mapping()})
+    )
+
+    assert response.status == "accepted", response
+    run_path = paths.capture.root / "census-runs" / census.census_id
+    run = json.loads((run_path / "run.json").read_text(encoding="utf-8"))
+    assert run["revision_keys"] == [remaining.key.to_mapping()]
+    assert not (run_path / "members" / f"{receipt.receipt_id}.json").exists()
+    assert (run_path / "members" / f"{receipt_id_for(remaining.key)}.json").is_file()
+    assert store.frozen_revisions() == (remaining,)
+
+    tombstone_name = (
+        f".runtime/capture/tombstones/{tombstone_id_for(_key())}.json"
+    )
+    needles = (_key().task_id, _key().revision_id, receipt.receipt_id)
+    for backup in (first_backup, nested_backup):
+        entries, _manifest_value = managed_backup.read_verified_archive(backup)
+        assert all(
+            all(needle not in name for needle in needles)
+            for name in entries
+            if name != tombstone_name
+        )
+        assert all(
+            all(needle not in data.decode("utf-8") for needle in needles)
+            for name, data in entries.items()
+            if name != tombstone_name
+        )
+        run_name = f".runtime/capture/census-runs/{census.census_id}/run.json"
+        assert json.loads(entries[run_name])["revision_keys"] == [
+            remaining.key.to_mapping()
+        ]
+
+
+def test_revision_forget_removes_an_authoritative_census_run_when_it_becomes_empty(
+    tmp_path: Path,
+):
+    paths, store, _receipt_value, _observations = _populated(tmp_path)
+    census = _freeze_census(store, (_revision(_key()),))
+    backup = Path(dispatch_admin(paths, {"action": "backup"}).data["backup_path"])
+
+    response = dispatch_write(
+        paths, _request({"type": "revision", **_key().to_mapping()})
+    )
+
+    assert response.status == "accepted", response
+    assert not (paths.capture.root / "census-runs" / census.census_id).exists()
+    entries, _manifest_value = managed_backup.read_verified_archive(backup)
+    assert not any(
+        name.startswith(f".runtime/capture/census-runs/{census.census_id}/")
+        for name in entries
+    )
+
+
+@pytest.mark.parametrize("recovery", ["rollback", "restart"])
+def test_empty_census_run_directory_is_recreated_by_forget_rollback_or_recovery(
+    tmp_path: Path, recovery: str
+):
+    paths, store, _receipt_value, _observations = _populated(tmp_path)
+    revision = _revision(_key())
+    census = _freeze_census(store, (revision,))
+    run_path = paths.capture.root / "census-runs" / census.census_id
+    before = capture_forget_service._read_primary(paths)
+    after = capture_forget_service._updated_revision(before, _key())
+    transaction = CaptureForgetTransaction(paths)
+    operation_count = sum(
+        before.get(name) != after.get(name) for name in set(before) | set(after)
+    )
+    transaction.begin(operation_count)
+    capture_forget_service._apply_files(transaction, paths, before, after)
+    assert not run_path.exists()
+
+    if recovery == "rollback":
+        transaction.rollback()
+    else:
+        assert CaptureForgetTransaction.recover(paths) == 1
+
+    assert run_path.is_dir()
+    assert store.frozen_revisions() == (revision,)
 
 
 def test_revision_forget_fails_closed_on_foreign_observation_in_target_manifest(tmp_path: Path):

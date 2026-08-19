@@ -18,6 +18,8 @@ records and current discovery.
 
 Production files:
 
+- `agc_runtime/capture_forget_service.py`
+- `agc_runtime/capture_forget_transaction.py`
 - `agc_runtime/capture_ledger.py`
 - `agc_runtime/capture_scanner.py`
 - `agc_runtime/capture_store.py`
@@ -95,6 +97,19 @@ The corresponding targeted GREEN runs were Scanner groups `5 passed`, frozen
 backup graph/roundtrip `7 passed`, and the legacy-preserving roundtrip
 `1 passed`.
 
+Third re-review RED was also recorded independently:
+
+- authoritative Census hard forget: `2 failed`; the target member remained in
+  a multi-member run and a target-only run remained present;
+- interrupted Census staging: `1 failed`; backup rejected the hidden staging
+  directory instead of excluding it;
+- live frozen-run validation: `2 failed, 5 passed`; a self-consistent renamed
+  but noncanonical run and a non-seven-day window entered durable truth.
+
+The first attempt used pytest's default per-user temporary root and failed in
+fixture setup with `PermissionError`. That was classified as environment-only,
+then rerun with an explicit `D:\tmp` basetemp to obtain the product REDs above.
+
 ## Contract Evidence
 
 - The Scanner computes and freezes `[run_started_at - 7 days, run_started_at]`.
@@ -131,6 +146,21 @@ backup graph/roundtrip `7 passed`, and the legacy-preserving roundtrip
   membership, binding, filename, and graph references, and restores both legacy
   and immutable Census truth. The `capture-census-runs-v1` manifest capability
   fences older or unaware runtimes.
+- Live and archived Census graphs share one validator for canonical run ID,
+  exact seven-day half-open window, started/frozen ordering, binding, strict
+  member references, and exact membership. A corrupt live run degrades Source
+  Health and contributes no durable truth.
+- Hidden `.tmp` Census staging directories left by interrupted atomic publish
+  are explicitly excluded from backup enumeration, and archive validation
+  rejects a temporary component at any depth. They contribute no truth and do
+  not prevent a later canonical freeze from converging.
+- An explicitly authorized revision Hard Forget rewrites every authoritative
+  primary and nested-backup Census run, removes the target member and its task,
+  revision, and Receipt identities, updates exact membership, removes a run
+  when it becomes empty, and retains only the authorized content-free
+  suppression tombstone. Observation-forget behavior is unchanged. The
+  recoverable forget transaction is the atomic boundary; rollback and restart
+  recovery recreate removed run directories from strict before-images.
 - Durable Source Quarantines continue to degrade health after the transient
   adapter diagnostic disappears. Diagnostics also block hint advancement for
   the affected run.
@@ -209,6 +239,21 @@ An isolated `python -I` wheel-path import loaded `agc_runtime.capture_ledger`,
 Final gates also include Python compilation of changed Python files,
 `git diff --check`, and strict UTF-8/no-BOM validation of every changed file.
 
+Third re-review verification after the authorized Hard Forget integration:
+
+```text
+Hard Forget suite: 35 passed in 63.39s
+Combined Task 4/forget/backup/admin gate: 164 passed, 1 expected warning in 215.07s
+Adjacent Capture Core/source/forget gate: 360 passed, 1 expected warning in 249.41s
+Natural-order full repository suite: 596 passed, 1 expected warning in 380.14s
+```
+
+The expected warning is still the duplicate-name ZIP adversarial fixture. A
+wheel build completed with `Successfully built
+agent_global_context_runtime-0.2.0-py3-none-any.whl`; isolated `python -I`
+imports loaded `capture_ledger`, `capture_store`, `managed_backup`, and
+`capture_forget_service` directly from that wheel.
+
 ## Failure Classification During Verification
 
 An early full run used the bundled Python 3.12 runtime and reported eight
@@ -234,3 +279,11 @@ contract suite before the boundary and produced exactly one precondition
 failure (`316 passed, 1 failed`); this was classified as test-order pollution.
 The corrected adjacent order passed `317`, and the natural full-suite order
 passed all `584` tests.
+
+During third re-review, the first adjacent run reported exactly one failure
+(`359 passed, 1 failed`). This was classified as a product boundary regression,
+not environment or test order: revision forget imported `capture_source` even
+when no Census-run existed. The helper now enumerates the namespace first and
+returns without a deferred import when it is empty. The isolated disabled-mode
+boundary then passed, the targeted Hard Forget/recovery nodes passed, the fresh
+adjacent run passed all `360`, and the natural full run passed all `596`.
