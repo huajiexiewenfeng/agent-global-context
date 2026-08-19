@@ -77,6 +77,21 @@ minimal fail-closed change then made this contract green.
 
 Result: exit `0`, `3 passed in 3.70s`.
 
+### Evidence-review RED / GREEN
+
+At review base `b84c773`, a new calibration node restored the ordinary import
+wrappers and deliberately imported every planned semantic/Host module. The
+first run failed at `agc_runtime.capture_capsule` with `ModuleNotFoundError`
+instead of the required boundary exception. This authentic RED proved the old
+wrapper-only evidence did not guard import-system resolution for absent future
+capabilities.
+
+After adding the test-only `MetaPathFinder`, the calibration node passed `1
+passed in 0.10s`; each of the seven imports increments its expected counter and
+raises before resolution. The final focused file, including canonical source-id
+and whole-Memory-Root sentinel assertions, passed `4 passed in 3.68s`. No
+production file changed for this evidence review.
+
 ## Synthetic corpus and exact evidence
 
 The final configured Codex root contains `10` JSONL files and `3297` bytes:
@@ -141,28 +156,38 @@ Revision; a separate assertion requires exactly one `task-replay` identity.
 
 The test installs guards before deferred imports and execution for:
 
-- model/provider and network APIs;
+- the exact planned `capture_capsule`, `capture_safety`, `capture_extractor`,
+  `codex_extractor`, `capture_budget`, and `capture_runner` modules;
+- the Host-plan `capture_activation` module and network APIs;
 - subprocess APIs;
-- Extractor and Runner imports;
 - Task Capsule and target-turn content loading;
 - Observation registration/commit;
 - Candidate/Formal Memory writes;
-- Hook installation and service/scheduler paths; and
 - enumeration or opening of the unconfigured source root.
 
-Every counter is `0`. The adapter reads configured JSONL only through its
-census streaming path; `load_capsule` and `_iter_target_turn_records` are
-fail-fast guards and remain unused. The injected real Stop Hook marker-write
-failure exits `0` with zero stdout/stderr while Scanner still discovers the
-Revision.
+The import guard is a `MetaPathFinder`, so it trips before module resolution
+even while those future modules do not exist. A calibration node restores the
+ordinary `__import__` and `importlib.import_module` functions, deliberately
+imports all seven planned names, and proves the corresponding counter increment
+and exception for each. During the real Census E2E every counter is `0`. The
+adapter reads configured JSONL only through its census streaming path;
+`load_capsule` and `_iter_target_turn_records` are fail-fast guards and remain
+unused. No nonexistent `task_capsule`, Hook-installer, scheduler, provider, or
+model module is counted. The injected real Stop Hook marker-write failure exits
+`0` with zero stdout/stderr while Scanner still discovers the Revision.
 
 Observation, Candidate, Formal Memory, and Event counts remain unchanged; the
 Formal Catalog byte hash and memory count `0` remain unchanged. Ordinary
-`agc.read overview` and `search` return no Capture object or result. Responses
-and Capture persistence contain zero hits for the synthetic task-content,
-prompt, last-assistant-message, raw-exception, absolute source-root, and
-absolute transcript-path sentinels. The operator-bound absolute source root
-exists only in `config.yaml`, as permitted by the Task 1/5 binding contract.
+`agc.read overview` and `search` return no Capture object or result. Every
+response/stdout/stderr and every existing file below the managed Memory Root is
+scanned bytewise. Synthetic task-content, prompt, last-assistant-message,
+raw-exception, absolute source-root, and absolute transcript-path hits are zero
+outside the operator-owned `config.yaml`; that file contains exactly one
+expected configured-root path and no content sentinel.
+
+The probe's `source_roots.ids` is exactly the canonical configured-root id from
+`source_root_id_for`. Every persisted Census key and any persisted ScanState
+binding use the same opaque id; no alternate test-computed id is accepted.
 
 The disabled/configured root is byte- and structure-identical after direct
 status plus `agc-capture probe`; its source file is unchanged, no Source or
@@ -177,22 +202,22 @@ The disabled-boundary-first focused/adjacent command covered Task 6, Core,
 Scanner, Ledger, CLI, status, adapter, and Hook:
 
 ```text
-99 passed in 35.04s
+100 passed in 39.67s
 ```
 
 A reverse custom order put Source suites before the disabled-Core test and
 produced the existing `sys.modules` precondition failure (`98 passed, 1
-failed`). The documented disabled-boundary-first order passed all `99`; no
+failed`). The review's disabled-boundary-first order passed all `100`; no
 product change was made for that order-only failure.
 
 ### Complete repository
 
 ```powershell
 & '.\.venv\Scripts\python.exe' -m pytest -q -p no:cacheprovider `
-  --basetemp 'D:\tmp\agc-capture-source-full-final-6'
+  --basetemp 'D:\tmp\agc-capture-source-review-full-final-6'
 ```
 
-Result: exit `0`, `647 passed, 1 warning in 301.09s`. The warning is the
+Result: exit `0`, `648 passed, 1 warning in 302.32s`. The warning is the
 existing intentional duplicate-name ZIP adversarial fixture.
 
 An earlier full run reported `646 passed, 1 failed` because the E2E replay
@@ -229,6 +254,11 @@ The two production files have `0` forbidden model/provider, subprocess,
 Extractor, Runner, Task Capsule, or target-turn-loader dependency hits. The
 synthetic private-content sentinel appears in exactly one source file: the E2E
 test fixture.
+
+The evidence-review four-file tests/docs-only delta also passes isolated test
+`compileall`, strict UTF-8/no-BOM for all four files, exact changed-scope and
+`git diff --check`. Its planned-import audit finds all seven real capability
+names and zero obsolete fake-module/counter names.
 
 ## Remaining gates
 

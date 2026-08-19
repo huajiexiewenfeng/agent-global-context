@@ -76,8 +76,8 @@
 - development: Capture Core and Codex Source Census Tasks 1-6 complete; Source
   Census Task 6 added a narrowly authorized same-quarantine replay fix and no
   Extractor/Runner/model/host behavior
-- testing: Source Census focused `3 passed`; ordered adjacent `99 passed`;
-  complete `647 passed, 1 warning`; clean installed wheel proves
+- testing: Source Census review focused `4 passed`; ordered adjacent `100 passed`;
+  complete `648 passed, 1 warning`; the unchanged clean installed wheel proves
   `agc-capture` and exactly three MCP tools
 - next_gate: keep Capture inactive; proceed only to the Extractor/Runner plan,
   with real-profile shadow backfill and Host rollout still requiring later
@@ -223,6 +223,15 @@ the Codex Source Census plan, still without enabling Capture.
   tests/test_capture_census_end_to_end.py -q -p no:cacheprovider `
   --basetemp 'D:\tmp\agc-capture-source-focused-final-6'
 # exit 0; 3 passed in 3.70s
+
+# Evidence-review import-tripwire RED at b84c773:
+# exit 1; missing capture_capsule fell through to ModuleNotFoundError
+
+# MetaPathFinder calibration node:
+# exit 0; 1 passed in 0.10s
+
+# Final review-focused file:
+# exit 0; 4 passed in 3.68s
 ```
 
 The narrowly authorized production correction makes exact
@@ -237,11 +246,11 @@ formal-memory behavior.
 
 ```powershell
 # disabled-boundary-first adjacent Source Census/Core suite
-# exit 0; 99 passed in 35.04s
+# exit 0; 100 passed in 39.67s
 
 & '.\.venv\Scripts\python.exe' -m pytest -q -p no:cacheprovider `
-  --basetemp 'D:\tmp\agc-capture-source-full-final-6'
-# exit 0; 647 passed, 1 expected warning in 301.09s
+  --basetemp 'D:\tmp\agc-capture-source-review-full-final-6'
+# exit 0; 648 passed, 1 expected warning in 302.32s
 
 # clean copied-source wheel build/install, installed agc-capture probe,
 # installed-module provenance, and exact-three-MCP-tools node
@@ -251,22 +260,33 @@ formal-memory behavior.
 The one expected warning is the existing duplicate-name ZIP adversarial case.
 An earlier reverse custom adjacent order produced only the documented
 disabled-Core `sys.modules` precondition failure after Source suites; the
-disabled-boundary-first order passed all `99`. An earlier full E2E comparison
+review's disabled-boundary-first order passed all `100`. An earlier full E2E comparison
 included the permitted active/archive locator representative and was corrected
 to compare Revision membership/correctness fields while separately requiring
 one replay identity.
 
 ### Isolation and pending gates
 
-Guards are installed before deferred imports and execution. Model/provider,
-network, subprocess, Extractor, Runner, Task Capsule, target-turn loader,
-Observation write, formal write, Hook installation, service/scheduler, and
-unconfigured-root enumeration counters all remain `0`. The real Stop Hook is
-also exercised with an injected marker-write failure and remains silent while
-Scanner discovery still accounts the Revision. Ordinary Recall stays empty;
+An import-system `MetaPathFinder` is installed before deferred imports. It is
+separately calibrated by deliberately importing the exact next-plan
+`capture_capsule`, `capture_safety`, `capture_extractor`, `codex_extractor`,
+`capture_budget`, and `capture_runner` modules plus Host-plan
+`capture_activation`; every import increments its named counter and raises.
+During the real Census operation all those counters, network/subprocess,
+target-turn loader, Observation/formal write, and unconfigured-root guards stay
+`0`. No nonexistent `task_capsule`, Hook-installer, scheduler, provider, or
+model module is claimed. The real Stop Hook is exercised only for its existing
+failure-open marker path and remains silent while Scanner discovery accounts
+the Revision.
+
+Status returns exactly one source-root id equal to `source_root_id_for` of the
+canonical configured root. Every persisted Census key and any persisted
+ScanState binding use that id. Ordinary Recall stays empty;
 Candidate/Formal Memory/Event counts and the Formal Catalog byte hash are
-unchanged; source content, prompt, last-assistant, raw-exception, and absolute
-path sentinels have zero response/Capture-persistence hits.
+unchanged. Every response/stdout/stderr and every managed Memory Root file is
+scanned bytewise for source-content, prompt, last-assistant, raw-exception, and
+absolute-path sentinels. All hits are zero outside the explicit operator-owned
+`config.yaml`, which contains the expected configured source root exactly once.
 
 Extractor/Runner, token-budget/model-call proof, real-profile shadow backfill,
 continuous hosting, Hook trust and foreground p95 latency, host route

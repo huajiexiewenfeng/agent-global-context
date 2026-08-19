@@ -7,6 +7,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime, timezone
 import hashlib
 import importlib
+from importlib.abc import MetaPathFinder
 import io
 import json
 import os
@@ -37,6 +38,7 @@ DEFERRED_CAPTURE_MODULES = frozenset(
         "agc_runtime.codex_extractor",
         "agc_runtime.capture_budget",
         "agc_runtime.capture_runner",
+        "agc_runtime.capture_activation",
         "agc_runtime.capture_cli",
         "agc_runtime.codex_source_adapter",
         "agc_runtime.project_identity",
@@ -50,17 +52,18 @@ SOURCE_SCANNER_MODULES = frozenset(
         "agc_runtime.codex_source_adapter",
     }
 )
-FORBIDDEN_IMPORTS = {
+PLANNED_CAPABILITY_IMPORTS = {
+    "agc_runtime.capture_capsule": "task_capsule",
+    "agc_runtime.capture_safety": "safety_gate",
     "agc_runtime.capture_extractor": "extractor",
+    "agc_runtime.codex_extractor": "extractor",
+    "agc_runtime.capture_budget": "token_budget",
     "agc_runtime.capture_runner": "runner",
-    "agc_runtime.task_capsule": "task_capsule",
-    "agc_runtime.capture_host": "service_scheduler",
-    "agc_runtime.capture_scheduler": "service_scheduler",
-    "agc_runtime.provider": "model_provider",
-    "agc_runtime.model": "model_provider",
+    "agc_runtime.capture_activation": "host_activation",
+}
+FORBIDDEN_IMPORTS = {
+    **PLANNED_CAPABILITY_IMPORTS,
     "agc_runtime.write_service": "formal_write",
-    "openai": "model_provider",
-    "anthropic": "model_provider",
 }
 
 
@@ -221,17 +224,17 @@ def _install_boundary_guards(
     transient_lock_file: Path | None = None,
 ) -> tuple[dict[str, int], list[str]]:
     counters = {
-        "model_provider": 0,
         "network": 0,
         "subprocess": 0,
         "extractor": 0,
         "runner": 0,
         "task_capsule": 0,
+        "safety_gate": 0,
+        "token_budget": 0,
         "target_turn_load": 0,
         "observation_write": 0,
         "formal_write": 0,
-        "hook_install": 0,
-        "service_scheduler": 0,
+        "host_activation": 0,
         "unconfigured_source_enumeration": 0,
     }
     source_reads: list[str] = []
@@ -251,6 +254,17 @@ def _install_boundary_guards(
 
     patched_adapter = False
     original_import = builtins.__import__
+
+    class CapabilityImportBlocker(MetaPathFinder):
+        def find_spec(self, fullname, path=None, target=None):
+            del path, target
+            for blocked, counter in FORBIDDEN_IMPORTS.items():
+                if fullname == blocked or fullname.startswith(blocked + "."):
+                    counters[counter] += 1
+                    raise AssertionError(f"census-only boundary imported {fullname}")
+            return None
+
+    monkeypatch.setattr(sys, "meta_path", [CapabilityImportBlocker(), *sys.meta_path])
 
     def patch_adapter_boundary() -> None:
         nonlocal patched_adapter
@@ -332,11 +346,6 @@ def _install_boundary_guards(
     return counters, source_reads
 
 
-def _source_root_id(source_root: Path) -> str:
-    canonical = Path(os.path.normcase(os.path.realpath(source_root.resolve(strict=True))))
-    return hashlib.sha256(canonical.as_posix().encode("utf-8")).hexdigest()
-
-
 def _semantic_capture_state(paths, store_type) -> dict[str, object]:
     snapshot = store_type(paths).read_snapshot()
     census_membership = []
@@ -359,6 +368,34 @@ def _semantic_capture_state(paths, store_type) -> dict[str, object]:
         "conflicts": snapshot.source_conflict_count,
         "scan_state_correctness": sorted(json.dumps(item, sort_keys=True) for item in scan_states),
     }
+
+
+def test_planned_semantic_and_host_imports_have_real_meta_path_tripwires(
+    tmp_path: Path,
+    monkeypatch,
+):
+    source_root = tmp_path / "configured-source"
+    unconfigured_root = tmp_path / "unconfigured-source"
+    source_root.mkdir()
+    unconfigured_root.mkdir()
+    original_builtin_import = builtins.__import__
+    original_import_module = importlib.import_module
+    counters, _source_reads = _install_boundary_guards(
+        monkeypatch,
+        source_root=source_root,
+        unconfigured_root=unconfigured_root,
+    )
+    monkeypatch.setattr(builtins, "__import__", original_builtin_import)
+    monkeypatch.setattr(importlib, "import_module", original_import_module)
+
+    for module_name, counter_name in PLANNED_CAPABILITY_IMPORTS.items():
+        before = counters[counter_name]
+        with pytest.raises(
+            AssertionError,
+            match=f"census-only boundary imported {module_name}",
+        ):
+            importlib.import_module(module_name)
+        assert counters[counter_name] == before + 1
 
 
 def test_source_quarantine_exact_replay_is_byte_stable_and_corruption_fails_closed(
@@ -445,6 +482,8 @@ def test_disabled_probe_and_status_are_byte_inert_and_import_no_source_modules(t
     assert SOURCE_SCANNER_MODULES.intersection(sys.modules) == deferred_before
     assert SENTINEL not in probe_text
     assert str(configured_but_disabled) not in probe_text
+    assert SENTINEL not in json.dumps(status.to_dict(), sort_keys=True)
+    assert str(configured_but_disabled) not in json.dumps(status.to_dict(), sort_keys=True)
     assert all(value == 0 for value in counters.values())
 
 
@@ -479,6 +518,14 @@ def test_scanner_only_capture_coverage_end_to_end(tmp_path: Path, monkeypatch):
     locked_path = sessions / "locked.jsonl"
     _write_rollout(locked_path, _records("task-locked", "rollout-locked", (("turn-locked", _utc(10)),)))
 
+    assert not set(PLANNED_CAPABILITY_IMPORTS).intersection(sys.modules)
+    counters, source_reads = _install_boundary_guards(
+        monkeypatch,
+        source_root=source_root,
+        unconfigured_root=unconfigured_root,
+        transient_lock_file=locked_path,
+    )
+
     from agc_runtime.admin_service import dispatch_admin
     from agc_runtime.capture_contracts import CaptureKey
     from agc_runtime.capture_store import CaptureStore
@@ -491,9 +538,6 @@ def test_scanner_only_capture_coverage_end_to_end(tmp_path: Path, monkeypatch):
     _write_config(memory_root, source_root, enabled=True, hook_enabled=True)
     catalog_before = _catalog_state(paths)
     formal_before = _formal_counts(paths)
-    counters, source_reads = _install_boundary_guards(
-        monkeypatch, source_root=source_root, unconfigured_root=unconfigured_root, transient_lock_file=locked_path
-    )
 
     def reject_observation_write(*_args, **_kwargs):
         counters["observation_write"] += 1
@@ -550,12 +594,15 @@ def test_scanner_only_capture_coverage_end_to_end(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(capture_hook, "write_dirty_marker", real_hook_writer)
 
     from agc_runtime.capture_dirty import write_dirty_marker
-    from agc_runtime.capture_source import DirtyMarker
+    from agc_runtime.capture_source import DirtyMarker, source_root_id_for
+
+    canonical_source_root = source_root.resolve(strict=True)
+    expected_source_root_id = source_root_id_for(canonical_source_root)
 
     locked_marker = DirtyMarker.from_mapping(
         {
             "schema_version": 1, "adapter_id": "codex", "adapter_version": "1.0",
-            "source_schema_version": "codex-v1", "source_root_id": _source_root_id(source_root),
+            "source_schema_version": "codex-v1", "source_root_id": expected_source_root_id,
             "task_id": "task-locked", "revision_id": "turn-locked",
             "locator": "sessions/locked.jsonl", "observed_at": "2026-08-19T11:59:59Z", "hook_event": "Stop",
         }
@@ -635,6 +682,14 @@ def test_scanner_only_capture_coverage_end_to_end(tmp_path: Path, monkeypatch):
     assert scanner_status["latest_census"] == {"assessment": "available", "run_count": 3, "key_count": 7}
     assert scanner_status["dirty_marker_count"] == len(strict.dirty_markers) == 0
     assert probe["data"]["source_roots"]["configured_count"] == 1
+    assert probe["data"]["source_roots"]["ids"] == [expected_source_root_id]
+    assert all(
+        item.binding.source_root_id == expected_source_root_id
+        for item in strict.scan_states
+    )
+    assert {item.key.source_root_id for item in strict.census} == {
+        expected_source_root_id
+    }
 
     from agc_runtime.read_service import dispatch_read
 
@@ -647,11 +702,44 @@ def test_scanner_only_capture_coverage_end_to_end(tmp_path: Path, monkeypatch):
     assert catalog_before[1] == 0
     assert _formal_counts(paths) == formal_before
 
-    response_text = first_text + second_text + third_text + probe_text
-    forbidden_values = (SENTINEL, PRIVATE_PROMPT, LAST_ASSISTANT, RAW_EXCEPTION, str(source_root), str(ordinary_path))
-    assert not any(value in response_text for value in forbidden_values)
-    runtime_bytes = b"".join(path.read_bytes() for path in paths.capture.root.rglob("*") if path.is_file())
-    assert not any(value.encode("utf-8") in runtime_bytes for value in forbidden_values)
+    response_text = "".join(
+        (
+            first_text,
+            second_text,
+            third_text,
+            probe_text,
+            hook_stdout.getvalue(),
+            hook_stderr.getvalue(),
+            json.dumps([item.to_dict() for item in ordinary_recall], sort_keys=True),
+        )
+    )
+    content_sentinels = (SENTINEL, PRIVATE_PROMPT, LAST_ASSISTANT, RAW_EXCEPTION)
+    absolute_path_sentinels = {
+        str(source_root),
+        source_root.as_posix(),
+        str(ordinary_path),
+        ordinary_path.as_posix(),
+    }
+    assert not any(value in response_text for value in content_sentinels)
+    assert not any(value in response_text for value in absolute_path_sentinels)
+
+    managed_files = tuple(
+        sorted(path for path in memory_root.rglob("*") if path.is_file())
+    )
+    assert managed_files
+    config_path = memory_root / "config.yaml"
+    assert config_path in managed_files
+    for path in managed_files:
+        payload = path.read_bytes()
+        assert not any(value.encode("utf-8") in payload for value in content_sentinels), path
+        if path == config_path:
+            assert payload.count(source_root.as_posix().encode("utf-8")) == 1
+            assert str(ordinary_path).encode("utf-8") not in payload
+            assert ordinary_path.as_posix().encode("utf-8") not in payload
+        else:
+            assert not any(
+                value.encode("utf-8") in payload for value in absolute_path_sentinels
+            ), path
 
     source_files = tuple(sorted(source_root.rglob("*.jsonl")))
     source_file_count = len(source_files)
