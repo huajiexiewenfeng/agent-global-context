@@ -5,10 +5,11 @@ from __future__ import annotations
 import ctypes
 import json
 import os
+import shutil
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from agc_runtime.utf8_io import strict_read_text
 
@@ -66,6 +67,57 @@ def atomic_write_bytes(path: Path, data: bytes) -> None:
 
 def atomic_write_json(path: Path, value: Mapping[str, Any]) -> None:
     atomic_write_bytes(path, canonical_json_bytes(value))
+
+
+def atomic_install_json_directory(
+    path: Path,
+    files: Mapping[str, Mapping[str, Any]],
+    *,
+    directories: Sequence[str] = (),
+) -> None:
+    """Install a complete immutable JSON directory with one atomic rename."""
+
+    if path.exists():
+        raise FileExistsError(path.name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = Path(
+        tempfile.mkdtemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    )
+    try:
+        for relative in sorted(directories):
+            relative_path = Path(relative)
+            if (
+                relative_path.is_absolute()
+                or not relative_path.parts
+                or any(part in {"", ".", ".."} for part in relative_path.parts)
+            ):
+                raise ValueError("Capture directory member path is invalid")
+            target = temporary / relative_path
+            if not target.resolve().is_relative_to(temporary.resolve()):
+                raise ValueError("Capture directory member escapes transaction")
+            target.mkdir(parents=True, exist_ok=False)
+        for relative, value in sorted(files.items()):
+            relative_path = Path(relative)
+            if (
+                relative_path.is_absolute()
+                or not relative_path.parts
+                or any(part in {"", ".", ".."} for part in relative_path.parts)
+            ):
+                raise ValueError("Capture directory member path is invalid")
+            target = temporary / relative_path
+            if not target.resolve().is_relative_to(temporary.resolve()):
+                raise ValueError("Capture directory member escapes transaction")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with target.open("wb") as stream:
+                stream.write(canonical_json_bytes(value))
+                stream.flush()
+                os.fsync(stream.fileno())
+        os.rename(temporary, path)
+        _flush_parent(path.parent)
+    except BaseException:
+        if temporary.exists():
+            shutil.rmtree(temporary)
+        raise
 
 
 def safe_unlink(path: Path) -> None:

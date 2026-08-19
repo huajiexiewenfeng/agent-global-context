@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+import hashlib
 from pathlib import Path
 from typing import Iterable
 
 from agc_runtime.capture_contracts import CaptureKey, RevisionRef
-from agc_runtime.capture_ledger import receipt_for_revision
+from agc_runtime.capture_ledger import receipt_for_revision, same_revision_metadata
 from agc_runtime.capture_source import (
     AdapterDescriptor,
     DirtyMarker,
@@ -37,6 +38,7 @@ class ScanReport:
     known_key_count: int
     accounted_key_count: int
     silent_loss_count: int
+    pending_key_count: int
     created_receipt_count: int
     replay_count: int
     source_quarantine_count: int
@@ -71,9 +73,13 @@ class CaptureScanner:
         )
 
         self.store.recover_transactions(now=started_at)
-        markers = self._dirty_markers()
+        configured = {
+            (descriptor.adapter_id, descriptor.source_root_id): descriptor
+            for descriptor, _adapter in self._adapters
+        }
+        markers = self._dirty_markers(configured=configured, created_at=started_at)
         known: set[CaptureKey] = set()
-        created = replay = quarantines = advanced = 0
+        created = replay = advanced = 0
 
         for descriptor, adapter in self._adapters:
             binding = SourceBindingKey.from_mapping(
@@ -86,14 +92,22 @@ class CaptureScanner:
             state = self.store.load_scan_state(
                 binding=binding, lookback_started_at=window.start_at
             )
-            raw_batch = adapter.discover(state.hint, window)
+            binding_markers = tuple(
+                item
+                for item in markers
+                if item[1].adapter_id == binding.adapter_id
+                and item[1].source_root_id == binding.source_root_id
+            )
+            raw_batch = adapter.discover(
+                None if binding_markers else state.hint, window
+            )
             batch = DiscoveryBatch.from_mapping(raw_batch.to_mapping())
             if batch.binding != binding or batch.window != window:
                 raise ValueError("discovery batch binding or window mismatch")
             revisions = tuple(
                 self._validate_revision(item, descriptor) for item in batch.revisions
             )
-            known.update(item.key for item in revisions)
+            binding_failed_closed = False
 
             try:
                 self.store.freeze_census(
@@ -104,40 +118,69 @@ class CaptureScanner:
                     source_quarantine_count=len(batch.diagnostic_codes),
                 )
             except ValueError as error:
-                if str(error) != "revision_metadata_conflict":
+                if str(error) != "census_run_conflict":
                     raise
-                for revision in revisions:
-                    try:
-                        self.store.freeze_census(
-                            binding=binding,
-                            window=window,
-                            started_at=started_at,
-                            revisions=(revision,),
-                            source_quarantine_count=len(batch.diagnostic_codes),
-                        )
-                    except ValueError as item_error:
-                        if str(item_error) != "revision_metadata_conflict":
-                            raise
-                        self.store.register_quarantined_revision(
-                            revision,
-                            discovered_at=started_at,
-                            code="revision_metadata_conflict",
-                        )
-                        self.store.record_source_quarantine(
-                            binding,
-                            created_at=started_at,
-                            code="revision_metadata_conflict",
-                        )
-                        quarantines += 1
+                binding_failed_closed = True
+                self.store.record_source_quarantine(
+                    binding, created_at=started_at, code="census_run_conflict"
+                )
 
             for code in batch.diagnostic_codes:
                 self.store.record_source_quarantine(
                     binding, created_at=started_at, code=code
                 )
             if batch.diagnostic_codes:
-                quarantines += 1
+                binding_failed_closed = True
+            durable = self.store.frozen_revision_records(binding=binding)
+            by_key: dict[CaptureKey, list[RevisionRef]] = {}
+            for revision in (*durable, *revisions):
+                by_key.setdefault(revision.key, []).append(revision)
+            conflict_keys = {
+                key
+                for key, items in by_key.items()
+                if any(
+                    not same_revision_metadata(items[0], candidate)
+                    for candidate in items[1:]
+                )
+            }
+            for key in conflict_keys:
+                candidate = next(
+                    (item for item in revisions if item.key == key), by_key[key][0]
+                )
+                self.store.register_quarantined_revision(
+                    candidate,
+                    discovered_at=started_at,
+                    code="revision_metadata_conflict",
+                )
+                self.store.record_source_quarantine(
+                    binding,
+                    created_at=started_at,
+                    code="revision_metadata_conflict",
+                )
+                binding_failed_closed = True
 
-            for revision in revisions:
+            binding_known = set(by_key)
+            binding_known.update(marker.key for _path, marker in binding_markers)
+            known.update(binding_known)
+
+            eligible_revisions = revisions
+            if binding_failed_closed:
+                durable_by_key: dict[CaptureKey, list[RevisionRef]] = {}
+                for revision in durable:
+                    durable_by_key.setdefault(revision.key, []).append(revision)
+                eligible_revisions = tuple(
+                    revision
+                    for revision in revisions
+                    if any(
+                        same_revision_metadata(revision, frozen)
+                        for frozen in durable_by_key.get(revision.key, ())
+                    )
+                )
+
+            for revision in eligible_revisions:
+                if revision.key in conflict_keys:
+                    replay += 1
+                    continue
                 self.store._point("before:census:receipt")
                 result = self.store.register_extraction(
                     receipt_for_revision(revision, discovered_at=started_at)
@@ -148,7 +191,10 @@ class CaptureScanner:
                 else:
                     replay += 1
 
-            if all(self.store.is_key_accounted(item.key) for item in revisions):
+            if (
+                not binding_failed_closed
+                and all(self.store.is_key_accounted(key) for key in binding_known)
+            ):
                 try:
                     self.store.advance_scan_state(
                         binding=binding,
@@ -170,9 +216,10 @@ class CaptureScanner:
                 acknowledged += 1
 
         accounted = sum(self.store.is_key_accounted(key) for key in known)
+        quarantines = self.store.source_quarantine_count()
         source_health = (
             "degraded"
-            if quarantines
+            if quarantines > 0
             or any(
                 self.store.source_health(item.adapter_id, item.source_root_id)
                 == "degraded"
@@ -185,6 +232,7 @@ class CaptureScanner:
             known_key_count=len(known),
             accounted_key_count=accounted,
             silent_loss_count=len(known) - accounted,
+            pending_key_count=len(known) - accounted,
             created_receipt_count=created,
             replay_count=replay,
             source_quarantine_count=quarantines,
@@ -207,7 +255,12 @@ class CaptureScanner:
             raise ValueError("revision does not match configured source adapter")
         return validated
 
-    def _dirty_markers(self) -> tuple[tuple[Path, DirtyMarker], ...]:
+    def _dirty_markers(
+        self,
+        *,
+        configured: dict[tuple[str, str], AdapterDescriptor],
+        created_at: str,
+    ) -> tuple[tuple[Path, DirtyMarker], ...]:
         dirty = self.store.paths.capture.dirty
         if not dirty.exists():
             return ()
@@ -216,6 +269,43 @@ class CaptureScanner:
             try:
                 marker = DirtyMarker.from_mapping(read_json(path))
             except (OSError, TypeError, ValueError):
+                binding = SourceBindingKey.from_mapping(
+                    {
+                        "schema_version": 1,
+                        "adapter_id": "unknown",
+                        "source_root_id": hashlib.sha256(
+                            f"invalid-dirty-marker\0{path.name}".encode("utf-8")
+                        ).hexdigest(),
+                    }
+                )
+                self.store.record_source_quarantine(
+                    binding, created_at=created_at, code="invalid_dirty_marker"
+                )
+                continue
+            descriptor = configured.get((marker.adapter_id, marker.source_root_id))
+            marker_binding = SourceBindingKey.from_mapping(
+                {
+                    "schema_version": 1,
+                    "adapter_id": marker.adapter_id,
+                    "source_root_id": marker.source_root_id,
+                }
+            )
+            if descriptor is None:
+                self.store.record_source_quarantine(
+                    marker_binding,
+                    created_at=created_at,
+                    code="unconfigured_dirty_binding",
+                )
+                continue
+            if (
+                marker.adapter_version != descriptor.adapter_version
+                or marker.source_schema_version != descriptor.source_schema_version
+            ):
+                self.store.record_source_quarantine(
+                    marker_binding,
+                    created_at=created_at,
+                    code="dirty_version_mismatch",
+                )
                 continue
             markers.append((path, marker))
         return tuple(markers)

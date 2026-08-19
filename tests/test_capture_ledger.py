@@ -178,11 +178,83 @@ def test_census_exact_replay_allows_archive_move_but_rejects_anchor_change(tmp_p
     store.freeze_census(
         binding=_binding(), window=window, started_at=STARTED, revisions=(moved,)
     )
-    assert store.read_snapshot().census == (moved,)
-    with pytest.raises(ValueError, match="revision_metadata_conflict"):
+    assert store.read_snapshot().census == (first,)
+    with pytest.raises(ValueError, match="census_run_conflict"):
         store.freeze_census(
             binding=_binding(), window=window, started_at=STARTED, revisions=(changed,)
         )
+
+
+def test_frozen_run_is_immutable_and_membership_conflict_cannot_overwrite(
+    tmp_path: Path,
+):
+    store = CaptureStore(MemoryPaths.from_root(tmp_path / "memory"), clock=lambda: STARTED)
+    window = TimeWindow.from_mapping(
+        {
+            "schema_version": 1,
+            "start_at": "2026-08-06T12:00:00Z",
+            "end_at": STARTED,
+        }
+    )
+    first = _revision("turn-1")
+    second = _revision("turn-2")
+    frozen = store.freeze_census(
+        binding=_binding(), window=window, started_at=STARTED, revisions=(first,)
+    )
+    run_path = store.paths.capture.root / "census-runs" / frozen.census_id
+
+    assert run_path.is_dir()
+    assert (run_path / "run.json").is_file()
+    assert len(list((run_path / "members").glob("*.json"))) == 1
+    replay = store.freeze_census(
+        binding=_binding(),
+        window=window,
+        started_at=STARTED,
+        revisions=(_revision("turn-1", locator="archived_sessions/moved.jsonl"),),
+    )
+    assert replay == frozen
+
+    with pytest.raises(ValueError, match="census_run_conflict"):
+        store.freeze_census(
+            binding=_binding(),
+            window=window,
+            started_at=STARTED,
+            revisions=(first, second),
+        )
+    assert store.frozen_revisions(binding=_binding()) == (first,)
+    assert len(list((run_path / "members").glob("*.json"))) == 1
+
+
+def test_census_directory_publication_failure_leaves_no_partial_truth(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from agc_runtime import capture_transaction
+
+    store = CaptureStore(MemoryPaths.from_root(tmp_path / "memory"), clock=lambda: STARTED)
+    window = TimeWindow.from_mapping(
+        {
+            "schema_version": 1,
+            "start_at": "2026-08-06T12:00:00Z",
+            "end_at": STARTED,
+        }
+    )
+    monkeypatch.setattr(
+        capture_transaction.os,
+        "rename",
+        lambda _source, _target: (_ for _ in ()).throw(OSError("publish failed")),
+    )
+
+    with pytest.raises(OSError, match="publish failed"):
+        store.freeze_census(
+            binding=_binding(),
+            window=window,
+            started_at=STARTED,
+            revisions=(_revision(),),
+        )
+
+    assert store.frozen_revisions(binding=_binding()) == ()
+    runs = store.paths.capture.root / "census-runs"
+    assert not runs.exists() or list(runs.iterdir()) == []
 
 
 def test_ready_revisions_are_durable_unfinished_receipts(tmp_path: Path):

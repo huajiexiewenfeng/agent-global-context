@@ -22,7 +22,13 @@ from agc_runtime.capture_contracts import (
     SanitizedError, SourceQuarantine, receipt_id_for, tombstone_id_for,
     validate_capture_transition,
 )
-from agc_runtime.capture_transaction import atomic_write_bytes, atomic_write_json, read_json, safe_unlink
+from agc_runtime.capture_transaction import (
+    atomic_install_json_directory,
+    atomic_write_bytes,
+    atomic_write_json,
+    read_json,
+    safe_unlink,
+)
 from agc_runtime.locking import capture_write_lock
 from agc_runtime.paths import MemoryPaths
 
@@ -287,7 +293,76 @@ class CaptureStore:
         return self.capture.scan_state / f"state-{self._binding_digest(binding)}.json"
 
     def _census_run_path(self, census_id: str) -> Path:
-        return self.capture.root / "census-runs" / f"{census_id}.json"
+        return self.capture.root / "census-runs" / census_id
+
+    @staticmethod
+    def _revision_sort_key(revision: RevisionRef) -> tuple[str, str, str, str]:
+        key = revision.key
+        return key.adapter_id, key.source_root_id, key.task_id, key.revision_id
+
+    def _read_frozen_run(
+        self, path: Path
+    ) -> tuple[CensusRun, tuple[RevisionRef, ...]]:
+        from agc_runtime.capture_source import CensusRun
+
+        if not path.is_dir() or path.name.startswith("."):
+            raise ValueError("invalid frozen Census run")
+        if {item.name for item in path.iterdir()} != {"members", "run.json"}:
+            raise ValueError("invalid frozen Census run")
+        members_path = path / "members"
+        if not members_path.is_dir():
+            raise ValueError("invalid frozen Census run")
+        census = CensusRun.from_mapping(read_json(path / "run.json"))
+        if census.census_id != path.name:
+            raise ValueError("frozen Census run filename binding mismatch")
+        revisions: list[RevisionRef] = []
+        for member_path in sorted(members_path.iterdir()):
+            if not member_path.is_file() or member_path.suffix != ".json":
+                raise ValueError("invalid frozen Census member")
+            revision = RevisionRef.from_mapping(read_json(member_path))
+            if member_path.name != f"{receipt_id_for(revision.key)}.json":
+                raise ValueError("frozen Census member filename binding mismatch")
+            if (
+                revision.key.adapter_id != census.binding.adapter_id
+                or revision.key.source_root_id != census.binding.source_root_id
+            ):
+                raise ValueError("frozen Census member binding mismatch")
+            revisions.append(revision)
+        ordered = tuple(sorted(revisions, key=self._revision_sort_key))
+        if tuple(item.key for item in ordered) != census.revision_keys:
+            raise ValueError("frozen Census membership mismatch")
+        return census, ordered
+
+    def frozen_revision_records(
+        self, *, binding: SourceBindingKey | None = None
+    ) -> tuple[RevisionRef, ...]:
+        """Return every immutable run member without coalescing conflicts."""
+
+        root = self.capture.root / "census-runs"
+        if not root.exists():
+            return ()
+        revisions: list[RevisionRef] = []
+        for path in sorted(root.iterdir()):
+            if path.name.startswith("."):
+                continue
+            census, members = self._read_frozen_run(path)
+            if binding is not None and census.binding != binding:
+                continue
+            revisions.extend(members)
+        return tuple(revisions)
+
+    def frozen_revisions(
+        self, *, binding: SourceBindingKey | None = None
+    ) -> tuple[RevisionRef, ...]:
+        from agc_runtime.capture_ledger import same_revision_metadata
+
+        unique: dict[CaptureKey, RevisionRef] = {}
+        for revision in self.frozen_revision_records(binding=binding):
+            current = unique.get(revision.key)
+            if current is not None and not same_revision_metadata(current, revision):
+                raise ValueError("revision_metadata_conflict")
+            unique.setdefault(revision.key, revision)
+        return tuple(sorted(unique.values(), key=self._revision_sort_key))
 
     def _read_receipt(self, receipt_id: str) -> CaptureReceipt:
         return CaptureReceipt.from_mapping(read_json(self._receipt_path(receipt_id)))
@@ -306,7 +381,7 @@ class CaptureStore:
     ) -> CensusRun:
         """Durably freeze a content-free Census before Receipt accounting."""
 
-        from agc_runtime.capture_ledger import persist_revision
+        from agc_runtime.capture_ledger import same_revision_metadata
         from agc_runtime.capture_source import CensusRun, SourceBindingKey, TimeWindow
 
         binding = SourceBindingKey.from_mapping(binding.to_mapping())
@@ -317,7 +392,12 @@ class CaptureStore:
             or _parse_utc(window.start_at) != run_start - timedelta(days=7)
         ):
             raise ValueError("census must use the exact seven-day run window")
-        validated = tuple(RevisionRef.from_mapping(item.to_mapping()) for item in revisions)
+        validated = tuple(
+            sorted(
+                (RevisionRef.from_mapping(item.to_mapping()) for item in revisions),
+                key=self._revision_sort_key,
+            )
+        )
         if any(
             item.key.adapter_id != binding.adapter_id
             or item.key.source_root_id != binding.source_root_id
@@ -341,8 +421,25 @@ class CaptureStore:
         census_id = f"census-{digest}"
         with capture_write_lock(self.paths):
             self._ensure_layout_locked()
-            for revision in validated:
-                persist_revision(self.capture.census, revision)
+            run_path = self._census_run_path(census_id)
+            if run_path.exists():
+                current, current_revisions = self._read_frozen_run(run_path)
+                exact_membership = (
+                    len(current_revisions) == len(validated)
+                    and all(
+                        same_revision_metadata(left, right)
+                        for left, right in zip(current_revisions, validated)
+                    )
+                )
+                if (
+                    not exact_membership
+                    or current.binding != binding
+                    or current.window != window
+                    or current.started_at != started_at
+                    or current.source_quarantine_count != source_quarantine_count
+                ):
+                    raise ValueError("census_run_conflict")
+                return current
             census = CensusRun.from_mapping(
                 {
                     "schema_version": CAPTURE_SCHEMA_VERSION,
@@ -355,7 +452,14 @@ class CaptureStore:
                     "source_quarantine_count": source_quarantine_count,
                 }
             )
-            atomic_write_json(self._census_run_path(census_id), census.to_mapping())
+            files: dict[str, dict[str, object]] = {"run.json": census.to_mapping()}
+            files.update(
+                {
+                    f"members/{receipt_id_for(item.key)}.json": item.to_mapping()
+                    for item in validated
+                }
+            )
+            atomic_install_json_directory(run_path, files, directories=("members",))
             return census
 
     def load_scan_state(
@@ -471,6 +575,20 @@ class CaptureStore:
             path = self.capture.quarantines / f"source-{self._binding_digest(binding)}.json"
             atomic_write_json(path, quarantine.to_mapping())
         return quarantine
+
+    def iter_source_quarantines(self) -> tuple[SourceQuarantine, ...]:
+        if not self.capture.quarantines.exists():
+            return ()
+        items: list[SourceQuarantine] = []
+        for path in sorted(self.capture.quarantines.glob("source-*.json")):
+            try:
+                items.append(SourceQuarantine.from_mapping(read_json(path)))
+            except (OSError, TypeError, ValueError):
+                continue
+        return tuple(items)
+
+    def source_quarantine_count(self) -> int:
+        return len(self.iter_source_quarantines())
 
     def register_quarantined_revision(
         self, revision: RevisionRef, *, discovered_at: str, code: str
@@ -623,6 +741,29 @@ class CaptureStore:
 
             census: list[RevisionRef] = []
             census_keys: set[tuple[str, str, str, str]] = set()
+            frozen_by_key: dict[tuple[str, str, str, str], RevisionRef] = {}
+            try:
+                from agc_runtime.capture_ledger import same_revision_metadata
+
+                for revision in self.frozen_revision_records():
+                    key = revision.key
+                    key_id = (
+                        key.adapter_id,
+                        key.source_root_id,
+                        key.task_id,
+                        key.revision_id,
+                    )
+                    current = frozen_by_key.get(key_id)
+                    if current is not None:
+                        if not same_revision_metadata(current, revision):
+                            degraded("conflicting_census_revision", "census")
+                        continue
+                    frozen_by_key[key_id] = revision
+                    census_keys.add(key_id)
+                    census.append(revision)
+            except (OSError, TypeError, ValueError):
+                degraded("invalid_frozen_census", "census")
+            legacy_keys: set[tuple[str, str, str, str]] = set()
             if self.capture.census.exists():
                 for path in json_objects(self.capture.census, "invalid_census_revision", "census"):
                     try:
@@ -636,8 +777,14 @@ class CaptureStore:
                         revision.key.task_id,
                         revision.key.revision_id,
                     )
-                    if key_id in census_keys:
+                    if key_id in legacy_keys:
                         degraded("duplicate_capture_key", "census")
+                        continue
+                    legacy_keys.add(key_id)
+                    if key_id in census_keys:
+                        current = frozen_by_key[key_id]
+                        if not same_revision_metadata(current, revision):
+                            degraded("conflicting_census_revision", "census")
                         continue
                     census_keys.add(key_id)
                     census.append(revision)
@@ -794,7 +941,12 @@ class CaptureStore:
 
     def source_health(self, adapter_id: str, source_root_id: str) -> str:
         digest = hashlib.sha256(f"{adapter_id}\0{source_root_id}".encode("utf-8")).hexdigest()
-        return "degraded" if (self.capture.conflicts / f"source-{digest}.json").exists() else "healthy"
+        conflict = (self.capture.conflicts / f"source-{digest}.json").exists()
+        quarantined = any(
+            item.adapter_id == adapter_id and item.source_root_id == source_root_id
+            for item in self.iter_source_quarantines()
+        )
+        return "degraded" if conflict or quarantined else "healthy"
 
     def acquire_lease(self, key: CaptureKey, *, owner_id: str, now: str, ttl_seconds: int) -> CaptureLease | None:
         key.to_mapping()
