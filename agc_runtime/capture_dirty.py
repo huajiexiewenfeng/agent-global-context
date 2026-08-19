@@ -59,6 +59,29 @@ def _flush_directory(directory: Path) -> None:
         os.close(descriptor)
 
 
+def _require_contained_directory(root: Path, path: Path) -> Path:
+    try:
+        resolved = path.resolve(strict=True)
+    except (OSError, RuntimeError) as error:
+        raise ValueError("dirty spool ancestor is invalid") from error
+    if resolved == root or root not in resolved.parents or not resolved.is_dir():
+        raise ValueError("dirty spool escaped memory root")
+    return resolved
+
+
+def _validate_existing_ancestors(root: Path, dirty: Path) -> None:
+    current = root
+    for part in dirty.relative_to(root).parts:
+        current = current / part
+        if os.path.lexists(current):
+            _require_contained_directory(root, current)
+
+
+def _install_no_replace(temporary: Path, final: Path) -> None:
+    os.link(temporary, final)
+    temporary.unlink()
+
+
 def write_dirty_marker(memory_root: Path, marker: DirtyMarker) -> Path:
     """Atomically install one immutable marker under the bound memory root."""
 
@@ -67,10 +90,9 @@ def write_dirty_marker(memory_root: Path, marker: DirtyMarker) -> Path:
     if not root.is_dir():
         raise ValueError("memory root must be an existing directory")
     dirty = root / ".runtime" / "capture" / "dirty"
+    _validate_existing_ancestors(root, dirty)
     dirty.mkdir(parents=True, exist_ok=True)
-    resolved_dirty = dirty.resolve(strict=True)
-    if resolved_dirty == root or root not in resolved_dirty.parents:
-        raise ValueError("dirty spool escaped memory root")
+    resolved_dirty = _require_contained_directory(root, dirty)
 
     final = resolved_dirty / f"dm_{_stable_key(validated)}_{_nonce_token()}.json"
     descriptor, temporary_name = tempfile.mkstemp(
@@ -82,9 +104,7 @@ def write_dirty_marker(memory_root: Path, marker: DirtyMarker) -> Path:
             stream.write(_canonical_json_bytes(validated.to_mapping()))
             stream.flush()
             _flush_file(stream.fileno())
-        if final.exists():
-            raise FileExistsError("dirty marker collision")
-        os.replace(temporary, final)
+        _install_no_replace(temporary, final)
         _flush_directory(resolved_dirty)
         return final
     except BaseException:

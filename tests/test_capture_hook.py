@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import builtins
 import errno
 import io
 import json
@@ -21,11 +22,20 @@ LAST_MESSAGE_SENTINEL = "LAST_MESSAGE_SENTINEL_MUST_NEVER_BE_PERSISTED_7f14"
 @pytest.fixture(scope="module", autouse=True)
 def _load_capture_hook_modules():
     global capture_dirty, capture_hook
+    imported_before = set(sys.modules)
     from agc_runtime import capture_dirty as dirty_module
     from agc_runtime import capture_hook as hook_module
 
     capture_dirty = dirty_module
     capture_hook = hook_module
+    yield
+    capture_dirty = None
+    capture_hook = None
+    for name in tuple(sys.modules):
+        if name not in imported_before and (
+            name == "agc_runtime" or name.startswith("agc_runtime.")
+        ):
+            sys.modules.pop(name, None)
 
 
 def _configure(memory_root: Path, source_root: Path) -> None:
@@ -75,6 +85,22 @@ def _marker_files(memory_root: Path) -> list[Path]:
     return sorted((memory_root / ".runtime" / "capture" / "dirty").glob("*.json"))
 
 
+def _tree_snapshot(root: Path) -> tuple[tuple[str, ...], dict[str, bytes]]:
+    directories = tuple(
+        sorted(
+            path.relative_to(root).as_posix()
+            for path in root.rglob("*")
+            if path.is_dir()
+        )
+    )
+    files = {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in root.rglob("*")
+        if path.is_file()
+    }
+    return directories, files
+
+
 def _create_directory_alias(link: Path, target: Path) -> None:
     if os.name != "nt":
         link.symlink_to(target, target_is_directory=True)
@@ -100,14 +126,38 @@ def test_hook_writes_only_validated_metadata_and_never_reads_transcript(
     transcript.write_bytes(b"TRANSCRIPT_CONTENT_MUST_NOT_BE_READ\n")
     _configure(memory_root, source_root)
 
-    real_open = Path.open
+    real_path_open = Path.open
+    real_builtin_open = builtins.open
+    real_os_open = os.open
+    transcript_identity = os.path.normcase(os.path.realpath(transcript))
+
+    def is_transcript(value: object) -> bool:
+        if isinstance(value, int):
+            return False
+        try:
+            identity = os.path.normcase(os.path.realpath(os.fspath(value)))
+            return identity == transcript_identity
+        except TypeError:
+            return False
 
     def reject_transcript_open(path: Path, *args, **kwargs):
-        if path.resolve() == transcript.resolve():
+        if is_transcript(path):
             raise AssertionError("Hook opened the transcript")
-        return real_open(path, *args, **kwargs)
+        return real_path_open(path, *args, **kwargs)
+
+    def reject_builtin_open(file, *args, **kwargs):
+        if is_transcript(file):
+            raise AssertionError("Hook opened the transcript through builtins.open")
+        return real_builtin_open(file, *args, **kwargs)
+
+    def reject_os_open(path, *args, **kwargs):
+        if is_transcript(path):
+            raise AssertionError("Hook opened the transcript through os.open")
+        return real_os_open(path, *args, **kwargs)
 
     monkeypatch.setattr(Path, "open", reject_transcript_open)
+    monkeypatch.setattr(builtins, "open", reject_builtin_open)
+    monkeypatch.setattr(os, "open", reject_os_open)
     result, stdout, stderr = _invoke_main(
         monkeypatch, memory_root, json.dumps(_payload(transcript))
     )
@@ -235,6 +285,68 @@ def test_spool_collision_preserves_the_installed_immutable_marker(
     assert first == second == (0, "", "")
     assert _marker_files(memory_root) == installed
     assert installed[0].read_bytes() == original
+
+
+def test_spool_collision_race_never_overwrites_competing_destination(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    memory_root = tmp_path / "memory"
+    source_root = tmp_path / "codex-home"
+    transcript = source_root / "sessions" / "task.jsonl"
+    transcript.parent.mkdir(parents=True)
+    transcript.write_bytes(b"opaque\n")
+    _configure(memory_root, source_root)
+    competitor = b"COMPETING_IMMUTABLE_MARKER\n"
+    real_replace = capture_dirty.os.replace
+    real_link = capture_dirty.os.link
+
+    def race_replace(source, destination):
+        Path(destination).write_bytes(competitor)
+        return real_replace(source, destination)
+
+    def race_link(source, destination):
+        Path(destination).write_bytes(competitor)
+        return real_link(source, destination)
+
+    monkeypatch.setattr(capture_dirty.os, "replace", race_replace)
+    monkeypatch.setattr(capture_dirty.os, "link", race_link)
+
+    result, stdout, stderr = _invoke_main(
+        monkeypatch, memory_root, json.dumps(_payload(transcript))
+    )
+
+    assert (result, stdout, stderr) == (0, "", "")
+    installed = _marker_files(memory_root)
+    assert len(installed) == 1
+    assert installed[0].read_bytes() == competitor
+    assert not [
+        path for path in installed[0].parent.iterdir() if path.suffix == ".tmp"
+    ]
+
+
+def test_spool_rejects_escaping_existing_ancestor_before_any_outside_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    memory_root = tmp_path / "memory"
+    source_root = tmp_path / "codex-home"
+    transcript = source_root / "sessions" / "task.jsonl"
+    transcript.parent.mkdir(parents=True)
+    transcript.write_bytes(b"opaque\n")
+    _configure(memory_root, source_root)
+    external = tmp_path / "external-spool-target"
+    (external / "keep").mkdir(parents=True)
+    (external / "keep" / "sentinel.bin").write_bytes(
+        b"OUTSIDE_MUST_NOT_CHANGE\x00"
+    )
+    _create_directory_alias(memory_root / ".runtime", external)
+    before = _tree_snapshot(external)
+
+    result, stdout, stderr = _invoke_main(
+        monkeypatch, memory_root, json.dumps(_payload(transcript))
+    )
+
+    assert (result, stdout, stderr) == (0, "", "")
+    assert _tree_snapshot(external) == before
 
 
 def test_replayed_event_uses_distinct_immutable_marker_files(

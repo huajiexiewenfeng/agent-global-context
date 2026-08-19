@@ -5,7 +5,7 @@
 - Added the silent `agc-capture-hook --root <memory-root>` Codex Stop Hook entry point.
 - Validates the complete Stop envelope, resolves the transcript only as metadata, and never opens or reads transcript content.
 - Persists only schema/adapter/source versions, opaque source/task/revision identities, a contained relative locator, observation time, and the `Stop` event.
-- Added an immutable per-event dirty spool using a stable capture-key digest plus a nonce, a same-directory temporary file, file flush/fsync when available, atomic `os.replace`, and best-effort directory fsync.
+- Added an immutable per-event dirty spool using a stable capture-key digest plus a nonce, a same-directory temporary file, file flush/fsync when available, atomic no-overwrite `os.link` installation, and best-effort directory fsync.
 - Keeps malformed input, path/reparse escape, collision, permission failure, disk failure, invalid operation form, disabled/paused Capture, and unsupported fsync failure-open and silent.
 - Added contract coverage for exact root binding, zero content persistence, replayed marker uniqueness, collision preservation, partial-file cleanup, and forbidden runtime-layer imports.
 - Kept Capture runtime imports lazy in the hook test module so disabled Capture core remains independently releasable.
@@ -21,7 +21,7 @@
 
 ## RED
 
-The interrupted workspace had no RED evidence in `.pytest_cache/v/cache/lastfailed`. Tests were therefore validated without changing repository files by running pytest through in-memory capability substitutions:
+The interrupted workspace had no RED evidence in `.pytest_cache/v/cache/lastfailed`. The original pre-implementation RED could not be recreated from repository evidence. Tests were instead validated without changing repository files by running pytest through in-memory capability substitutions. These checks proved that the tests detected disabled behavior, but they were not historical pre-implementation RED evidence:
 
 - Replacing `capture_hook.write_dirty_marker` with a no-op produced the expected two failures (`2 failed, 12 passed`): the metadata marker and immutable-collision tests both observed zero markers.
 - Hiding `agc-capture-hook` from the in-memory `pyproject.toml` stream produced the expected CLI `KeyError: 'agc-capture-hook'` (`1 failed`).
@@ -98,3 +98,30 @@ Output: `557 passed, 1 warning in 272.69s`; the warning is the existing duplicat
 - Hook content-read/source-enumeration API scan: zero matches.
 - The Hook does not enumerate sources, execute Scanner/model/network work, perform semantic Capture, or activate Capture behavior.
 - Scanner reconciliation remains correctness authority; dirty-marker loss never affects the foreground Stop operation.
+
+## Review remediation — immutable install, pre-mutation containment, and test isolation
+
+### Reproduced RED
+
+Three review findings were reproduced against commit `336cab23c517bc71e7a1872f53ed2f78ea0634a7` before their fixes:
+
+1. Reverse-order execution (`tests/test_capture_hook.py` before the disabled-core E2E) produced `1 failed, 16 passed`. The hook test fixture left deferred Capture modules in `sys.modules`, so the unchanged production boundary assertion failed.
+2. An injected collision between the old `final.exists()` check and `os.replace` produced a completed marker that overwrote the competing destination. The regression failed on the expected content mismatch.
+3. A pre-existing `memory/.runtime` junction targeting an outside directory allowed the old `dirty.mkdir(...)` call to create `capture/dirty` outside the memory root before containment was checked. The regression failed because the outside directory structure changed.
+
+### Review implementation
+
+- Replaced check-then-`os.replace` with `os.link(temporary, final)`. The fsynced temporary inode is exposed atomically, an existing destination makes the link fail without overwrite on Windows and POSIX, and Hook-level failure-open handling removes the temporary file.
+- Added a read-only validation pass over every existing dirty-spool ancestor before any `mkdir` or file mutation. Each existing path must resolve to a directory strictly contained by the canonical memory root. The final created dirty directory is revalidated before file creation.
+- Changed the hook test module fixture to remember its starting `sys.modules` set and remove only `agc_runtime` modules introduced by that fixture during teardown. The production disabled-core assertion was not weakened.
+- Strengthened transcript non-read coverage across `Path.open`, `builtins.open`, and `os.open`.
+
+### Review GREEN
+
+- Filesystem regressions: `2 passed in 0.32s`.
+- Reverse order (hook suite, then disabled-core E2E): `19 passed in 3.39s`.
+- Related disabled-core/Capture source/schema/config/path/adapter/hook/CLI suite: `171 passed in 19.40s`.
+- Rebuilt and installed wheel entry point: exit `0`, stdout/stderr `0` bytes, requested markers `1`, unrelated markers `0`, sentinel hits `0`, strict UTF-8 with no BOM.
+- Final unfiltered suite: `559 passed, 1 warning in 294.59s`; the warning remains the existing duplicate-name ZIP fixture warning.
+
+No live profile was read or modified during review remediation.
