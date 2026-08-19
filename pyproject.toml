@@ -22,6 +22,7 @@ test = [
 [project.scripts]
 agc = "agc_runtime.cli:main"
 agc-mcp = "agc_runtime.mcp_server:main"
+agc-capture-hook = "agc_runtime.capture_hook:main"
 
 [tool.setuptools.packages.find]
 include = ["agc_runtime*"]
