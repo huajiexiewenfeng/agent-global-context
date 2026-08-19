@@ -49,7 +49,9 @@ Tests are in `tests/test_capture_capsule_safety.py`.
   terminal, log, quoted-source, and serialized-payload blocks. Content-part
   lists accept only explicitly typed text parts; unknown/untyped parts,
   unbalanced fences, repeated serialized mappings, dense method calls, and any
-  log-shaped line fail closed for the whole record.
+  log-shaped line fail closed for the whole record. Any backtick or tilde
+  fence marker, single-line JSON/mapping/array payload, plain/awaited/dotted/
+  bracketed call, or assignment drops the entire text unit.
 - The known-secret corpus covers JSON/YAML scalar and block assignments, XML
   elements, partial and complete PEM blocks, password and generic token assignments,
   OpenAI/AWS-style environment names, Bearer/Basic authorization, API keys,
@@ -69,8 +71,11 @@ Tests are in `tests/test_capture_capsule_safety.py`.
   substantive lexical units. Declarative user evidence must match the claim's
   durable predicate class and polarity/down-toner class. Assistant result and
   method provenance cannot be recast as preferences, goals, identity, or
-  personality, and repeated durable predicates are non-atomic regardless of
-  comma, colon, slash, or sentence separators.
+  personality; an assistant-grounded user outcome also requires an explicit
+  `you`/`user` evidence subject. Indirect interrogatives and attribution,
+  reporting, or quoted-claim cues fail closed. Comma, colon, semicolon, slash,
+  newline, or multiple-sentence separators are non-atomic even when a later
+  predicate is unknown.
 - Direct DTOs round-trip through the same strict mapping validator. Evidence is
   deduplicated before scoring. Accepted drafts are canonically deduplicated
   within the Revision, ranked first by the specified semantic tier (verified
@@ -194,6 +199,35 @@ Task Capsule and safety file: 81 passed in 0.29s
 Task 1 plus Codex Source Adapter: 96 passed in 0.78s
 ```
 
+### Third independent security review RED/GREEN
+
+A third **independent reviewer message** against main commit `8b13fd4`
+reported configured-label scalar-tail hash leakage; single-line payload,
+call/assignment, and fence-marker admission; indirect interrogatives;
+assistant and third-party attribution recasting; and fail-open unknown-clause
+atomicity.
+
+All exact and generalized adversarial probes were added before the third-review
+production changes. The authentic aggregate RED was:
+
+```text
+24 failed, 1 passed, 81 deselected in 0.55s
+```
+
+Configured-label units are now replaced wholesale by one fixed,
+content-independent redaction unit, so arbitrary secret values and comma tails
+cannot affect either hash or public counts. Structural payloads and code-like
+units fail closed. Interrogative, provenance, attribution, and atomicity rules
+were tightened conservatively. A generalized plain/awaited call follow-up had
+an authentic `2 failed, 8 passed` RED before its `10 passed` GREEN.
+
+Final third-review focused evidence is:
+
+```text
+Task Capsule and safety file: 108 passed in 0.27s
+Task 1 plus Codex Source Adapter: 123 passed in 0.83s
+```
+
 The managed-root sentinel tripwire initially had one Windows-only test harness
 failure because `Path.write_text` produced CRLF rather than the asserted LF.
 The product made no write. The assertion was corrected to require byte-exact
@@ -205,7 +239,7 @@ Final Source Adapter, Source Contracts, Census, Scanner, and disabled-boundary
 adjacent suite, in its required census-before-adapter import order:
 
 ```text
-46 passed in 20.23s
+46 passed in 19.58s
 ```
 
 A deliberately contaminated reverse order produced only the repository's
@@ -215,7 +249,7 @@ required order passed without a product change.
 Final natural-order complete repository suite:
 
 ```text
-729 passed, 1 expected warning in 296.29s
+756 passed, 1 expected warning in 305.33s
 ```
 
 The warning is the existing intentional duplicate-name ZIP adversarial
@@ -224,7 +258,7 @@ fixture.
 Clean package evidence:
 
 - Existing offline wheel/install plus exact MCP surface nodes: `2 passed in
-  11.61s`; the server exposes only `agc.admin`, `agc.read`, and `agc.write`.
+  10.98s`; the server exposes only `agc.admin`, `agc.read`, and `agc.write`.
 - A fresh `python -m build --wheel --no-isolation` succeeded and explicitly
   packaged `capture_capsule.py`, `capture_safety.py`, and the updated source
   adapter.

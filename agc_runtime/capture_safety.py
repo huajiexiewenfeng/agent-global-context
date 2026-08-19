@@ -118,7 +118,9 @@ _THIRD_PARTY = re.compile(
 _PROJECT_FACT = re.compile(
     r"(?i)^\s*(?:the\s+)?(?:parser|module|class|function|service|endpoint|database|repository|file|test|build)\b"
 )
-_MULTI_CLAIM = re.compile(r";|\n|(?i:\b(?:and|also|plus|but)\b)|(?:以及|并且|而且|和)")
+_MULTI_CLAIM = re.compile(
+    r"[,/:;\n，：；、]|(?i:\b(?:and|also|plus|but)\b)|(?:以及|并且|而且|和)"
+)
 _LOG_LINE = re.compile(
     r"(?i)^\s*(?:\d{4}-\d{2}-\d{2}[T ][0-9:.+Z-]+\s+)?"
     r"(?:TRACE|DEBUG|INFO|WARN(?:ING)?|ERROR|FATAL)\b"
@@ -130,12 +132,31 @@ _SERIALIZED_LINE = re.compile(
 _METHOD_CALL_LINE = re.compile(
     r"^\s*[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+\s*\([^\r\n]*\)\s*;?\s*$"
 )
+_CODE_CALL = re.compile(
+    r"(?i)\b(?:await\s+)?[A-Za-z_][A-Za-z0-9_]*"
+    r"(?:(?:\.[A-Za-z_][A-Za-z0-9_]*)|(?:\[[^\]\r\n]{1,120}\]))*\s*\([^()\r\n]*\)"
+)
+_INLINE_ASSIGNMENT = re.compile(
+    r"(?m)(?:^|[;:\s])(?:[A-Za-z_][A-Za-z0-9_]*"
+    r"(?:(?:\.[A-Za-z_][A-Za-z0-9_]*)|(?:\[[^\]\r\n]{1,120}\]))*)\s*"
+    r"(?::=|=(?!=))\s*\S"
+)
+_JSON_MAPPING_PAYLOAD = re.compile(
+    r"(?:\{[^{}\r\n]{0,400}:[^{}\r\n]{0,400}\}|[\"'][^\"'\r\n]{1,120}[\"']\s*:)"
+)
+_ARRAY_PAYLOAD = re.compile(r"\[[^\[\]\r\n]{0,400}(?:,|:|[\"'])[^\[\]\r\n]{0,400}\]")
 _QUOTED_ASSERTION = re.compile(
-    r"(?i)(?:^\s*>|\b(?:said|says|quoted?|according to)\b\s*[:\"]|[\"“”].*\b(?:i|user)\b)"
+    r"(?i)(?:^\s*>|\baccording\s+to\b|"
+    r"\b(?:said|says|reported?|reports?|claimed|claims|quoted?)\b|"
+    r"[\"“”].*\b(?:i|user)\b)"
 )
 _INTERROGATIVE_START = re.compile(
     r"(?i)^\s*(?:do|does|did|can|could|would|should|is|are|am|was|were|why|how|"
     r"what|when|where|who|which|will|have|has|had)\b|^\s*(?:是否|能否|可以|为什么|怎么|如何|什么|哪里|谁)"
+)
+_INDIRECT_INTERROGATIVE = re.compile(
+    r"(?i)\b(?:wonder(?:ing)?|unsure|uncertain|not\s+sure|curious|ask(?:ing)?|question(?:ing)?)\b"
+    r".{0,48}\b(?:whether|if)\b|(?:想知道|不确定|不清楚|好奇|询问).{0,32}(?:是否|会不会)"
 )
 _NEGATION = re.compile(
     r"(?i)\b(?:no|not|never|cannot|can't|don't|doesn't|didn't|isn't|aren't|wasn't|"
@@ -144,6 +165,9 @@ _NEGATION = re.compile(
 )
 _DOWN_TONER = re.compile(r"(?i)\b(?:hardly|hardly ever|rarely|seldom|scarcely|barely)\b|(?:很少|几乎不)")
 _USER_SUBJECT = re.compile(r"(?i)^\s*(?:the\s+user(?:'s|’s)?|user(?:'s|’s)?)\b|^\s*用户")
+_EXPLICIT_USER_EVIDENCE_SUBJECT = re.compile(
+    r"(?i)\b(?:you|your|the\s+user|user's|user’s)\b|(?:用户|你|您的?)"
+)
 _WORD = re.compile(r"[A-Za-z0-9_]{3,}|[\u3400-\u9fff]{2,}")
 _STOP_WORDS = frozenset(
     {
@@ -238,6 +262,11 @@ def _sensitive_label_patterns(labels: tuple[str, ...]) -> tuple[re.Pattern[str],
 
 
 def _scrub_known_secrets(text: str, labels: tuple[str, ...]) -> tuple[str, int]:
+    if labels and any(
+        re.search(r"(?i)(?<!\w)" + re.escape(label) + r"(?!\w)", text)
+        for label in labels
+    ):
+        return "[REDACTED]", 1
     count = 0
 
     def replace(pattern: re.Pattern[str], value: str) -> str:
@@ -296,7 +325,12 @@ def _strip_prohibited_content(text: str) -> tuple[str, bool]:
     if (
         re.search(r"(?m)^\s*(?:diff --git|@@ |\*\*\* (?:Begin|End) Patch)", text)
         or "Traceback (most recent call last):" in text
-        or text.count("```") % 2
+        or "```" in text
+        or "~~~" in text
+        or _JSON_MAPPING_PAYLOAD.search(text)
+        or _ARRAY_PAYLOAD.search(text)
+        or _CODE_CALL.search(text)
+        or _INLINE_ASSIGNMENT.search(text)
     ):
         return "", True
     source_lines = text.split("\n")
@@ -468,6 +502,7 @@ def _user_has_high_signal(text: str) -> bool:
     if (
         text.endswith(("?", "？"))
         or _INTERROGATIVE_START.search(text)
+        or _INDIRECT_INTERROGATIVE.search(text)
         or _HYPOTHETICAL.search(text)
         or _QUOTED_ASSERTION.search(text)
     ):
@@ -854,6 +889,7 @@ def _evidence_form_is_assertive(evidence: str) -> bool:
     return not (
         evidence.endswith(("?", "？"))
         or _INTERROGATIVE_START.search(evidence)
+        or _INDIRECT_INTERROGATIVE.search(evidence)
         or _HYPOTHETICAL.search(evidence)
         or _QUOTED_ASSERTION.search(evidence)
     )
@@ -877,6 +913,8 @@ def _provenance_supports_mode(
         assistant_provenance = provenance.intersection(
             {"decision_result", "reusable_method", "next_step"}
         )
+        if assistant_provenance and not _EXPLICIT_USER_EVIDENCE_SUBJECT.search(evidence):
+            return False
         if assistant_provenance and predicate_class in {
             "preference",
             "avoidance",
@@ -906,6 +944,7 @@ def _draft_is_policy_valid(
     if (
         draft.statement.endswith(("?", "？"))
         or _INTERROGATIVE_START.search(draft.statement)
+        or _INDIRECT_INTERROGATIVE.search(draft.statement)
         or _HYPOTHETICAL.search(draft.statement)
     ):
         return False
