@@ -41,6 +41,91 @@ def same_revision_metadata(left: RevisionRef, right: RevisionRef) -> bool:
     )
 
 
+def validate_receipt_revision_truth(
+    receipt: CaptureReceipt,
+    revision: RevisionRef,
+    *,
+    require_census_only: bool = False,
+) -> CaptureReceipt:
+    """Bind a Receipt to frozen Revision truth before census accounting.
+
+    Later extractor/terminal Receipts retain their own schema invariants and
+    are never projected back into a census-only shape.  Receipts that still
+    claim census-only state must exactly retain the metadata-only contract.
+    """
+
+    validated_receipt = CaptureReceipt.from_mapping(receipt.to_mapping())
+    validated_revision = RevisionRef.from_mapping(revision.to_mapping())
+    if (
+        validated_receipt.key != validated_revision.key
+        or validated_receipt.settled_at != validated_revision.completed_at
+        or validated_receipt.adapter_version != validated_revision.adapter_version
+        or validated_receipt.source_schema_version
+        != validated_revision.source_schema_version
+        or validated_receipt.identity_quality != validated_revision.identity_quality
+    ):
+        raise ValueError("receipt_revision_truth_conflict")
+
+    census_only = validated_receipt.status in {"discovered", "excluded"} or (
+        validated_receipt.status == "quarantined"
+        and validated_receipt.sanitized_error is not None
+        and validated_receipt.sanitized_error.code == "revision_metadata_conflict"
+    )
+    if require_census_only and not census_only:
+        raise ValueError("receipt_is_not_census_only")
+    if not census_only:
+        return validated_receipt
+
+    empty_fields = (
+        "source_fingerprint",
+        "source_hash_schema_version",
+        "capsule_hash",
+        "capsule_schema_version",
+        "next_retry_at",
+        "extractor_id",
+        "extractor_version",
+        "extractor_schema_version",
+        "taxonomy_version",
+        "observation_count",
+        "filtered_counts",
+        "duplicate_suppression_count",
+        "zero_reason",
+        "coalesced_to",
+    )
+    if (
+        any(getattr(validated_receipt, field) is not None for field in empty_fields)
+        or validated_receipt.attempt_count != 0
+        or validated_receipt.token_usage != TokenUsage(0, 0, 0)
+        or validated_receipt.usage_quality != "reserved"
+        or validated_receipt.redacted_by_forget
+        or validated_receipt.forgotten_observation_count != 0
+    ):
+        raise ValueError("untruthful_census_receipt")
+    if validated_receipt.status == "discovered":
+        if (
+            validated_receipt.sanitized_error is not None
+            or validated_receipt.exclusion_reason is not None
+        ):
+            raise ValueError("untruthful_census_receipt")
+    elif validated_receipt.status == "excluded":
+        if (
+            validated_receipt.sanitized_error is not None
+            or validated_receipt.exclusion_reason != "configured_task_exclusion"
+        ):
+            raise ValueError("untruthful_census_receipt")
+    else:
+        error = validated_receipt.sanitized_error
+        if (
+            error is None
+            or error.stage != "source"
+            or error.code != "revision_metadata_conflict"
+            or error.retryable
+            or validated_receipt.exclusion_reason is not None
+        ):
+            raise ValueError("untruthful_census_receipt")
+    return validated_receipt
+
+
 def canonical_census_id(
     binding: "SourceBindingKey", window: "TimeWindow", started_at: str
 ) -> str:
@@ -134,7 +219,7 @@ def receipt_for_revision(
         exclusion_reason = exclusion_reason or "configured_task_exclusion"
     elif exclusion_reason is not None:
         raise ValueError("exclusion_reason is valid only for excluded receipts")
-    return CaptureReceipt.from_mapping(
+    receipt = CaptureReceipt.from_mapping(
         {
             "schema_version": CAPTURE_SCHEMA_VERSION,
             "receipt_id": receipt_id_for(revision.key),
@@ -168,6 +253,9 @@ def receipt_for_revision(
             "coalesced_to": None,
             "exclusion_reason": exclusion_reason,
         }
+    )
+    return validate_receipt_revision_truth(
+        receipt, revision, require_census_only=True
     )
 
 
@@ -215,5 +303,6 @@ __all__ = [
     "receipt_for_revision",
     "same_revision_metadata",
     "source_quarantine_for",
+    "validate_receipt_revision_truth",
     "validate_frozen_census_run",
 ]

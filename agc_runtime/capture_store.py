@@ -535,6 +535,17 @@ class CaptureStore:
 
     def is_key_accounted(self, key: CaptureKey) -> bool:
         key = CaptureKey.from_mapping(key.to_mapping())
+        return self._is_accounted(key, revision=None)
+
+    def is_revision_accounted(self, revision: RevisionRef) -> bool:
+        """Require Receipt/Ledger accounting to agree with frozen Revision truth."""
+
+        revision = RevisionRef.from_mapping(revision.to_mapping())
+        return self._is_accounted(revision.key, revision=revision)
+
+    def _is_accounted(
+        self, key: CaptureKey, *, revision: RevisionRef | None
+    ) -> bool:
         receipt = self._receipt_path(receipt_id_for(key))
         tombstone = self._path(self.capture.tombstones, tombstone_id_for(key), _CAPTURE_ID)
         if tombstone.exists():
@@ -551,6 +562,10 @@ class CaptureStore:
         try:
             current = CaptureReceipt.from_mapping(read_json(receipt))
             entry = LedgerEntry.from_mapping(read_json(ledger))
+            if revision is not None:
+                from agc_runtime.capture_ledger import validate_receipt_revision_truth
+
+                validate_receipt_revision_truth(current, revision)
         except (OSError, TypeError, ValueError):
             return False
         return (
@@ -591,7 +606,11 @@ class CaptureStore:
     def register_quarantined_revision(
         self, revision: RevisionRef, *, discovered_at: str, code: str
     ) -> CaptureReceipt:
-        from agc_runtime.capture_ledger import quarantined_receipt, receipt_for_revision
+        from agc_runtime.capture_ledger import (
+            quarantined_receipt,
+            receipt_for_revision,
+            validate_receipt_revision_truth,
+        )
 
         revision = RevisionRef.from_mapping(revision.to_mapping())
         receipt_id = receipt_id_for(revision.key)
@@ -600,7 +619,12 @@ class CaptureStore:
             target = self._receipt_path(receipt_id)
             if target.exists():
                 current = self._read_receipt(receipt_id)
+                validate_receipt_revision_truth(current, revision)
                 if current.status == "quarantined":
+                    return current
+                try:
+                    validate_capture_transition(current.status, "quarantined")
+                except ValueError:
                     return current
                 receipt = quarantined_receipt(
                     current, updated_at=discovered_at, code=code
@@ -875,13 +899,20 @@ class CaptureStore:
     def reconcile_discovery(self, batch: DiscoveryBatch) -> ReconcileResult:
         return self.register_extraction(batch.receipt)
 
-    def register_census_receipt(self, receipt: CaptureReceipt) -> ReconcileResult:
+    def register_census_receipt(
+        self, receipt: CaptureReceipt, *, revision: RevisionRef
+    ) -> ReconcileResult:
         """Register a metadata-only discovered or explicitly excluded Receipt."""
 
-        receipt.to_mapping()
+        from agc_runtime.capture_ledger import validate_receipt_revision_truth
+
+        revision = RevisionRef.from_mapping(revision.to_mapping())
+        receipt = validate_receipt_revision_truth(
+            receipt, revision, require_census_only=True
+        )
         if receipt.status not in {"discovered", "excluded"}:
             raise ValueError("census receipt must be discovered or excluded")
-        return self._register_receipt(receipt)
+        return self._register_receipt(receipt, revision=revision)
 
     def register_extraction(self, receipt: CaptureReceipt) -> ReconcileResult:
         receipt.to_mapping()
@@ -889,7 +920,9 @@ class CaptureStore:
             raise ValueError("discovery receipt must be non-terminal")
         return self._register_receipt(receipt)
 
-    def _register_receipt(self, receipt: CaptureReceipt) -> ReconcileResult:
+    def _register_receipt(
+        self, receipt: CaptureReceipt, *, revision: RevisionRef | None = None
+    ) -> ReconcileResult:
         with capture_write_lock(self.paths):
             self._ensure_layout_locked()
             tombstone_path = self._path(
@@ -911,6 +944,10 @@ class CaptureStore:
                 self._write_ledger(receipt, status=receipt.status, processed_at=None)
                 return ReconcileResult(receipt.status, True, receipt.receipt_id)
             current = self._read_receipt(receipt.receipt_id)
+            if revision is not None:
+                from agc_runtime.capture_ledger import validate_receipt_revision_truth
+
+                validate_receipt_revision_truth(current, revision)
             if receipt.status == "excluded" and current.status != "excluded":
                 validate_capture_transition(current.status, "excluded")
                 excluded = replace(

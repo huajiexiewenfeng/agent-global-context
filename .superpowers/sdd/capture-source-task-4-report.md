@@ -323,3 +323,63 @@ GREEN attempt exposed a product issue: forget's durable backup projection still
 included the unrelated temporary stage even though managed backup enumeration
 excluded it. Projection now applies the same temporary-component exclusion;
 fresh forget, focused, adjacent, and full runs are all clean.
+
+## Final Receipt / Revision Metadata Truth Review
+
+The final Task 4 review found that a schema-valid Receipt and Ledger could share
+the frozen Revision key while the Receipt contradicted the Revision's
+correctness metadata. Key/status-only accounting then repaired or trusted the
+Ledger, acknowledged a matching dirty marker, and advanced the scan hint.
+
+The regression matrix was written before the production fix. Against
+`d0051c8`, the focused scanner run reported `7 failed, 11 passed`: the
+`settled_at`, adapter version, source schema version, identity quality,
+census-only attempt count, and false exclusion status cases all remained
+accounted and advanced. The preservation case also demonstrated why Scanner
+replay must not project an extractor-owned Receipt back into census-only state.
+An archived clean-HEAD run of the added CaptureKey row failed because the
+same-key path anomaly did not degrade Source Health, completing explicit RED
+coverage for every required mapping.
+
+The fix adds one strict `validate_receipt_revision_truth` boundary. It requires:
+
+- Receipt key equals the frozen Revision key;
+- Receipt `settled_at` equals Revision `completed_at`;
+- adapter version, source schema version, and identity quality are equal;
+- discovered, excluded, and census metadata-conflict quarantined Receipts keep
+  the metadata-only status, zero-use, zero-attempt, no-extractor/no-result
+  contract, including the configured exclusion and source-quarantine reasons.
+
+The same validator now runs when a census Receipt is constructed, before an
+existing Receipt is replayed, and whenever Receipt/Ledger accounting is checked
+for report coverage, hint advancement, or dirty-marker acknowledgement. A
+conflict records durable content-free Source Quarantine, keeps Source Health
+degraded, leaves the conflicting Receipt byte-exact, does not repair its Ledger
+into an accounted state, and blocks both marker acknowledgement and hint
+advancement. Once an authorized repair restores Receipt truth, replay repairs
+or confirms the Ledger and the pending marker/hint converge on the next scan.
+
+This does not weaken later extractor or terminal Receipts. Their existing
+schema invariants remain authoritative, and a revision conflict may change a
+Receipt only through an allowed Capture transition. In particular, a valid
+complete Receipt is preserved byte-exact while the Scanner fails closed and
+degrades the source. There is no conflict with the existing RevisionRef-vs-
+RevisionRef rule: an anchor-only conflict may still have a truthful quarantined
+Receipt and remain explicit in accounting, while a Receipt that contradicts
+frozen Revision fields is never accounted.
+
+Fresh verification for this review fix:
+
+```text
+Focused Scanner + Ledger: 33 passed in 9.59s
+Adjacent Capture source/core/forget: 372 passed, 1 expected warning in 75.03s
+Natural-order full repository suite: 608 passed, 1 expected warning in 274.81s
+Python compilation: clean
+git diff --check: clean
+Strict UTF-8 / no BOM for every changed file: clean
+```
+
+The warning remains the expected duplicate-name ZIP adversarial fixture. No
+live Codex profile, installed AGC root, scheduler, CLI activation, transcript
+content, extractor, model/provider, Capsule, Observation, or formal-memory
+writer was read or changed by this review fix.

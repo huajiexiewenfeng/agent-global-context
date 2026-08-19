@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import json
 from pathlib import Path
 import sys
 
 import pytest
 
-from agc_runtime.capture_contracts import RevisionRef, receipt_id_for
+from agc_runtime.capture_contracts import (
+    CaptureKey,
+    CaptureReceipt,
+    RevisionRef,
+    receipt_id_for,
+)
 from agc_runtime.capture_store import CaptureStore
 from agc_runtime.capture_transaction import atomic_write_json
 from agc_runtime.paths import MemoryPaths
@@ -362,6 +368,159 @@ def test_receipt_only_interruption_replays_ledger_before_hint_and_marker_ack(
     assert (paths.capture.ledger / f"{receipt_id}.json").exists()
     assert report.acknowledged_marker_count == 1
     assert report.advanced_hint_count == 1
+
+
+@pytest.mark.parametrize(
+    "receipt_patch",
+    [
+        {"settled_at": "2026-08-12T12:00:01Z"},
+        {"task_id": "other-task"},
+        {"adapter_version": "2"},
+        {"source_schema_version": "2"},
+        {"identity_quality": "legacy_rollout_id"},
+        {"attempt_count": 1},
+        {
+            "status": "excluded",
+            "exclusion_reason": "unconfigured_exclusion",
+        },
+    ],
+    ids=(
+        "settled-at",
+        "capture-key",
+        "adapter-version",
+        "source-schema-version",
+        "identity-quality",
+        "census-attempt-count",
+        "census-status",
+    ),
+)
+def test_receipt_revision_truth_conflict_blocks_accounting_hint_and_marker_until_repaired(
+    tmp_path: Path, receipt_patch: dict[str, object]
+):
+    paths = MemoryPaths.from_root(tmp_path / "memory")
+    revision = _revision("receipt-truth-conflict")
+    first = CaptureScanner(
+        CaptureStore(paths, clock=lambda: STARTED),
+        (SyntheticAdapter((revision,)),),
+    ).scan(run_started_at=STARTED)
+    assert first.accounted_key_count == first.advanced_hint_count == 1
+
+    receipt_id = receipt_id_for(revision.key)
+    receipt_path = paths.capture.receipts / f"{receipt_id}.json"
+    truthful = CaptureReceipt.from_mapping(
+        json.loads(receipt_path.read_text(encoding="utf-8"))
+    ).to_mapping()
+    conflicting_mapping = {**truthful, **receipt_patch}
+    if "task_id" in receipt_patch:
+        conflicting_mapping["receipt_id"] = receipt_id_for(
+            CaptureKey(
+                conflicting_mapping["adapter_id"],
+                conflicting_mapping["source_root_id"],
+                conflicting_mapping["task_id"],
+                conflicting_mapping["revision_id"],
+            )
+        )
+    conflicting = CaptureReceipt.from_mapping(conflicting_mapping)
+    atomic_write_json(receipt_path, conflicting.to_mapping())
+    conflicting_bytes = receipt_path.read_bytes()
+    marker_path = paths.capture.dirty / "receipt-truth-conflict.json"
+    atomic_write_json(
+        marker_path,
+        {
+            "schema_version": 1,
+            "adapter_id": "synthetic",
+            "adapter_version": "1",
+            "source_schema_version": "1",
+            "source_root_id": ROOT_ID,
+            "task_id": revision.key.task_id,
+            "revision_id": revision.key.revision_id,
+            "locator": revision.locator,
+            "observed_at": STARTED,
+            "hook_event": "Stop",
+        },
+    )
+
+    conflict_run = "2026-08-13T12:00:01Z"
+    conflicted = CaptureScanner(
+        CaptureStore(paths, clock=lambda: conflict_run),
+        (SyntheticAdapter((revision,)),),
+    ).scan(run_started_at=conflict_run)
+
+    assert conflicted.accounted_key_count == 0
+    assert conflicted.silent_loss_count == conflicted.pending_key_count == 1
+    assert conflicted.advanced_hint_count == conflicted.acknowledged_marker_count == 0
+    assert conflicted.source_health == "degraded"
+    assert marker_path.exists()
+    assert receipt_path.read_bytes() == conflicting_bytes
+
+    atomic_write_json(receipt_path, truthful)
+    recovery_run = "2026-08-13T12:00:02Z"
+    recovered = CaptureScanner(
+        CaptureStore(paths, clock=lambda: recovery_run),
+        (SyntheticAdapter((revision,)),),
+    ).scan(run_started_at=recovery_run)
+
+    assert recovered.accounted_key_count == 1
+    assert recovered.silent_loss_count == recovered.pending_key_count == 0
+    assert recovered.advanced_hint_count == recovered.acknowledged_marker_count == 1
+    assert not marker_path.exists()
+
+
+def test_scanner_preserves_complete_receipt_when_revision_conflict_fails_closed(
+    tmp_path: Path,
+):
+    paths = MemoryPaths.from_root(tmp_path / "memory")
+    revision = _revision("extractor-receipt")
+    CaptureScanner(
+        CaptureStore(paths, clock=lambda: STARTED),
+        (SyntheticAdapter((revision,)),),
+    ).scan(run_started_at=STARTED)
+    receipt_id = receipt_id_for(revision.key)
+    receipt_path = paths.capture.receipts / f"{receipt_id}.json"
+    ledger_path = paths.capture.ledger / f"{receipt_id}.json"
+    discovered = CaptureReceipt.from_mapping(
+        json.loads(receipt_path.read_text(encoding="utf-8"))
+    ).to_mapping()
+    complete = CaptureReceipt.from_mapping(
+        {
+            **discovered,
+            "status": "complete",
+            "source_fingerprint": "a" * 64,
+            "source_hash_schema_version": "source-v1",
+            "capsule_hash": "b" * 64,
+            "capsule_schema_version": "capsule-v1",
+            "extractor_id": "extractor",
+            "extractor_version": "1",
+            "extractor_schema_version": "1",
+            "taxonomy_version": "1",
+            "observation_count": 0,
+            "filtered_counts": {"safety": 0, "policy": 0, "over_limit": 0},
+            "duplicate_suppression_count": 0,
+            "zero_reason": "extractor_empty",
+        }
+    )
+    atomic_write_json(receipt_path, complete.to_mapping())
+    atomic_write_json(
+        paths.capture.indexes / f"{receipt_id}.json",
+        {"schema_version": 1, "receipt_id": receipt_id, "observation_ids": []},
+    )
+    ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+    atomic_write_json(
+        ledger_path,
+        {**ledger, "status": "complete", "processed_at": complete.updated_at},
+    )
+    before = receipt_path.read_bytes()
+
+    later = "2026-08-13T12:00:01Z"
+    report = CaptureScanner(
+        CaptureStore(paths, clock=lambda: later),
+        (SyntheticAdapter((_revision("extractor-receipt", anchor="rebuilt"),)),),
+    ).scan(run_started_at=later)
+
+    assert report.accounted_key_count == 1
+    assert report.advanced_hint_count == 0
+    assert report.source_health == "degraded"
+    assert receipt_path.read_bytes() == before
 
 
 def test_duplicate_configured_source_binding_is_enumerated_once(tmp_path: Path):

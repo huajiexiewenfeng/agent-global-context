@@ -88,6 +88,7 @@ class CaptureScanner:
         }
         markers = self._dirty_markers(configured=configured, created_at=started_at)
         known: set[CaptureKey] = set()
+        accounting_truth: dict[CaptureKey, RevisionRef] = {}
         resolved_marker_paths: set[Path] = set()
         created = replay = advanced = 0
 
@@ -157,11 +158,18 @@ class CaptureScanner:
                 candidate = next(
                     (item for item in revisions if item.key == key), by_key[key][0]
                 )
-                self.store.register_quarantined_revision(
-                    candidate,
-                    discovered_at=started_at,
-                    code="revision_metadata_conflict",
-                )
+                try:
+                    self.store.register_quarantined_revision(
+                        candidate,
+                        discovered_at=started_at,
+                        code="revision_metadata_conflict",
+                    )
+                except ValueError as error:
+                    if str(error) not in {
+                        "receipt_revision_truth_conflict",
+                        "untruthful_census_receipt",
+                    }:
+                        raise
                 self.store.record_source_quarantine(
                     binding,
                     created_at=started_at,
@@ -193,6 +201,7 @@ class CaptureScanner:
                     for frozen in durable_by_key.get(revision.key, ())
                 ):
                     eligible_by_key[revision.key] = revision
+            accounting_truth.update(eligible_by_key)
 
             for revision in eligible_by_key.values():
                 if revision.key in conflict_keys:
@@ -200,16 +209,32 @@ class CaptureScanner:
                     continue
                 self.store._point("before:census:receipt")
                 excluded = revision.key in self._excluded_keys
-                result = self.store.register_census_receipt(
-                    receipt_for_revision(
-                        revision,
-                        discovered_at=started_at,
-                        status="excluded" if excluded else "discovered",
-                        exclusion_reason=(
-                            "configured_task_exclusion" if excluded else None
+                try:
+                    result = self.store.register_census_receipt(
+                        receipt_for_revision(
+                            revision,
+                            discovered_at=started_at,
+                            status="excluded" if excluded else "discovered",
+                            exclusion_reason=(
+                                "configured_task_exclusion" if excluded else None
+                            ),
                         ),
+                        revision=revision,
                     )
-                )
+                except ValueError as error:
+                    if str(error) not in {
+                        "receipt_revision_truth_conflict",
+                        "untruthful_census_receipt",
+                    }:
+                        raise
+                    self.store.record_source_quarantine(
+                        binding,
+                        created_at=started_at,
+                        code="receipt_revision_truth_conflict",
+                    )
+                    binding_failed_closed = True
+                    replay += 1
+                    continue
                 self.store._point("after:census:receipt")
                 if result.created:
                     created += 1
@@ -218,7 +243,10 @@ class CaptureScanner:
 
             if (
                 not binding_failed_closed
-                and all(self.store.is_key_accounted(key) for key in binding_known)
+                and all(
+                    self.store.is_revision_accounted(accounting_truth[key])
+                    for key in binding_known
+                )
             ):
                 try:
                     self.store.advance_scan_state(
@@ -236,11 +264,19 @@ class CaptureScanner:
 
         acknowledged = 0
         for path, marker in markers:
-            if path in resolved_marker_paths and self.store.is_key_accounted(marker.key):
+            if (
+                path in resolved_marker_paths
+                and marker.key in accounting_truth
+                and self.store.is_revision_accounted(accounting_truth[marker.key])
+            ):
                 safe_unlink(path)
                 acknowledged += 1
 
-        accounted = sum(self.store.is_key_accounted(key) for key in known)
+        accounted = sum(
+            key in accounting_truth
+            and self.store.is_revision_accounted(accounting_truth[key])
+            for key in known
+        )
         quarantines = self.store.source_quarantine_count()
         source_health = (
             "degraded"
