@@ -128,6 +128,7 @@ def test_hook_writes_only_validated_metadata_and_never_reads_transcript(
 
     real_path_open = Path.open
     real_builtin_open = builtins.open
+    real_io_open = io.open
     real_os_open = os.open
     transcript_identity = os.path.normcase(os.path.realpath(transcript))
 
@@ -150,6 +151,11 @@ def test_hook_writes_only_validated_metadata_and_never_reads_transcript(
             raise AssertionError("Hook opened the transcript through builtins.open")
         return real_builtin_open(file, *args, **kwargs)
 
+    def reject_io_open(file, *args, **kwargs):
+        if is_transcript(file):
+            raise AssertionError("Hook opened the transcript through io.open")
+        return real_io_open(file, *args, **kwargs)
+
     def reject_os_open(path, *args, **kwargs):
         if is_transcript(path):
             raise AssertionError("Hook opened the transcript through os.open")
@@ -157,6 +163,7 @@ def test_hook_writes_only_validated_metadata_and_never_reads_transcript(
 
     monkeypatch.setattr(Path, "open", reject_transcript_open)
     monkeypatch.setattr(builtins, "open", reject_builtin_open)
+    monkeypatch.setattr(io, "open", reject_io_open)
     monkeypatch.setattr(os, "open", reject_os_open)
     result, stdout, stderr = _invoke_main(
         monkeypatch, memory_root, json.dumps(_payload(transcript))

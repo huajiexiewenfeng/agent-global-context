@@ -169,7 +169,7 @@ git commit -m "feat: discover completed Codex revisions"
 **Interfaces:**
 - Adds package entry point `agc-capture-hook = "agc_runtime.capture_hook:main"`; its operation form is `agc-capture-hook --root <memory-root>` and the host-installed launcher binds that exact root.
 - Hook consumes stdin JSON and always exits without stdout/stderr content that could affect the foreground task.
-- Dirty spool uses one event per temporary file followed by atomic `os.replace`; it never uses a shared append-only JSONL.
+- Dirty spool uses one event per fsynced same-directory temporary file followed by an atomic no-overwrite install (hard-link on current Windows/NTFS); it never uses a shared append-only JSONL. If that primitive is unsupported or fails, the Hook remains silent and failure-open and Scanner coverage remains authority. A destination collision preserves the existing marker.
 
 - [ ] **Step 1: Add failing metadata and failure-open tests**
 

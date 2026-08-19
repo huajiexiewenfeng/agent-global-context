@@ -112,9 +112,10 @@ Three review findings were reproduced against commit `336cab23c517bc71e7a1872f53
 ### Review implementation
 
 - Replaced check-then-`os.replace` with `os.link(temporary, final)`. The fsynced temporary inode is exposed atomically, an existing destination makes the link fail without overwrite on Windows and POSIX, and Hook-level failure-open handling removes the temporary file.
+- Decision rationale: `os.replace` necessarily permits destination overwrite, and an existence check before it leaves a collision race. On the current Windows/NTFS target, a same-directory hard link atomically publishes the already-fsynced inode and refuses an existing destination. No copy or overwrite fallback is attempted when hard linking is unsupported or fails, because marker loss is safely failure-open while Scanner reconciliation remains coverage authority.
 - Added a read-only validation pass over every existing dirty-spool ancestor before any `mkdir` or file mutation. Each existing path must resolve to a directory strictly contained by the canonical memory root. The final created dirty directory is revalidated before file creation.
 - Changed the hook test module fixture to remember its starting `sys.modules` set and remove only `agc_runtime` modules introduced by that fixture during teardown. The production disabled-core assertion was not weakened.
-- Strengthened transcript non-read coverage across `Path.open`, `builtins.open`, and `os.open`.
+- Strengthened transcript non-read coverage across `Path.open`, `builtins.open`, `io.open`, and `os.open`.
 
 ### Review GREEN
 
@@ -125,3 +126,11 @@ Three review findings were reproduced against commit `336cab23c517bc71e7a1872f53
 - Final unfiltered suite: `559 passed, 1 warning in 294.59s`; the warning remains the existing duplicate-name ZIP fixture warning.
 
 No live profile was read or modified during review remediation.
+
+## Final specification alignment
+
+- Updated the durable implementation plan and Task 3 brief to require a fsynced same-directory temporary file plus atomic no-overwrite installation, with hard linking identified as the current Windows/NTFS primitive.
+- Both specifications now state that unsupported or failed installation remains silent and failure-open, Scanner coverage remains authority, and a destination collision preserves the existing marker.
+- Added `io.open` to the transcript-read guard. A safe in-memory violating locator that attempted `io.open(transcript)` produced the expected test RED (`1 failed`, zero marker); the unchanged real Hook then passed the same test (`1 passed in 0.21s`).
+- Reverse-order isolation remained green (`19 passed in 3.07s`), and the proportional related suite passed (`171 passed in 14.75s`).
+- No production code changed during final specification alignment.
