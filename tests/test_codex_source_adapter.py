@@ -426,3 +426,83 @@ def test_same_key_with_different_completion_metadata_fails_closed(tmp_path: Path
         (ref.key.task_id, ref.key.revision_id) for ref in batch.revisions
     }
     assert "conflicting_revision_identity" in batch.diagnostic_codes
+
+
+def test_same_key_conflict_is_detected_before_window_filtering(tmp_path: Path):
+    from agc_runtime.codex_source_adapter import CodexSourceAdapter
+
+    root = _profile(tmp_path)
+    archived = root / "archived_sessions" / "main-archived-copy.jsonl"
+    archived.write_text(
+        archived.read_text(encoding="utf-8").replace(
+            '"2026-08-10T10:02:00Z"', '"2026-07-31T10:02:00Z"'
+        ),
+        encoding="utf-8",
+    )
+
+    batch = CodexSourceAdapter(root).discover(None, _window())
+
+    assert ("task-main", "turn-1") not in {
+        (ref.key.task_id, ref.key.revision_id) for ref in batch.revisions
+    }
+    assert "conflicting_revision_identity" in batch.diagnostic_codes
+
+
+def test_conflicting_valid_turn_identity_representations_invalidate_source(tmp_path: Path):
+    from agc_runtime.codex_source_adapter import CodexSourceAdapter
+
+    root = _profile(tmp_path)
+    conflicting = root / "sessions" / "conflicting-turn-representations.jsonl"
+    conflicting.write_text(
+        "\n".join(
+            (
+                '{"timestamp":"2026-08-18T10:00:00Z","type":"session_meta",'
+                '"payload":{"id":"rollout-representations",'
+                '"session_id":"task-representations","source":"cli"}}',
+                '{"timestamp":"2026-08-18T10:01:00Z","type":"event_msg",'
+                '"payload":{"type":"task_complete","turn_id":"turn-top",'
+                '"turn":{"id":"turn-nested"}}}',
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    batch = CodexSourceAdapter(root).discover(None, _window())
+
+    assert not {
+        (ref.key.task_id, ref.key.revision_id)
+        for ref in batch.revisions
+        if ref.key.task_id == "task-representations"
+    }
+    assert "unknown_completion_shape" in batch.diagnostic_codes
+
+
+def test_target_iterator_rejects_completion_reordered_before_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from agc_runtime.codex_source_adapter import CodexSourceAdapter
+
+    root = _profile(tmp_path)
+    adapter = CodexSourceAdapter(root)
+    ref = next(
+        item for item in adapter.discover(None, _window()).revisions if item.key.revision_id == "turn-2"
+    )
+    source = root / ref.locator
+    original_scan = adapter._scan_file
+
+    def scan_then_reorder(path: Path):
+        result = original_scan(path)
+        lines = source.read_text(encoding="utf-8").splitlines()
+        completion = lines.pop(3)
+        source.write_text("\n".join((completion, *lines)) + "\n", encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(adapter, "_scan_file", scan_then_reorder)
+
+    probe = adapter.probe(ref)
+    assert (probe.source_kind, probe.completion_state, probe.diagnostic_code) == (
+        "unknown",
+        "unreadable",
+        "source_unreadable",
+    )

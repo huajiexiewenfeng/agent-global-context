@@ -118,6 +118,9 @@ class CodexSourceAdapter(SourceAdapter):
         revisions: dict[tuple[str, str], RevisionRef] = {}
         conflicting_revisions: set[tuple[str, str]] = set()
         diagnostics: set[str] = set()
+        start = _utc(window.start_at)
+        end = _utc(window.end_at)
+        assert start is not None and end is not None
 
         for locator, path in self._source_files(diagnostics):
             scan = self._scan_file(path)
@@ -127,14 +130,7 @@ class CodexSourceAdapter(SourceAdapter):
             if scan.identity is None or scan.identity[3] != "main":
                 continue
             task_id, rollout_id, identity_quality, _source_kind = scan.identity
-            start = _utc(window.start_at)
-            end = _utc(window.end_at)
-            assert start is not None and end is not None
             for revision_id, completed_at in scan.completions:
-                completed = _utc(completed_at)
-                assert completed is not None
-                if not start <= completed < end:
-                    continue
                 revision = RevisionRef.from_mapping(
                     {
                         "schema_version": CAPTURE_SCHEMA_VERSION,
@@ -163,10 +159,14 @@ class CodexSourceAdapter(SourceAdapter):
                     conflicting_revisions.add(identity)
                     diagnostics.add("conflicting_revision_identity")
 
-        ordered = tuple(
-            revisions[key]
-            for key in sorted(revisions, key=lambda item: (item[0], item[1]))
-        )
+        ordered_list: list[RevisionRef] = []
+        for key in sorted(revisions, key=lambda item: (item[0], item[1])):
+            revision = revisions[key]
+            completed = _utc(revision.completed_at)
+            assert completed is not None
+            if start <= completed < end:
+                ordered_list.append(revision)
+        ordered = tuple(ordered_list)
         return DiscoveryBatch.from_mapping(
             {
                 "schema_version": CAPTURE_SCHEMA_VERSION,
@@ -319,22 +319,24 @@ class CodexSourceAdapter(SourceAdapter):
         return value, None
 
     @staticmethod
-    def _has_turn_identity(payload: dict[str, Any]) -> bool:
+    def _turn_identity(payload: dict[str, Any]) -> tuple[bool, str | None]:
+        candidates: list[str] = []
         if "turn_id" in payload:
-            return True
+            turn_id = _identifier(payload.get("turn_id"))
+            if turn_id is None:
+                return True, None
+            candidates.append(turn_id)
         turn = payload.get("turn")
-        return isinstance(turn, dict) and "id" in turn
-
-    @staticmethod
-    def _has_invalid_turn_identity(payload: dict[str, Any]) -> bool:
-        if "turn_id" in payload and _identifier(payload.get("turn_id")) is None:
-            return True
-        turn = payload.get("turn")
-        return (
-            isinstance(turn, dict)
-            and "id" in turn
-            and _identifier(turn.get("id")) is None
-        )
+        if isinstance(turn, dict) and "id" in turn:
+            nested_id = _identifier(turn.get("id"))
+            if nested_id is None:
+                return True, None
+            candidates.append(nested_id)
+        if not candidates:
+            return False, None
+        if any(candidate != candidates[0] for candidate in candidates[1:]):
+            return True, None
+        return True, candidates[0]
 
     def _critical_completion(
         self, record: dict[str, Any]
@@ -343,15 +345,20 @@ class CodexSourceAdapter(SourceAdapter):
         if not isinstance(payload, dict):
             return None, "unknown_completion_shape"
         event_type = payload.get("type")
-        if self._has_invalid_turn_identity(payload):
+        has_turn_identity, turn_identity = self._turn_identity(payload)
+        if has_turn_identity and turn_identity is None:
             return None, "unknown_completion_shape"
         if event_type == "task_complete":
             revision_id = _identifier(payload.get("turn_id"))
             completed_at = record.get("timestamp")
-            if revision_id is None or _utc(completed_at) is None:
+            if (
+                revision_id is None
+                or revision_id != turn_identity
+                or _utc(completed_at) is None
+            ):
                 return None, "unknown_completion_shape"
             return (revision_id, completed_at), None
-        if event_type not in {"task_started", "task_aborted"} and self._has_turn_identity(payload):
+        if event_type not in {"task_started", "task_aborted"} and has_turn_identity:
             return None, "unknown_completion_shape"
         return None, None
 
@@ -468,6 +475,8 @@ class CodexSourceAdapter(SourceAdapter):
                         if diagnostic is not None:
                             raise ValueError("critical source record changed during target load")
                         if completion is not None:
+                            if loaded_identity is None:
+                                raise ValueError("critical source record changed during target load")
                             revision_id, completed_at = completion
                             prior = loaded_completions.setdefault(revision_id, completed_at)
                             if prior != completed_at:
