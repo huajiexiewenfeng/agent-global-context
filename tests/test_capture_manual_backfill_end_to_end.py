@@ -200,3 +200,15 @@ def test_manual_backfill_cli_prepares_authorizes_collects_and_replays(
     assert cycle["data"]["observation_count"] == 1
     assert cycle["data"]["charged_tokens"] == 18
     assert cycle["data"]["backlog_count"] == 0
+
+    probe_result, probe = _invoke("probe", "--root", str(memory))
+    assert probe_result.returncode == 0
+    assert probe["data"]["runner"] == {
+        "assessment": "ready",
+        "backlog_count": 0,
+        "oldest_unresolved_at": None,
+        "max_attempt_count": 1,
+        "status_counts": {"complete": 2},
+        "settled_token_count": 36,
+        "concurrency": 1,
+    }
