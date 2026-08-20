@@ -511,7 +511,47 @@ class CaptureRunner:
                         ),
                     )
                 failed += 1
-            except (KeyError, TypeError, UnicodeError, ValueError):
+            except ValueError as error:
+                code = str(error)
+                if reservation is None and code in {
+                    "capsule_source_identity_changed",
+                    "capsule_source_unavailable",
+                }:
+                    if code == "capsule_source_identity_changed":
+                        target = "quarantined"
+                        next_retry_at = None
+                        sanitized = SanitizedError(
+                            "source", "source_identity_changed", False
+                        )
+                    else:
+                        target = "retryable"
+                        next_retry_at = self._retry_at(
+                            now, capture.runner.backoff_seconds[0]
+                        )
+                        sanitized = SanitizedError(
+                            "source", "source_unavailable", True
+                        )
+                    expected_status = current.status
+                    if expected_status == "retryable" and target == "retryable":
+                        store.transition(
+                            lease,
+                            expected=frozenset({"retryable"}),
+                            target="queued",
+                            patch=ReceiptTransitionPatch(updated_at=now),
+                        )
+                        expected_status = "queued"
+                    store.transition(
+                        lease,
+                        expected=frozenset({expected_status}),
+                        target=target,
+                        patch=ReceiptTransitionPatch(
+                            updated_at=now,
+                            next_retry_at=next_retry_at,
+                            sanitized_error=sanitized,
+                        ),
+                    )
+                failed += 1
+            except (KeyError, TypeError, UnicodeError):
                 failed += 1
             finally:
                 try:

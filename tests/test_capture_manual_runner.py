@@ -85,6 +85,7 @@ class FakeAdapter:
     discover_calls: int = 0
     load_calls: int = 0
     load_error: bool = False
+    identity_changed: bool = False
 
     def describe(self):
         from agc_runtime.capture_source import AdapterDescriptor
@@ -109,6 +110,8 @@ class FakeAdapter:
         self.load_calls += 1
         if self.load_error:
             raise OSError("private source error must not persist")
+        if self.identity_changed:
+            raise ValueError("capsule_source_identity_changed")
         capsule = TaskCapsule(
             adapter_id=ref.key.adapter_id,
             adapter_version=ref.adapter_version,
@@ -615,3 +618,27 @@ def test_transient_source_failure_is_content_free_retryable_with_backoff(
         "retryable": True,
     }
     assert "private" not in json.dumps(receipt)
+
+
+def test_source_identity_change_is_quarantined_without_model_call(
+    tmp_path: Path,
+) -> None:
+    paths, adapter, extractor, preparation = _prepared(tmp_path)
+    adapter.identity_changed = True
+
+    report = CaptureRunner(paths, (adapter,), extractor, preparation).run_manual_backfill(
+        authorization_digest=preparation.authorization_digest,
+        max_items=20,
+        now=RUN_AT,
+    )
+
+    receipt = json.loads(next(paths.capture.receipts.glob("*.json")).read_text(encoding="utf-8"))
+    assert report.failed_count == 1
+    assert report.backlog_count == 1
+    assert extractor.extract_calls == 0
+    assert receipt["status"] == "quarantined"
+    assert receipt["sanitized_error"] == {
+        "stage": "source",
+        "code": "source_identity_changed",
+        "retryable": False,
+    }
