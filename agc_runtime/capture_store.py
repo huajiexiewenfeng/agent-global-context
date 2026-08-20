@@ -1159,6 +1159,66 @@ class CaptureStore:
         if _parse_utc(lease.expires_at) <= _parse_utc(self._clock()):
             raise ValueError("lease has expired")
 
+    def release_lease(self, lease: CaptureLease) -> None:
+        """Release only the exact current lease while preserving its epoch fence."""
+
+        with capture_write_lock(self.paths):
+            self._ensure_layout_locked()
+            self._assert_lease(lease)
+            safe_unlink(self._lease_path(receipt_id_for(lease.capture_key)))
+
+    def begin_extraction(
+        self,
+        lease: CaptureLease,
+        capsule_result: object,
+        extractor_descriptor: object,
+        *,
+        now: str,
+    ) -> CaptureReceipt:
+        from agc_runtime.capture_capsule import CapsuleResult
+        from agc_runtime.capture_extractor import ExtractorDescriptor
+
+        if not isinstance(capsule_result, CapsuleResult) or not isinstance(
+            extractor_descriptor, ExtractorDescriptor
+        ):
+            raise ValueError("capture_runner_contract_invalid")
+        descriptor = ExtractorDescriptor.from_mapping(
+            extractor_descriptor.to_mapping()
+        )
+        with capture_write_lock(self.paths):
+            self._ensure_layout_locked()
+            self._assert_lease(lease)
+            current = self._read_receipt(receipt_id_for(lease.capture_key))
+            if current.status not in {"discovered", "queued", "retryable"}:
+                raise ValueError("receipt is not ready for extraction")
+            if current.status == "discovered":
+                validate_capture_transition("discovered", "queued")
+            elif current.status == "retryable":
+                validate_capture_transition(
+                    "retryable", "queued", reopen_reason="explicit_retry"
+                )
+            validate_capture_transition("queued", "extracting")
+            updated = replace(
+                current,
+                status="extracting",
+                updated_at=now,
+                attempt_count=current.attempt_count + 1,
+                next_retry_at=None,
+                source_fingerprint=capsule_result.source_fingerprint,
+                source_hash_schema_version=capsule_result.source_hash_schema_version,
+                capsule_hash=capsule_result.capsule_hash,
+                capsule_schema_version=capsule_result.capsule_schema_version,
+                extractor_id=descriptor.extractor_id,
+                extractor_version=descriptor.extractor_version,
+                extractor_schema_version=descriptor.extractor_schema_version,
+                taxonomy_version=descriptor.taxonomy_version,
+                sanitized_error=None,
+            )
+            updated = CaptureReceipt.from_mapping(updated.to_mapping())
+            self._write_receipt(updated)
+            self._write_ledger(updated, status="extracting", processed_at=None)
+            return updated
+
     def _unique_observations(self, observations: Sequence[CollectedObservation], receipt_id: str) -> tuple[CollectedObservation, ...]:
         if len(observations) > 8:
             raise ValueError("Capture extraction may contain at most 8 observations")

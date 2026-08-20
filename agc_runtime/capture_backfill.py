@@ -56,6 +56,50 @@ class BackfillPreparation:
     scanner_health: str
     authorization_digest: str
 
+    @classmethod
+    def from_mapping(cls, value: object) -> "BackfillPreparation":
+        fields = tuple(cls.__dataclass_fields__)
+        if not isinstance(value, dict) or set(value) != set(fields):
+            raise ValueError("capture_backfill_contract_invalid")
+        try:
+            item = cls(*(value[name] for name in fields))
+        except (TypeError, ValueError) as error:
+            raise ValueError("capture_backfill_contract_invalid") from error
+        if (
+            type(item.schema_version) is not int
+            or item.schema_version != 1
+            or any(
+                not isinstance(getattr(item, name), str)
+                for name in (
+                    "memory_root_fingerprint",
+                    "census_id",
+                    "source_binding_digest",
+                    "capture_config_digest",
+                    "extractor_identity",
+                    "extractor_version",
+                    "extractor_schema_version",
+                    "model_boundary",
+                    "provider_boundary",
+                    "scanner_health",
+                    "authorization_digest",
+                )
+            )
+            or any(
+                type(getattr(item, name)) is not int
+                or getattr(item, name) < 0
+                for name in (
+                    "frozen_revision_count",
+                    "ready_revision_count",
+                    "accounted_revision_count",
+                    "backfill_total_tokens",
+                    "charged_tokens",
+                    "remaining_tokens",
+                )
+            )
+        ):
+            raise ValueError("capture_backfill_contract_invalid")
+        return item
+
     def to_mapping(self) -> dict[str, object]:
         return {
             "schema_version": self.schema_version,
@@ -205,7 +249,7 @@ def prepare_backfill(
         "provider_boundary": probe.provider_boundary,
         "backfill_total_tokens": capture.budgets.backfill_total_tokens,
     }
-    return BackfillPreparation(
+    preparation = BackfillPreparation(
         1,
         authorization_fields["memory_root_fingerprint"],
         census.census_id,
@@ -225,10 +269,43 @@ def prepare_backfill(
         report.source_health,
         authorization_digest_for(authorization_fields),
     )
+    from agc_runtime.capture_transaction import atomic_write_json
+
+    atomic_write_json(
+        paths.capture.budgets
+        / f"backfill-preparation-{preparation.authorization_digest}.json",
+        preparation.to_mapping(),
+    )
+    return preparation
+
+
+def load_backfill_preparation(
+    paths: MemoryPaths, authorization_digest: str
+) -> BackfillPreparation:
+    from agc_runtime.capture_transaction import read_json
+
+    if (
+        not isinstance(authorization_digest, str)
+        or len(authorization_digest) != 64
+        or any(character not in "0123456789abcdef" for character in authorization_digest)
+    ):
+        raise ValueError("capture_backfill_authorization_invalid")
+    path = (
+        paths.capture.budgets
+        / f"backfill-preparation-{authorization_digest}.json"
+    )
+    try:
+        preparation = BackfillPreparation.from_mapping(read_json(path))
+    except (FileNotFoundError, OSError, TypeError, ValueError) as error:
+        raise ValueError("capture_backfill_authorization_unavailable") from error
+    if preparation.authorization_digest != authorization_digest:
+        raise ValueError("capture_backfill_authorization_invalid")
+    return preparation
 
 
 __all__ = [
     "BackfillPreparation",
     "authorization_digest_for",
+    "load_backfill_preparation",
     "prepare_backfill",
 ]

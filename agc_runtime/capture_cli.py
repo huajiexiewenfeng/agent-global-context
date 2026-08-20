@@ -40,6 +40,20 @@ def _failed(action: str, code: str, message: str, *, exit_code: int = 2) -> int:
 
 def _parse(arguments: list[str]) -> tuple[str, Path, str | None] | None:
     if (
+        len(arguments) == 8
+        and arguments[0] == "backfill"
+        and arguments[1] == "--root"
+        and arguments[2]
+        and arguments[3] == "--authorization-digest"
+        and len(arguments[4]) == 64
+        and all(item in "0123456789abcdef" for item in arguments[4])
+        and arguments[5] == "--max-items"
+        and arguments[6].isdigit()
+        and 1 <= int(arguments[6]) <= 100
+        and arguments[7] == "--once"
+    ):
+        return "backfill", Path(arguments[2]), f"{arguments[4]}:{arguments[6]}"
+    if (
         len(arguments) == 3
         and arguments[0] == "prepare-backfill"
         and arguments[1] == "--root"
@@ -341,6 +355,69 @@ def _run_prepare_backfill(paths: MemoryPaths) -> int:
     )
 
 
+def _run_backfill(paths: MemoryPaths, encoded: str) -> int:
+    action = "backfill"
+    digest, maximum = encoded.split(":", 1)
+    try:
+        config = load_runtime_config(paths)
+        capture = config.capture
+        from agc_runtime.capture_backfill import load_backfill_preparation
+        from agc_runtime.capture_runner import CaptureRunner
+        from agc_runtime.codex_extractor import CodexExtractor
+        from agc_runtime.codex_source_adapter import CodexSourceAdapter
+
+        preparation = load_backfill_preparation(paths, digest)
+        adapters = tuple(CodexSourceAdapter(Path(item)) for item in capture.sources)
+        extractor = CodexExtractor(
+            executable=(capture.extractor.executable,),
+            explicit_model=capture.extractor.model,
+        )
+        report = CaptureRunner(
+            paths, adapters, extractor, preparation
+        ).run_manual_backfill(
+            authorization_digest=digest,
+            max_items=int(maximum),
+            now=_utc_now(),
+        )
+    except RuntimeError as error:
+        code = (
+            str(error)
+            if str(error) in {
+                "capture_backfill_authorization_stale",
+                "capture_extractor_unavailable",
+            }
+            else "capture_busy"
+        )
+        return _failed(action, code, "Capture backfill was not started", exit_code=1)
+    except OSError:
+        return _failed(
+            action, "capture_source_failed", "Capture source is unavailable", exit_code=1
+        )
+    except (KeyError, TypeError, UnicodeError, ValueError) as error:
+        code = (
+            str(error)
+            if str(error).startswith("capture_")
+            else "capture_integrity_failed"
+        )
+        return _failed(action, code, "Capture backfill failed", exit_code=1)
+    except Exception:
+        return _failed(
+            action,
+            "capture_operation_failed",
+            "Capture backfill failed",
+            exit_code=1,
+        )
+    return _emit(
+        ToolResponse(
+            tool=_TOOL,
+            action=action,
+            status="accepted",
+            data={"once": True, **report.to_mapping()},
+        ),
+        exit_code=0,
+    )
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
     parsed = _parse(arguments)
@@ -363,6 +440,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _probe(paths)
     if action == "prepare-backfill":
         return _run_prepare_backfill(paths)
+    if action == "backfill":
+        assert mode is not None
+        return _run_backfill(paths, mode)
     assert mode is not None
     return _run_scan(paths, action=action, mode=mode)
 
