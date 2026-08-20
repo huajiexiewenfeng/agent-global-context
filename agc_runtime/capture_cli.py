@@ -41,6 +41,13 @@ def _failed(action: str, code: str, message: str, *, exit_code: int = 2) -> int:
 def _parse(arguments: list[str]) -> tuple[str, Path, str | None] | None:
     if (
         len(arguments) == 3
+        and arguments[0] == "prepare-backfill"
+        and arguments[1] == "--root"
+        and arguments[2]
+    ):
+        return "prepare-backfill", Path(arguments[2]), None
+    if (
+        len(arguments) == 3
         and arguments[0] == "probe"
         and arguments[1] == "--root"
         and arguments[2]
@@ -243,6 +250,97 @@ def _run_scan(paths: MemoryPaths, *, action: str, mode: str) -> int:
     )
 
 
+def _run_prepare_backfill(paths: MemoryPaths) -> int:
+    action = "prepare-backfill"
+    try:
+        config = load_runtime_config(paths)
+        capture = config.capture
+        if not capture.enabled:
+            return _failed(action, "capture_disabled", "Capture is disabled")
+        if capture.mode != "scanner_only":
+            return _failed(
+                action,
+                "capture_mode_unsupported",
+                "Capture mode is not scanner_only",
+            )
+        if capture.paused:
+            return _failed(action, "capture_paused", "Capture is paused")
+        if not capture.sources:
+            return _failed(
+                action,
+                "capture_sources_unconfigured",
+                "Capture sources are not configured",
+            )
+
+        from agc_runtime.capture_backfill import prepare_backfill
+        from agc_runtime.codex_extractor import CodexExtractor
+        from agc_runtime.codex_source_adapter import CodexSourceAdapter
+
+        adapters = tuple(CodexSourceAdapter(Path(item)) for item in capture.sources)
+        extractor = CodexExtractor(
+            executable=(capture.extractor.executable,),
+            explicit_model=capture.extractor.model,
+        )
+        preparation = prepare_backfill(
+            paths=paths,
+            adapters=adapters,
+            extractor=extractor,
+            now=_utc_now(),
+        )
+    except RuntimeError as error:
+        code = (
+            "extractor_capability_unavailable"
+            if str(error) == "capture_extractor_unavailable"
+            else "capture_busy"
+        )
+        message = (
+            "Capture Extractor capability is unavailable"
+            if code == "extractor_capability_unavailable"
+            else "Capture state is temporarily unavailable"
+        )
+        return _failed(action, code, message, exit_code=1)
+    except OSError:
+        return _failed(
+            action,
+            "capture_source_failed",
+            "Capture source is unavailable",
+            exit_code=1,
+        )
+    except (KeyError, TypeError, UnicodeError, ValueError) as error:
+        known = {
+            "capture_disabled",
+            "capture_mode_unsupported",
+            "capture_paused",
+            "capture_sources_unconfigured",
+            "capture_window_unsupported",
+            "capture_budget_unavailable",
+            "capture_backfill_source_count_unsupported",
+        }
+        code = str(error) if str(error) in known else "capture_integrity_failed"
+        return _failed(
+            action,
+            code,
+            "Capture backfill preparation failed",
+            exit_code=1,
+        )
+    except Exception:
+        return _failed(
+            action,
+            "capture_operation_failed",
+            "Capture operation failed",
+            exit_code=1,
+        )
+    return _emit(
+        ToolResponse(
+            tool=_TOOL,
+            action=action,
+            status="accepted",
+            data=preparation.to_mapping(),
+        ),
+        exit_code=0,
+    )
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
     parsed = _parse(arguments)
@@ -263,6 +361,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     if action == "probe":
         return _probe(paths)
+    if action == "prepare-backfill":
+        return _run_prepare_backfill(paths)
     assert mode is not None
     return _run_scan(paths, action=action, mode=mode)
 
