@@ -415,3 +415,20 @@ was read or activated, and the overall Capture Coverage MVP is not complete.
 - Fresh GREEN: latency-specific `6 passed`; latency + Capture Hook + Activation
   `35 passed`. No real Hook, profile, Memory Root, transcript, or scheduler was
   used.
+
+### Host Rollout Task 5 evidence
+
+- Authentic documentation RED: the Capture operations guide, public action
+  examples, Skill boundary, and README links were absent (`3 failed`; one
+  unrelated temp-root permission error was environment-only).
+- `docs/capture-operations.md` now documents inert defaults, Scanner-first
+  activation, seven-day/100,000 bounds, exclusions, Hook trust and fallback,
+  Provider/background-cost boundaries, pause/disable, backup, authorized Hard
+  Forget, and post-data rollback without promising binary downgrade or
+  provider-side deletion.
+- The public Skill remains thin: Capture observations are evidence rather than
+  formal Memory Items, are not automatically injected, and are not
+  automatically promoted. Capture reuses the existing three MCP tools.
+- Fresh GREEN: `tests/test_skill_adapter.py` `16 passed`; combined Skill and
+  isolated local-installer verification `57 passed in 162.86s`. No live
+  profile, Memory Root, Hook, scheduler, transcript, or model was accessed.

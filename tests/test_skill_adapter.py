@@ -20,6 +20,7 @@ TOOL_CONTRACT = (
     / "references"
     / "tool-contract.md"
 )
+CAPTURE_OPERATIONS = REPOSITORY_ROOT / "docs" / "capture-operations.md"
 
 
 def _skill_text() -> str:
@@ -179,6 +180,63 @@ def test_skill_is_failure_open_and_separates_write_from_admin():
     assert re.search(r"agc\.admin.*not.*ordinary recall", text)
 
 
+def test_capture_guidance_is_thin_evidence_only_and_links_operations():
+    skill = _normalized_skill_text()
+    contract = TOOL_CONTRACT.read_text(encoding="utf-8")
+
+    assert "capture observations are evidence, not formal memory" in skill
+    assert "not automatically injected" in skill
+    assert "capture-operations.md" in skill
+    assert all(
+        action in contract
+        for action in (
+            "`capture_overview`",
+            "`capture_search`",
+            "`capture_get`",
+            "`capture_status`",
+            "`capture_forget`",
+        )
+    )
+    assert "does not add a fourth mcp tool" in contract.casefold()
+
+
+def test_capture_operations_documents_safe_activation_and_rollback_contract():
+    text = CAPTURE_OPERATIONS.read_text(encoding="utf-8")
+    normalized = " ".join(text.casefold().split())
+
+    assert "capture.enabled=false" in text
+    assert "capture.mode=off" in text
+    assert "scanner_only" in text
+    assert "runner" in text
+    assert "7-day" in normalized
+    assert "100,000" in text
+    assert "provider" in normalized
+    assert "exclude.task_ids" in text
+    assert "include_subagents" in text
+    assert "hook" in normalized
+    assert "fallback" in normalized
+    assert "pause" in normalized and "disable" in normalized
+    assert "rollback" in normalized
+    assert "after capture data exists" in normalized
+    assert "binary downgrade" in normalized
+    assert "does not delete" in normalized
+    assert "explicit_user_request" in text
+    assert "not formal memory" in normalized
+    assert "not automatically promoted" in normalized
+    assert "background" in normalized and "cost" in normalized
+
+
+def test_readmes_link_capture_operations_without_overclaiming():
+    english = (REPOSITORY_ROOT / "README.md").read_text(encoding="utf-8")
+    chinese = (REPOSITORY_ROOT / "README.zh.md").read_text(encoding="utf-8")
+
+    assert "[Capture operations](docs/capture-operations.md)" in english
+    assert "[Capture 操作手册](docs/capture-operations.md)" in chinese
+    combined = (english + "\n" + chinese).casefold()
+    assert "every task becomes memory" not in combined
+    assert "zero cost" not in combined
+
+
 def test_tool_contract_has_a_request_example_for_every_action():
     examples = _request_examples()
     expected_fields = {
@@ -187,6 +245,9 @@ def test_tool_contract_has_a_request_example_for_every_action():
         "get": {"action", "id"},
         "history": {"action", "id"},
         "evidence": {"action", "id"},
+        "capture_overview": {"action"},
+        "capture_search": {"action", "filters", "limit"},
+        "capture_get": {"action", "observation_id"},
         "observe": {"action", "observation", "memory_markdown"},
         "observe_batch": {"action", "items"},
         "propose": {"action", "observation"},
@@ -202,12 +263,14 @@ def test_tool_contract_has_a_request_example_for_every_action():
             "suppression_scope",
             "verification_terms",
         },
+        "capture_forget": {"action", "authorization", "target"},
         "init": {"action"},
         "validate": {"action"},
         "rebuild_catalog": {"action"},
         "backup": {"action"},
         "restore": {"action", "backup_path"},
         "migrate": {"action"},
+        "capture_status": {"action"},
     }
 
     assert set(examples) == set(expected_fields)

@@ -41,9 +41,19 @@ Unknown filter names are rejected rather than ignored.
 | `get` | `{"action":"get","id":"memory-id"}` |
 | `history` | `{"action":"history","id":"memory-id"}` |
 | `evidence` | `{"action":"evidence","id":"memory-id"}` |
+| `capture_overview` | `{"action":"capture_overview"}` |
+| `capture_search` | `{"action":"capture_search","filters":{"project":["project-id"],"category":["preference"]},"limit":20}` |
+| `capture_get` | `{"action":"capture_get","observation_id":"co_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}` |
 
 Recall progressively: `overview → search → get → history/evidence`. Stop when
 the current task has enough context.
+
+The Capture read actions use the same `agc.read` tool. Capture does not add a fourth MCP tool.
+Capture observations are reviewable evidence, not formal Memory
+Items. `capture_search` accepts strict filters (`task`, `project`, `category`,
+`kind`, `scope`, `state`, `sensitivity`, and a `time` range), a limit from 1
+to 100, and an opaque cursor. `capture_get` accepts exactly one
+`observation_id` or `receipt_id`.
 
 ## Reusable `agc.write` Schemas
 
@@ -298,6 +308,7 @@ schemas above.
 | `archive` | `{"action":"archive","observation":"<ObservationEnvelope object>","memory_id":"memory-id"}` |
 | `reject` | `{"action":"reject","candidate_id":"candidate-id"}` |
 | `forget` | `{"action":"forget","memory_id":"memory-id","authorization":"explicit_user_request","suppression_scope":"precise_scope","verification_terms":["exact managed-content term"]}` |
+| `capture_forget` | `{"action":"capture_forget","authorization":"explicit_user_request","target":{"type":"observation","observation_id":"co_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}` |
 
 Action-specific rules:
 
@@ -327,6 +338,10 @@ Action-specific rules:
 - `forget`: requires exact `memory_id`, authorization equal to
   `explicit_user_request`, and a precise lowercase `suppression_scope`;
   `verification_terms` is an optional list of non-empty strings (default `[]`).
+- `capture_forget`: requires `explicit_user_request` and exactly one Capture
+  target: an observation id, or a complete adapter/source/task/revision key.
+  It removes matching managed Capture copies and rewrites managed backups; it
+  never means provider-side deletion.
 
 #### Complete supersede request
 
@@ -419,5 +434,7 @@ deferred envelope because the migration adapter is outside this package.
 | `backup` | `{"action":"backup"}` |
 | `restore` | `{"action":"restore","backup_path":"D:/managed/agc-backup.zip"}` |
 | `migrate` | `{"action":"migrate"}` |
+| `capture_status` | `{"action":"capture_status"}` |
 
 `agc.admin` is maintenance and migration, not a Recall shortcut.
+`capture_status` is content-free operational evidence for the Host-bound root.

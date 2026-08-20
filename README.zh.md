@@ -143,6 +143,7 @@ C:\Users\<user>\.agent-global-context-v2\
 - [安装](docs/install.md)
 - [示例](docs/examples.md)
 - [完整流程示例](docs/full-flow-example.md)
+- [Capture 操作手册](docs/capture-operations.md)
 
 ## 状态
 

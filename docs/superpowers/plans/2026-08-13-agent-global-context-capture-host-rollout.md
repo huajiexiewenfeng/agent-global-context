@@ -284,22 +284,22 @@ git commit -m "test: enforce capture hook latency gate"
 - Documents explicit `capture_overview/search/get`, `capture_status`, and authorized `capture_forget` without adding a fourth MCP tool.
 - Documents that Capture observations are inspectable evidence, not formal memory and not automatically injected.
 
-- [ ] **Step 1: Add failing documentation contract tests**
+- [x] **Step 1: Add failing documentation contract tests**
 
 Require exact action examples, safe defaults, global scope definition, background cost disclosure, Provider boundary, exclusions, Hook trust, scanner-only fallback, seven-day/100,000 limit, and post-data rollback. Reject wording that implies every task becomes memory, zero latency/resource cost, provider-side Hard Forget, automatic promotion, or binary downgrade after data.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 ```powershell
 & '.\.venv\Scripts\python.exe' -m pytest tests/test_skill_adapter.py tests/test_local_install.py -q `
   --basetemp 'C:\tmp\agc-capture-host-red-5'
 ```
 
-- [ ] **Step 3: Update operator and Skill documentation**
+- [x] **Step 3: Update operator and Skill documentation**
 
 Keep the public Skill thin: ordinary Recall behavior stays unchanged; Capture views are used only when the user asks to inspect/audit capture. Put operational commands, state transitions, activation-digest procedure, scheduled-task behavior, Hook review, model-cost warning, pause/disable, backup, forget, and rollback drill in `docs/capture-operations.md`.
 
-- [ ] **Step 4: Verify GREEN and commit**
+- [x] **Step 4: Verify GREEN and commit**
 
 ```powershell
 & '.\.venv\Scripts\python.exe' -m pytest tests/test_skill_adapter.py tests/test_local_install.py -q `

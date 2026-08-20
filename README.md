@@ -146,6 +146,7 @@ material until it is explicitly retired.
 - [Install](docs/install.md)
 - [Examples](docs/examples.md)
 - [Full Flow Example](docs/full-flow-example.md)
+- [Capture operations](docs/capture-operations.md)
 
 ## Status
 
