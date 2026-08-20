@@ -459,7 +459,8 @@ def test_receipt_control_metadata_rejects_prose_and_noncanonical_references():
     [
         ("discovered", "queued"), ("discovered", "excluded"),
         ("discovered", "coalesced"), ("discovered", "deferred_budget"),
-        ("discovered", "quarantined"), ("queued", "extracting"),
+        ("discovered", "quarantined"), ("discovered", "retryable"),
+        ("queued", "extracting"), ("queued", "retryable"),
         ("queued", "deferred_budget"), ("queued", "excluded"),
         ("extracting", "complete"), ("extracting", "retryable"),
         ("extracting", "failed"), ("extracting", "quarantined"),

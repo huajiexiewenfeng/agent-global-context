@@ -93,10 +93,11 @@ class CaptureRunner:
         paths: MemoryPaths,
         adapters: Sequence[object],
         extractor: object,
-        preparation: BackfillPreparation,
+        preparation: BackfillPreparation | None,
     ) -> None:
-        if not isinstance(paths, MemoryPaths) or not isinstance(
-            preparation, BackfillPreparation
+        if not isinstance(paths, MemoryPaths) or (
+            preparation is not None
+            and not isinstance(preparation, BackfillPreparation)
         ):
             raise ValueError("capture_runner_contract_invalid")
         self.paths = paths
@@ -105,6 +106,8 @@ class CaptureRunner:
         self.preparation = preparation
 
     def _validate_authorization(self, digest: str) -> tuple[object, object]:
+        if self.preparation is None:
+            raise RuntimeError("capture_backfill_authorization_stale")
         if digest != self.preparation.authorization_digest:
             raise RuntimeError("capture_backfill_authorization_stale")
         config = load_runtime_config(self.paths)
@@ -179,6 +182,25 @@ class CaptureRunner:
         terminal = {"complete", "excluded", "coalesced"}
         return sum(item.key in keys and item.status not in terminal for item in receipts)
 
+    @classmethod
+    def _empty_report(
+        cls, receipts: Sequence[CaptureReceipt], keys: frozenset[object]
+    ) -> RunnerReport:
+        return RunnerReport(
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            cls._backlog_count(receipts, keys),
+        )
+
+    def run_once(self, *, max_items: int, now: str) -> RunnerReport:
+        """Run one explicit background cycle against the latest frozen Census."""
+
+        return self.run_manual_backfill(
+            authorization_digest="",
+            max_items=max_items,
+            now=now,
+            _background=True,
+        )
+
     @staticmethod
     def _observations(
         accepted: Sequence[object],
@@ -232,34 +254,69 @@ class CaptureRunner:
         authorization_digest: str,
         max_items: int,
         now: str,
+        _background: bool = False,
     ) -> RunnerReport:
         if (
-            not isinstance(authorization_digest, str)
-            or len(authorization_digest) != 64
-            or type(max_items) is not int
+            type(max_items) is not int
             or not 1 <= max_items <= 100
+            or type(_background) is not bool
+            or (
+                not _background
+                and (
+                    not isinstance(authorization_digest, str)
+                    or len(authorization_digest) != 64
+                )
+            )
         ):
             raise ValueError("capture_runner_contract_invalid")
         current_config = load_runtime_config(self.paths).capture
         store = CaptureStore(self.paths, clock=lambda: now)
         snapshot = store.read_snapshot()
-        run = next(
-            (
-                item
-                for item in snapshot.census_runs
-                if item.census_id == self.preparation.census_id
-            ),
-            None,
-        )
-        run_keys = frozenset(run.revision_keys) if run is not None else frozenset()
-        if current_config.paused:
-            return RunnerReport(
-                0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                self._backlog_count(snapshot.receipts, run_keys),
+        if _background:
+            run = max(
+                snapshot.census_runs,
+                key=lambda item: (item.frozen_at, item.census_id),
+                default=None,
             )
-        capture, extractor_descriptor = self._validate_authorization(
-            authorization_digest
-        )
+        else:
+            if self.preparation is None:
+                raise RuntimeError("capture_backfill_authorization_stale")
+            run = next(
+                (
+                    item
+                    for item in snapshot.census_runs
+                    if item.census_id == self.preparation.census_id
+                ),
+                None,
+            )
+        run_keys = frozenset(run.revision_keys) if run is not None else frozenset()
+        if _background:
+            if (
+                not current_config.enabled
+                or current_config.mode != "runner"
+                or current_config.paused
+                or current_config.budgets.incremental_total_tokens is None
+                or run is None
+            ):
+                return self._empty_report(snapshot.receipts, run_keys)
+            capture = current_config
+            extractor_descriptor = self.extractor.describe()
+            probe = self.extractor.probe_capabilities()
+            if not probe.available:
+                raise RuntimeError("capture_extractor_unavailable")
+            pool = "incremental"
+            budget_census_id = None
+            ceiling = capture.budgets.incremental_total_tokens
+        else:
+            if current_config.paused:
+                return self._empty_report(snapshot.receipts, run_keys)
+            capture, extractor_descriptor = self._validate_authorization(
+                authorization_digest
+            )
+            pool = "backfill"
+            assert self.preparation is not None
+            budget_census_id = self.preparation.census_id
+            ceiling = capture.budgets.backfill_total_tokens
         from agc_runtime.capture_capsule import CapsulePolicy
         from agc_runtime.capture_safety import persistence_gate
 
@@ -270,9 +327,7 @@ class CaptureRunner:
         store.recover_transactions(now=now)
         snapshot = store.read_snapshot()
         run = next(
-            item
-            for item in snapshot.census_runs
-            if item.census_id == self.preparation.census_id
+            item for item in snapshot.census_runs if item.census_id == run.census_id
         )
         revisions = {
             item.key: item
@@ -291,9 +346,9 @@ class CaptureRunner:
         )
         budget = CaptureTokenBudget(
             self.paths,
-            pool="backfill",
-            census_id=self.preparation.census_id,
-            ceiling=capture.budgets.backfill_total_tokens,
+            pool=pool,
+            census_id=budget_census_id,
+            ceiling=ceiling,
             clock=lambda: now,
         )
         before_charge = budget.snapshot().charged_tokens
@@ -312,7 +367,7 @@ class CaptureRunner:
             attempted += 1
             lease = store.acquire_lease(
                 current.key,
-                owner_id="manual-backfill",
+                owner_id=("background-runner" if _background else "manual-backfill"),
                 now=now,
                 ttl_seconds=300,
             )
@@ -430,7 +485,33 @@ class CaptureRunner:
                 )
                 completed += 1
                 observation_count += len(observations)
-            except (KeyError, OSError, TypeError, UnicodeError, ValueError):
+            except OSError:
+                if reservation is None:
+                    expected_status = current.status
+                    if expected_status == "retryable":
+                        store.transition(
+                            lease,
+                            expected=frozenset({"retryable"}),
+                            target="queued",
+                            patch=ReceiptTransitionPatch(updated_at=now),
+                        )
+                        expected_status = "queued"
+                    store.transition(
+                        lease,
+                        expected=frozenset({expected_status}),
+                        target="retryable",
+                        patch=ReceiptTransitionPatch(
+                            updated_at=now,
+                            next_retry_at=self._retry_at(
+                                now, capture.runner.backoff_seconds[0]
+                            ),
+                            sanitized_error=SanitizedError(
+                                "source", "source_unavailable", True
+                            ),
+                        ),
+                    )
+                failed += 1
+            except (KeyError, TypeError, UnicodeError, ValueError):
                 failed += 1
             finally:
                 try:

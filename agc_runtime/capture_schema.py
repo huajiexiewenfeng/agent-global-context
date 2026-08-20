@@ -330,11 +330,21 @@ def capture_receipt_from_mapping(value: Any) -> CaptureReceipt:
     if any(item is None for item in extraction_metadata) and any(item is not None for item in extraction_metadata):
         raise ValueError("extractor fields and taxonomy must all be null or all be present")
     has_extraction_metadata = all(item is not None for item in extraction_metadata)
-    post_extracting = {"extracting", "complete", "retryable", "failed"}
+    post_extracting = {"extracting", "complete", "failed"}
     if status in post_extracting and any(item is None for item in extraction_metadata):
         raise ValueError("extractor fields and taxonomy must be present after extracting")
-    if status not in post_extracting | {"quarantined"} and any(item is not None for item in extraction_metadata):
+    if status not in post_extracting | {"retryable", "quarantined"} and any(item is not None for item in extraction_metadata):
         raise ValueError("extractor fields and taxonomy must be null before extracting")
+    if status == "retryable" and not has_extraction_metadata and any(
+        item is not None
+        for item in (
+            source_fingerprint,
+            source_hash_schema_version,
+            capsule_hash,
+            capsule_schema_version,
+        )
+    ):
+        raise ValueError("pre-extraction retryable receipt cannot contain hashes")
     observation_count = root["observation_count"]
     filtered_counts = root["filtered_counts"]
     duplicate_suppression_count = root["duplicate_suppression_count"]

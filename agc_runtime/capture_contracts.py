@@ -18,8 +18,8 @@ CAPTURE_STATUSES = frozenset(
     }
 )
 _TRANSITIONS = {
-    "discovered": frozenset({"queued", "excluded", "coalesced", "deferred_budget", "quarantined"}),
-    "queued": frozenset({"extracting", "deferred_budget", "excluded"}),
+    "discovered": frozenset({"queued", "excluded", "coalesced", "deferred_budget", "quarantined", "retryable"}),
+    "queued": frozenset({"extracting", "deferred_budget", "excluded", "retryable"}),
     "extracting": frozenset({"complete", "retryable", "failed", "quarantined"}),
     "retryable": frozenset({"queued", "deferred_budget", "failed", "quarantined"}),
     "deferred_budget": frozenset({"queued", "excluded"}),

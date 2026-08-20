@@ -42,6 +42,27 @@ def _failed(action: str, code: str, message: str, *, exit_code: int = 2) -> int:
 def _parse(arguments: list[str]) -> tuple[str, Path, str | None] | None:
     if (
         len(arguments) == 5
+        and arguments[0] == "run"
+        and arguments[1] == "--root"
+        and arguments[2]
+        and arguments[3] == "--max-items"
+        and arguments[4].isdigit()
+        and 1 <= int(arguments[4]) <= 100
+    ):
+        return "run", Path(arguments[2]), arguments[4]
+    if (
+        len(arguments) == 6
+        and arguments[0] == "cycle"
+        and arguments[1] == "--root"
+        and arguments[2]
+        and arguments[3] == "--once"
+        and arguments[4] == "--max-items"
+        and arguments[5].isdigit()
+        and 1 <= int(arguments[5]) <= 100
+    ):
+        return "runner-cycle", Path(arguments[2]), arguments[5]
+    if (
+        len(arguments) == 5
         and arguments[0] == "retry"
         and arguments[1] == "--root"
         and arguments[2]
@@ -475,6 +496,79 @@ def _run_retry(paths: MemoryPaths, receipt_id: str) -> int:
     )
 
 
+def _run_runner(
+    paths: MemoryPaths, *, action: str, maximum: int, scan_first: bool
+) -> int:
+    try:
+        config = load_runtime_config(paths)
+        capture = config.capture
+        if not capture.enabled:
+            return _failed(action, "capture_disabled", "Capture is disabled")
+        if capture.mode != "runner":
+            return _failed(
+                action,
+                "capture_mode_unsupported",
+                "Capture mode is not runner",
+            )
+        if not capture.sources:
+            return _failed(
+                action,
+                "capture_sources_unconfigured",
+                "Capture sources are not configured",
+            )
+
+        from agc_runtime.capture_runner import CaptureRunner
+        from agc_runtime.capture_scanner import CaptureScanner
+        from agc_runtime.codex_extractor import CodexExtractor
+        from agc_runtime.codex_source_adapter import CodexSourceAdapter
+
+        adapters = tuple(CodexSourceAdapter(Path(item)) for item in capture.sources)
+        now = _utc_now()
+        scan = None
+        if scan_first and not capture.paused:
+            scan = CaptureScanner(
+                CaptureStore(paths),
+                adapters,
+                excluded_task_ids=capture.exclude.task_ids,
+            ).scan(run_started_at=now)
+        extractor = CodexExtractor(
+            executable=_extractor_command(capture.extractor.executable),
+            explicit_model=capture.extractor.model,
+        )
+        report = CaptureRunner(paths, adapters, extractor, None).run_once(
+            max_items=maximum,
+            now=now,
+        )
+    except RuntimeError as error:
+        code = (
+            str(error)
+            if str(error) in {"capture_extractor_unavailable"}
+            else "capture_busy"
+        )
+        return _failed(action, code, "Capture Runner did not start", exit_code=1)
+    except OSError:
+        return _failed(
+            action,
+            "capture_source_failed",
+            "Capture source is unavailable",
+            exit_code=1,
+        )
+    except (KeyError, TypeError, UnicodeError, ValueError):
+        return _failed(
+            action,
+            "capture_integrity_failed",
+            "Capture Runner state failed integrity validation",
+            exit_code=1,
+        )
+    data: dict[str, Any] = {"once": True, **report.to_mapping()}
+    if scan is not None:
+        data["scan"] = _scan_mapping(scan)
+    return _emit(
+        ToolResponse(tool=_TOOL, action=action, status="accepted", data=data),
+        exit_code=0,
+    )
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
     parsed = _parse(arguments)
@@ -503,6 +597,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     if action == "retry":
         assert mode is not None
         return _run_retry(paths, mode)
+    if action in {"run", "runner-cycle"}:
+        assert mode is not None
+        return _run_runner(
+            paths,
+            action="cycle" if action == "runner-cycle" else action,
+            maximum=int(mode),
+            scan_first=action == "runner-cycle",
+        )
     assert mode is not None
     return _run_scan(paths, action=action, mode=mode)
 

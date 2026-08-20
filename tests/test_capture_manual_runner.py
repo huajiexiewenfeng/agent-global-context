@@ -84,6 +84,7 @@ class FakeAdapter:
     revisions: tuple[RevisionRef, ...] = (_revision(),)
     discover_calls: int = 0
     load_calls: int = 0
+    load_error: bool = False
 
     def describe(self):
         from agc_runtime.capture_source import AdapterDescriptor
@@ -106,6 +107,8 @@ class FakeAdapter:
         from agc_runtime.capture_capsule import CapsuleCounts, CapsuleResult, TaskCapsule
 
         self.load_calls += 1
+        if self.load_error:
+            raise OSError("private source error must not persist")
         capsule = TaskCapsule(
             adapter_id=ref.key.adapter_id,
             adapter_version=ref.adapter_version,
@@ -501,3 +504,114 @@ def test_restart_recovers_unknown_reserved_call_and_retries_without_refund(
     assert receipt["attempt_count"] == 2
     assert budget.snapshot().charged_tokens == 6150
     assert budget.snapshot().active_reservations == 1
+
+
+def _switch_to_runner_mode(
+    paths: MemoryPaths, *, incremental_total: int | None
+) -> None:
+    config_path = paths.root / "config.yaml"
+    config = config_path.read_text(encoding="utf-8")
+    value = "null" if incremental_total is None else str(incremental_total)
+    config_path.write_text(
+        config.replace("mode: scanner_only", "mode: runner", 1).replace(
+            "incremental_total_tokens: null",
+            f"incremental_total_tokens: {value}",
+            1,
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_runner_mode_processes_latest_frozen_census_with_incremental_budget(
+    tmp_path: Path,
+) -> None:
+    from agc_runtime.capture_budget import CaptureTokenBudget
+
+    paths, adapter, extractor, _preparation = _prepared(tmp_path)
+    _switch_to_runner_mode(paths, incremental_total=100_000)
+
+    report = CaptureRunner(paths, (adapter,), extractor, None).run_once(
+        max_items=20,
+        now=RUN_AT,
+    )
+
+    receipt = json.loads(next(paths.capture.receipts.glob("*.json")).read_text(encoding="utf-8"))
+    incremental = CaptureTokenBudget(
+        paths,
+        pool="incremental",
+        census_id=None,
+        ceiling=100_000,
+        clock=lambda: RUN_AT,
+    )
+    assert report.completed_count == 1
+    assert report.backlog_count == 0
+    assert report.charged_tokens == 150
+    assert receipt["status"] == "complete"
+    assert incremental.snapshot().charged_tokens == 150
+
+
+def test_runner_mode_without_incremental_budget_preserves_backlog(
+    tmp_path: Path,
+) -> None:
+    paths, adapter, extractor, _preparation = _prepared(tmp_path)
+    _switch_to_runner_mode(paths, incremental_total=None)
+
+    report = CaptureRunner(paths, (adapter,), extractor, None).run_once(
+        max_items=20,
+        now=RUN_AT,
+    )
+
+    assert report.attempted_count == 0
+    assert report.backlog_count == 1
+    assert extractor.extract_calls == 0
+
+
+def test_background_run_and_cycle_cli_forms_are_exact(tmp_path: Path) -> None:
+    from agc_runtime.capture_cli import _parse
+
+    root = (tmp_path / "memory").resolve()
+    assert _parse(["run", "--root", str(root), "--max-items", "20"]) == (
+        "run",
+        root,
+        "20",
+    )
+    assert _parse(
+        ["cycle", "--root", str(root), "--once", "--max-items", "20"]
+    ) == ("runner-cycle", root, "20")
+    assert _parse(["run", "--root", str(root), "--max-items", "0"]) is None
+    assert _parse(
+        ["cycle", "--root", str(root), "--max-items", "20", "--once"]
+    ) is None
+
+
+def test_transient_source_failure_is_content_free_retryable_with_backoff(
+    tmp_path: Path,
+) -> None:
+    paths, adapter, extractor, preparation = _prepared(tmp_path)
+    adapter.load_error = True
+    runner = CaptureRunner(paths, (adapter,), extractor, preparation)
+
+    first = runner.run_manual_backfill(
+        authorization_digest=preparation.authorization_digest,
+        max_items=20,
+        now=RUN_AT,
+    )
+    immediate = runner.run_manual_backfill(
+        authorization_digest=preparation.authorization_digest,
+        max_items=20,
+        now=RUN_AT,
+    )
+
+    receipt = json.loads(next(paths.capture.receipts.glob("*.json")).read_text(encoding="utf-8"))
+    assert first.failed_count == 1
+    assert immediate.attempted_count == 0
+    assert extractor.extract_calls == 0
+    assert receipt["status"] == "retryable"
+    assert receipt["attempt_count"] == 0
+    assert receipt["next_retry_at"] == "2026-08-13T12:02:00Z"
+    assert receipt["sanitized_error"] == {
+        "stage": "source",
+        "code": "source_unavailable",
+        "retryable": True,
+    }
+    assert "private" not in json.dumps(receipt)

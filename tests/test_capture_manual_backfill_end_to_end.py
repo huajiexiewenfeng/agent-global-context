@@ -140,3 +140,63 @@ def test_manual_backfill_cli_prepares_authorizes_collects_and_replays(
     assert replay_result.returncode == 0
     assert replay["data"]["attempted_count"] == 0
     assert replay["data"]["extractor_call_count"] == 0
+
+    runner_records = (
+        {
+            "timestamp": started.isoformat().replace("+00:00", "Z"),
+            "type": "session_meta",
+            "payload": {
+                "id": "rollout-runner",
+                "session_id": "task-runner",
+                "source": "cli",
+            },
+        },
+        {
+            "timestamp": started.isoformat().replace("+00:00", "Z"),
+            "type": "event_msg",
+            "payload": {"type": "task_started", "turn_id": "turn-runner"},
+        },
+        {
+            "timestamp": started.isoformat().replace("+00:00", "Z"),
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "user",
+                "content": "I prefer Rust.",
+                "turn_id": "turn-runner",
+            },
+        },
+        {
+            "timestamp": completed.isoformat().replace("+00:00", "Z"),
+            "type": "event_msg",
+            "payload": {"type": "task_complete", "turn_id": "turn-runner"},
+        },
+    )
+    (sessions / "runner.jsonl").write_text(
+        "".join(json.dumps(item) + "\n" for item in runner_records),
+        encoding="utf-8",
+    )
+    runner_config = (memory / "config.yaml").read_text(encoding="utf-8")
+    (memory / "config.yaml").write_text(
+        runner_config.replace("mode: scanner_only", "mode: runner", 1).replace(
+            "incremental_total_tokens: null",
+            "incremental_total_tokens: 100000",
+            1,
+        ),
+        encoding="utf-8",
+    )
+
+    cycle_result, cycle = _invoke(
+        "cycle",
+        "--root",
+        str(memory),
+        "--once",
+        "--max-items",
+        "20",
+    )
+    assert cycle_result.returncode == 0
+    assert cycle["status"] == "accepted"
+    assert cycle["data"]["completed_count"] == 1
+    assert cycle["data"]["observation_count"] == 1
+    assert cycle["data"]["charged_tokens"] == 18
+    assert cycle["data"]["backlog_count"] == 0
