@@ -213,9 +213,37 @@ def test_capture_status_reports_truthful_durable_scanner_metrics_without_paths(
     assert scanner["scan_state"]["max_state_version"] == 2
     assert scanner["operation_eligible"] is False
     assert "memory_root_binding_not_assessed" in scanner["operation_reasons"]
+
+    receipt = CaptureStore(paths).read_snapshot().receipts[0]
+    runner = status["runner"]
+    assert runner == {
+        "assessment": "ready",
+        "backlog_count": 1,
+        "oldest_unresolved_at": receipt.discovered_at,
+        "max_attempt_count": 0,
+        "status_counts": {"discovered": 1},
+        "settled_token_count": 0,
+        "concurrency": 1,
+    }
     rendered = json.dumps(status)
     assert str(paths.root) not in rendered
     assert str(source_root) not in rendered
+
+
+def test_runner_mode_is_not_reported_as_unsupported_after_runner_install(tmp_path):
+    paths, _source_root = _configured_status_root(tmp_path)
+    config_path = paths.root / "config.yaml"
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8").replace(
+            "mode: scanner_only", "mode: runner", 1
+        ),
+        encoding="utf-8",
+    )
+
+    status = capture_status(paths)
+
+    assert "capture_runner_unsupported" not in status["scanner"]["operation_reasons"]
+    assert status["runner"]["concurrency"] == 1
 
 
 def test_capture_status_does_not_guess_ready_when_layout_has_no_scanner_state(tmp_path):

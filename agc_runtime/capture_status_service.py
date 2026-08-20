@@ -28,8 +28,6 @@ def _scanner_reasons(capture: Any) -> list[str]:
         reasons.append("capture_disabled")
     if capture.mode == "off":
         reasons.append("capture_mode_off")
-    elif capture.mode == "runner":
-        reasons.append("capture_runner_unsupported")
     if capture.paused:
         reasons.append("capture_paused")
     if not capture.sources:
@@ -73,9 +71,49 @@ def _not_assessed_scanner(capture: Any) -> dict[str, Any]:
     }
 
 
+def _not_assessed_runner(capture: Any) -> dict[str, Any]:
+    return {
+        "assessment": "not_assessed",
+        "backlog_count": None,
+        "oldest_unresolved_at": None,
+        "max_attempt_count": None,
+        "status_counts": {},
+        "settled_token_count": None,
+        "concurrency": capture.runner.concurrency,
+    }
+
+
+def _runner_status(
+    snapshot: Any,
+    configured: set[tuple[str, str]],
+    assessment: str,
+) -> dict[str, Any]:
+    receipts = tuple(
+        item
+        for item in snapshot.receipts
+        if (item.key.adapter_id, item.key.source_root_id) in configured
+    )
+    terminal = {"complete", "excluded", "coalesced"}
+    unresolved = tuple(item for item in receipts if item.status not in terminal)
+    status_counts: dict[str, int] = {}
+    for item in receipts:
+        status_counts[item.status] = status_counts.get(item.status, 0) + 1
+    return {
+        "assessment": assessment,
+        "backlog_count": len(unresolved),
+        "oldest_unresolved_at": min(
+            (item.discovered_at for item in unresolved), default=None
+        ),
+        "max_attempt_count": max((item.attempt_count for item in receipts), default=0),
+        "status_counts": dict(sorted(status_counts.items())),
+        "settled_token_count": sum(item.token_usage.total_tokens for item in receipts),
+        "concurrency": 1,
+    }
+
+
 def _scanner_status(
     paths: MemoryPaths, capture: Any, bindings: tuple[Any, ...]
-) -> tuple[dict[str, Any], list[str]]:
+) -> tuple[dict[str, Any], dict[str, Any]]:
     reasons = _scanner_reasons(capture)
     exclusions = {
         "task_id_count": len(capture.exclude.task_ids),
@@ -109,7 +147,15 @@ def _scanner_status(
                 "operation_reasons": reasons,
                 "exclusions": exclusions,
             },
-            [],
+            {
+                "assessment": "absent",
+                "backlog_count": 0,
+                "oldest_unresolved_at": None,
+                "max_attempt_count": 0,
+                "status_counts": {},
+                "settled_token_count": 0,
+                "concurrency": 1,
+            },
         )
 
     store = CaptureStore(paths)
@@ -140,7 +186,15 @@ def _scanner_status(
                 "operation_reasons": busy_reasons,
                 "exclusions": exclusions,
             },
-            [],
+            {
+                "assessment": "busy",
+                "backlog_count": None,
+                "oldest_unresolved_at": None,
+                "max_attempt_count": None,
+                "status_counts": {},
+                "settled_token_count": None,
+                "concurrency": 1,
+            },
         )
 
     corrupt = bool(snapshot.diagnostics)
@@ -245,7 +299,7 @@ def _scanner_status(
             "operation_reasons": reasons,
             "exclusions": exclusions,
         },
-        [],
+        _runner_status(snapshot, configured, assessment),
     )
 
 
@@ -307,11 +361,11 @@ def capture_status(value: MemoryPaths | Path) -> dict[str, Any]:
             )
             for source_id in source_ids
         )
-    scanner = (
-        _not_assessed_scanner(capture)
-        if not capture.enabled
-        else _scanner_status(paths, capture, bindings)[0]
-    )
+    if not capture.enabled:
+        scanner = _not_assessed_scanner(capture)
+        runner = _not_assessed_runner(capture)
+    else:
+        scanner, runner = _scanner_status(paths, capture, bindings)
     return {
         "config_source": {
             "kind": "memory_root_config" if config_exists else "runtime_default",
@@ -350,6 +404,7 @@ def capture_status(value: MemoryPaths | Path) -> dict[str, Any]:
         "route": {"assessment": "not_assessed", "conflicts": []},
         "cursor_key": CaptureStore(paths).cursor_key_status(),
         "scanner": scanner,
+        "runner": runner,
         "activation_ready": False,
         "activation_reasons": reasons,
     }

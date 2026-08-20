@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
-from typing import Sequence
+import time
+from typing import Any, Sequence
 
 from agc_runtime.capture_backfill import (
     BackfillPreparation,
@@ -23,6 +24,7 @@ from agc_runtime.capture_contracts import (
     observation_id_for,
 )
 from agc_runtime.capture_store import CaptureStore, ReceiptTransitionPatch, root_fingerprint
+from agc_runtime.locking import capture_runner_lock
 from agc_runtime.paths import MemoryPaths
 from agc_runtime.runtime_config import load_runtime_config
 
@@ -79,12 +81,17 @@ class RunnerReport:
     charged_tokens: int
     silent_loss_count: int
     backlog_count: int
+    oldest_unresolved_at: str | None
+    attempt_count_delta: int
+    status_deltas: tuple[tuple[str, int], ...]
+    run_time_ms: int
+    source_bytes_read: int | None
+    peak_process_count: int
 
-    def to_mapping(self) -> dict[str, int]:
-        return {
-            name: getattr(self, name)
-            for name in self.__dataclass_fields__
-        }
+    def to_mapping(self) -> dict[str, Any]:
+        result = {name: getattr(self, name) for name in self.__dataclass_fields__}
+        result["status_deltas"] = dict(self.status_deltas)
+        return result
 
 
 class CaptureRunner:
@@ -182,13 +189,55 @@ class CaptureRunner:
         terminal = {"complete", "excluded", "coalesced"}
         return sum(item.key in keys and item.status not in terminal for item in receipts)
 
+    @staticmethod
+    def _oldest_unresolved_at(
+        receipts: Sequence[CaptureReceipt], keys: frozenset[object]
+    ) -> str | None:
+        terminal = {"complete", "excluded", "coalesced"}
+        return min(
+            (
+                item.discovered_at
+                for item in receipts
+                if item.key in keys and item.status not in terminal
+            ),
+            default=None,
+        )
+
+    @staticmethod
+    def _attempt_and_status_deltas(
+        before: Sequence[CaptureReceipt],
+        after: Sequence[CaptureReceipt],
+        keys: frozenset[object],
+    ) -> tuple[int, tuple[tuple[str, int], ...]]:
+        prior = {item.key: item for item in before if item.key in keys}
+        attempts = 0
+        statuses: dict[str, int] = {}
+        for item in after:
+            if item.key not in keys:
+                continue
+            old = prior.get(item.key)
+            attempts += item.attempt_count - (old.attempt_count if old else 0)
+            if old is None or old.status != item.status:
+                statuses[item.status] = statuses.get(item.status, 0) + 1
+        return attempts, tuple(sorted(statuses.items()))
+
     @classmethod
     def _empty_report(
-        cls, receipts: Sequence[CaptureReceipt], keys: frozenset[object]
+        cls,
+        receipts: Sequence[CaptureReceipt],
+        keys: frozenset[object],
+        *,
+        started_ns: int,
     ) -> RunnerReport:
         return RunnerReport(
             0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
             cls._backlog_count(receipts, keys),
+            cls._oldest_unresolved_at(receipts, keys),
+            0,
+            (),
+            max(0, (time.monotonic_ns() - started_ns) // 1_000_000),
+            None,
+            0,
         )
 
     def run_once(self, *, max_items: int, now: str) -> RunnerReport:
@@ -269,6 +318,51 @@ class CaptureRunner:
             )
         ):
             raise ValueError("capture_runner_contract_invalid")
+        try:
+            with capture_runner_lock(self.paths):
+                return self._run_manual_backfill_locked(
+                    authorization_digest=authorization_digest,
+                    max_items=max_items,
+                    now=now,
+                    _background=_background,
+                )
+        except RuntimeError as error:
+            if str(error) != "active Capture runner lock exists":
+                raise
+            started_ns = time.monotonic_ns()
+            snapshot = CaptureStore(self.paths).read_snapshot()
+            if _background:
+                run = max(
+                    snapshot.census_runs,
+                    key=lambda item: (item.frozen_at, item.census_id),
+                    default=None,
+                )
+            elif self.preparation is not None:
+                run = next(
+                    (
+                        item
+                        for item in snapshot.census_runs
+                        if item.census_id == self.preparation.census_id
+                    ),
+                    None,
+                )
+            else:
+                run = None
+            keys = frozenset(run.revision_keys) if run is not None else frozenset()
+            return replace(
+                self._empty_report(snapshot.receipts, keys, started_ns=started_ns),
+                lease_contention_count=1,
+            )
+
+    def _run_manual_backfill_locked(
+        self,
+        *,
+        authorization_digest: str,
+        max_items: int,
+        now: str,
+        _background: bool = False,
+    ) -> RunnerReport:
+        started_ns = time.monotonic_ns()
         current_config = load_runtime_config(self.paths).capture
         store = CaptureStore(self.paths, clock=lambda: now)
         snapshot = store.read_snapshot()
@@ -298,7 +392,9 @@ class CaptureRunner:
                 or current_config.budgets.incremental_total_tokens is None
                 or run is None
             ):
-                return self._empty_report(snapshot.receipts, run_keys)
+                return self._empty_report(
+                    snapshot.receipts, run_keys, started_ns=started_ns
+                )
             capture = current_config
             extractor_descriptor = self.extractor.describe()
             probe = self.extractor.probe_capabilities()
@@ -309,7 +405,9 @@ class CaptureRunner:
             ceiling = capture.budgets.incremental_total_tokens
         else:
             if current_config.paused:
-                return self._empty_report(snapshot.receipts, run_keys)
+                return self._empty_report(
+                    snapshot.receipts, run_keys, started_ns=started_ns
+                )
             capture, extractor_descriptor = self._validate_authorization(
                 authorization_digest
             )
@@ -560,6 +658,11 @@ class CaptureRunner:
                     pass
         charged = budget.snapshot().charged_tokens - before_charge
         final_snapshot = store.read_snapshot()
+        attempt_delta, status_deltas = self._attempt_and_status_deltas(
+            snapshot.receipts,
+            final_snapshot.receipts,
+            frozenset(run.revision_keys),
+        )
         return RunnerReport(
             attempted,
             completed,
@@ -572,6 +675,14 @@ class CaptureRunner:
             charged,
             0,
             self._backlog_count(final_snapshot.receipts, frozenset(run.revision_keys)),
+            self._oldest_unresolved_at(
+                final_snapshot.receipts, frozenset(run.revision_keys)
+            ),
+            attempt_delta,
+            status_deltas,
+            max(0, (time.monotonic_ns() - started_ns) // 1_000_000),
+            None,
+            1 if extractor_calls else 0,
         )
 
 

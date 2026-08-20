@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import json
 from pathlib import Path
 import sys
+import threading
 
 import pytest
 
@@ -551,6 +552,81 @@ def test_runner_mode_processes_latest_frozen_census_with_incremental_budget(
     assert report.charged_tokens == 150
     assert receipt["status"] == "complete"
     assert incremental.snapshot().charged_tokens == 150
+
+
+def test_runner_report_exposes_content_free_backpressure_diagnostics(tmp_path: Path) -> None:
+    paths, adapter, extractor, preparation = _prepared(tmp_path)
+    report = CaptureRunner(paths, (adapter,), extractor, preparation).run_manual_backfill(
+        authorization_digest=preparation.authorization_digest,
+        max_items=20,
+        now=RUN_AT,
+    )
+
+    mapping = report.to_mapping()
+    assert mapping["oldest_unresolved_at"] is None
+    assert mapping["attempt_count_delta"] == 1
+    assert mapping["status_deltas"] == {"complete": 1}
+    assert type(mapping["run_time_ms"]) is int and mapping["run_time_ms"] >= 0
+    assert mapping["source_bytes_read"] is None
+    assert mapping["peak_process_count"] == 1
+
+
+def test_two_background_workers_enforce_single_concurrency_and_preserve_backlog(
+    tmp_path: Path,
+) -> None:
+    from agc_runtime.capture_store import CaptureStore
+
+    memory = tmp_path / "memory"
+    source = tmp_path / "source"
+    source.mkdir()
+    _write_config(memory, source, total=100_000)
+    paths = MemoryPaths.from_root(memory)
+    adapter = FakeAdapter(revisions=(_revision("turn-1"), _revision("turn-2")))
+    extractor = FakeExtractor()
+    prepare_backfill(
+        paths=paths,
+        adapters=(adapter,),
+        extractor=extractor,
+        now=NOW,
+    )
+    _switch_to_runner_mode(paths, incremental_total=100_000)
+
+    entered = threading.Event()
+    release = threading.Event()
+    original_extract = extractor.extract
+
+    def blocked_extract(capsule, reservation):
+        if not entered.is_set():
+            entered.set()
+            assert release.wait(5)
+        return original_extract(capsule, reservation)
+
+    extractor.extract = blocked_extract
+    reports = []
+    worker = threading.Thread(
+        target=lambda: reports.append(
+            CaptureRunner(paths, (adapter,), extractor, None).run_once(
+                max_items=1, now=RUN_AT
+            )
+        )
+    )
+    worker.start()
+    assert entered.wait(5)
+
+    competing = CaptureRunner(paths, (adapter,), extractor, None).run_once(
+        max_items=2, now=RUN_AT
+    )
+    release.set()
+    worker.join(5)
+
+    assert not worker.is_alive()
+    assert competing.attempted_count == 0
+    assert competing.lease_contention_count == 1
+    assert competing.backlog_count == 2
+    assert extractor.extract_calls == 1
+    assert reports[0].completed_count == 1
+    snapshot = CaptureStore(paths).read_snapshot()
+    assert sorted(item.status for item in snapshot.receipts) == ["complete", "discovered"]
 
 
 def test_runner_mode_without_incremental_budget_preserves_backlog(
