@@ -2,4 +2,3 @@ notify = ["existing-notify.cmd"]
 
 [mcp_servers.unrelated]
 command = "unrelated-mcp.cmd"
-
