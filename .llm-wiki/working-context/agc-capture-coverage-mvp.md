@@ -363,3 +363,32 @@ was read or activated, and the overall Capture Coverage MVP is not complete.
 - No Codex profile, real Memory Root, Hook definition, scheduled task, model,
   or source transcript was inspected or changed. Host supervision remains the
   next synthetic-only task.
+
+### Host Rollout Task 3 evidence
+
+- Authentic RED groups: missing Host configurator `3 failed`; Scanner/Hook
+  mutation `2 failed / 3 passed`; Runner/Pause/Disable/recovery `3 failed / 5
+  passed`; latency-report enforcement `5 failed / 6 passed`.
+- `scripts/configure-capture-host.ps1` supports Status, EnableScanner,
+  EnableHook, EnableRunner, Pause, Disable, and Rollback with exact digest
+  gating. Status is deterministic, content-safe, and byte-inert.
+- Each accepted mutation writes a unique before-image manifest. Injected
+  failures restore config, Hooks, and scheduler state byte-exact; explicit
+  Rollback selects only the latest committed action. Capture data is never a
+  mutation target and remains present after Pause/Disable.
+- Scanner supervision uses the stable launcher, logon plus configurable
+  repetition, `IgnoreNew`, start-when-available, and a one-shot max-10 cycle.
+  Tests use a file scheduler adapter; production emits/registers Windows Task
+  Scheduler XML and exports/restores a prior owned task.
+- Hook merge is structural: unrelated Stop/SessionStart values and Codex
+  `config.toml` remain unchanged, duplicate exact owned definitions normalize
+  to one, and invalid JSON, managed Hook disablement, or unknown conflicts
+  block activation. Hook enablement requires an exact-hash report with at
+  least 1,000 samples, p95 below 100 ms, pass=true, and the current launcher
+  hash. The user must still inspect/trust the Hook through Codex `/hooks`.
+- Fresh GREEN: Host configurator `11 passed`; configurator plus transactional
+  local installer `52 passed in 186.87s`. PowerShell 7 and Windows PowerShell
+  5.1 both parse the final script.
+- All tests used temporary CodexHome/Memory/Install roots and a fake scheduler.
+  No real profile, real Task Scheduler, Hook, transcript, or model was read or
+  changed.

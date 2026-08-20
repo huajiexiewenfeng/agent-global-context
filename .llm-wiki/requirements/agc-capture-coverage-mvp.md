@@ -93,8 +93,8 @@
 | source | done | confirmed v2 North Star, current Runtime evidence, and 2026-08-13 user decisions | 2026-08-13 |
 | design | done | approved written specification in `docs/superpowers/specs/2026-08-13-agent-global-context-high-coverage-capture-design.md` | 2026-08-13 |
 | plan | done | four dependency-ordered TDD plans with AC-01 through AC-20 traceability | 2026-08-13 |
-| development | in progress | Capture Core, Source Census, Extractor, manual/incremental Runner, inert Host packaging, and content-safe activation diagnosis/digests are implemented on `main`; supervision, latency, release verification, and every real-profile gate remain inactive | 2026-08-20 |
-| testing | in progress | Phase B full suite: `1215 passed`, one intentional duplicate-ZIP warning. Host Task 1 focused: `57 passed`; Host Task 2 focused/boundary: `39 passed`, adjacent: `61 passed`; installed `0.3.0` remains disabled with exactly three MCP tools | 2026-08-20 |
+| development | in progress | Capture Core, Source Census, Extractor, manual/incremental Runner, inert Host packaging, activation digests, and transactional Windows supervision/optional Hook merge are implemented on `main`; latency generation, documentation, release verification, and every real-profile gate remain inactive | 2026-08-20 |
+| testing | in progress | Phase B full suite: `1215 passed`, one intentional duplicate-ZIP warning. Host Task 2 focused/boundary: `39 passed`, adjacent: `61 passed`. Host Task 3 config+installer: `52 passed`; installed `0.3.0` remains disabled with exactly three MCP tools | 2026-08-20 |
 | archive | pending |  | 2026-08-13 |
 
 ## Capture Core Task 6 Evidence

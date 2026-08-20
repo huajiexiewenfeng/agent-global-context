@@ -182,13 +182,13 @@ git commit -m "feat: gate capture activation by route digest"
 
 - Every mutating action creates a unique backup manifest before changing config, Hooks, or scheduled-task state.
 
-- [ ] **Step 1: Add failing host-config transaction tests**
+- [x] **Step 1: Add failing host-config transaction tests**
 
 Use temporary profiles and a fake Task Scheduler adapter to test exact task name/XML/command, no overlap, logon/repetition triggers, start-when-available, stable launcher, quoting, idempotent rerun, pause/disable, digest mismatch, path overlap/junction rejection, and rollback after each injected mutation failure.
 
 Test structural `hooks.json` merge with existing Stop and other event groups. Require existing JSON values and `config.toml` (including unrelated `notify`) to remain byte-equivalent outside AGC-owned changes. Duplicate AGC Hook definitions are rejected or normalized to one. Invalid JSON, managed policy disabling Hooks, or an unknown conflicting AGC command blocks Hook activation.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 ```powershell
 & '.\.venv\Scripts\python.exe' -m pytest `
@@ -196,7 +196,7 @@ Test structural `hooks.json` merge with existing Stop and other event groups. Re
   --basetemp 'C:\tmp\agc-capture-host-red-3'
 ```
 
-- [ ] **Step 3: Implement explicit staged actions**
+- [x] **Step 3: Implement explicit staged actions**
 
 `EnableScanner` verifies the digest, writes the one source binding, sets `enabled=true, mode=scanner_only`, and registers the scheduled task. It performs no immediate scan unless a separate `agc-capture scan` command is explicitly invoked.
 
@@ -214,7 +214,7 @@ Test structural `hooks.json` merge with existing Stop and other event groups. Re
 
 It must not bypass trust. `EnableRunner` requires extractor capability evidence and explicit non-null incremental budget before setting `mode=runner`. `Pause` stops new model calls but keeps Scanner/Ledger/views. `Disable` sets mode off and unregisters new processing, preserving Capture data and read/forget.
 
-- [ ] **Step 4: Verify GREEN and commit**
+- [x] **Step 4: Verify GREEN and commit**
 
 Run the focused tests in both available PowerShell hosts where supported:
 
