@@ -6,6 +6,7 @@ from collections.abc import Sequence
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import shlex
 import sys
 from typing import Any
 
@@ -95,6 +96,16 @@ def _utc_now() -> str:
         .isoformat()
         .replace("+00:00", "Z")
     )
+
+
+def _extractor_command(value: str) -> tuple[str, ...]:
+    try:
+        command = tuple(shlex.split(value, posix=True))
+    except ValueError as error:
+        raise ValueError("capture extractor executable is invalid") from error
+    if not 1 <= len(command) <= 4:
+        raise ValueError("capture extractor executable is invalid")
+    return command
 
 
 def _scan_mapping(report: Any) -> dict[str, Any]:
@@ -292,7 +303,7 @@ def _run_prepare_backfill(paths: MemoryPaths) -> int:
 
         adapters = tuple(CodexSourceAdapter(Path(item)) for item in capture.sources)
         extractor = CodexExtractor(
-            executable=(capture.extractor.executable,),
+            executable=_extractor_command(capture.extractor.executable),
             explicit_model=capture.extractor.model,
         )
         preparation = prepare_backfill(
@@ -369,7 +380,7 @@ def _run_backfill(paths: MemoryPaths, encoded: str) -> int:
         preparation = load_backfill_preparation(paths, digest)
         adapters = tuple(CodexSourceAdapter(Path(item)) for item in capture.sources)
         extractor = CodexExtractor(
-            executable=(capture.extractor.executable,),
+            executable=_extractor_command(capture.extractor.executable),
             explicit_model=capture.extractor.model,
         )
         report = CaptureRunner(

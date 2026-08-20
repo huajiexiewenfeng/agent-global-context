@@ -266,6 +266,11 @@ def test_disabled_capture_core_is_independently_releasable(
     source_task = source_root / "synthetic-task.jsonl"
     source_task_bytes = b'{"synthetic":"source-task-sentinel"}\n'
     source_task.write_bytes(source_task_bytes)
+    # Other contract-test modules can be imported during collection. Clear any
+    # preloaded deferred modules for this test so the guards prove that the
+    # disabled runtime itself does not import them; monkeypatch restores them.
+    for module_name in DEFERRED_RUNTIME_MODULES:
+        monkeypatch.delitem(sys.modules, module_name, raising=False)
     (
         process_calls,
         source_imports,

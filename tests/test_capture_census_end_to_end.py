@@ -389,12 +389,17 @@ def test_planned_semantic_and_host_imports_have_real_meta_path_tripwires(
     monkeypatch.setattr(importlib, "import_module", original_import_module)
 
     for module_name, counter_name in PLANNED_CAPABILITY_IMPORTS.items():
+        already_loaded = sys.modules.pop(module_name, None)
         before = counters[counter_name]
-        with pytest.raises(
-            AssertionError,
-            match=f"census-only boundary imported {module_name}",
-        ):
-            importlib.import_module(module_name)
+        try:
+            with pytest.raises(
+                AssertionError,
+                match=f"census-only boundary imported {module_name}",
+            ):
+                importlib.import_module(module_name)
+        finally:
+            if already_loaded is not None:
+                sys.modules[module_name] = already_loaded
         assert counters[counter_name] == before + 1
 
 
@@ -518,6 +523,12 @@ def test_scanner_only_capture_coverage_end_to_end(tmp_path: Path, monkeypatch):
     locked_path = sessions / "locked.jsonl"
     _write_rollout(locked_path, _records("task-locked", "rollout-locked", (("turn-locked", _utc(10)),)))
 
+    # Collection of later-phase contract tests may preload these modules. Remove
+    # them for this test so the import finder still proves the scanner-only path
+    # does not cross the deferred semantic/host boundary; monkeypatch restores
+    # any preloaded modules after the test.
+    for module_name in PLANNED_CAPABILITY_IMPORTS:
+        monkeypatch.delitem(sys.modules, module_name, raising=False)
     assert not set(PLANNED_CAPABILITY_IMPORTS).intersection(sys.modules)
     counters, source_reads = _install_boundary_guards(
         monkeypatch,
