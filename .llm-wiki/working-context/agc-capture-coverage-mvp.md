@@ -432,3 +432,20 @@ was read or activated, and the overall Capture Coverage MVP is not complete.
 - Fresh GREEN: `tests/test_skill_adapter.py` `16 passed`; combined Skill and
   isolated local-installer verification `57 passed in 162.86s`. No live
   profile, Memory Root, Hook, scheduler, transcript, or model was accessed.
+
+### Host activation integration audit
+
+- Release-preflight review found a real integration defect: the Host
+  configurator accepted its own plan hash while Runtime exposed a different
+  activation digest, and `EnableRunner` checked only a positive budget.
+- Authentic RED: the Runtime activation CLI route was unsupported and Host
+  `Status` could not return the Runtime digest (`2 failed`).
+- `agc-capture activation --root ... --evidence ...` now validates a strict,
+  bounded, content-free `ActivationEvidence`, binds `capture_status` to the
+  requested Memory Root, and returns `activation_digest_for(report)`.
+  `configure-capture-host.ps1` invokes that installed launcher live, requires
+  the same digest for mutations, and requires backfill readiness (including a
+  frozen Census and ready Extractor capability) before Runner enablement.
+- GREEN: exact integration regressions `2 passed`; complete Host/CLI/Activation
+  focused suite `40 passed in 58.61s`. Synthetic roots and a fake scheduler
+  only; no live profile, transcript, Hook, scheduler, or model was accessed.

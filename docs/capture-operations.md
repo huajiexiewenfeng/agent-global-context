@@ -31,24 +31,69 @@ Use a synthetic Memory Root first. Keep a backup and verify `capture_status`
 after every transition.
 
 1. Install Runtime 0.3.0; this still leaves Capture off.
-2. Configure one canonical Codex source root and exclusions. Start with
+2. Audit the active AGC route and write one content-free activation-evidence
+   JSON file. It contains only schema version, route counts, hash-match facts,
+   Recall Gate result, Extractor capability enum, and Hook/Scheduler/Census
+   booleans—never paths, commands, source text, or user content.
+3. Ask the configurator for the Runtime authorization digest, then pass that
+   exact digest to the mutation:
+
+```powershell
+$status = & "$repository\scripts\configure-capture-host.ps1" `
+  -Action Status -CodexHome $codexHome -MemoryRoot $memoryRoot `
+  -InstallRoot $installRoot -ActivationEvidencePath $evidencePath |
+  ConvertFrom-Json
+& "$repository\scripts\configure-capture-host.ps1" `
+  -Action EnableScanner -CodexHome $codexHome -MemoryRoot $memoryRoot `
+  -InstallRoot $installRoot -ActivationEvidencePath $evidencePath `
+  -ExpectedActivationDigest $status.data.activation_digest
+```
+
+   The configurator obtains this digest live from `agc-capture activation`;
+   it is not a separate Host-only approximation. Re-run `Status` after any
+   Runtime, configuration, evidence, Hook, Scheduler, budget, or state change.
+4. Configure one canonical Codex source root and exclusions. Start with
    `scanner_only`, not `runner`.
-3. Run one bounded census. The census window is exactly 7-day and has a hard
+5. Run one bounded census. The census window is exactly 7-day and has a hard
    input ceiling of 100,000 source records.
-4. Review `capture_status`, `capture_overview`, and a small
+6. Review `capture_status`, `capture_overview`, and a small
    `capture_search`. Confirm the source binding, accounting, quarantine, and
    silent-loss counters before enabling background operation.
-5. Enable the Hook only after its exact launcher hash passes the local latency
+7. Enable the Hook only after its exact launcher hash passes the local latency
    report. The Hook is only a dirty hint; Scanner remains authoritative and is
    the fallback when a Hook marker is missing, late, malformed, or unavailable.
-6. Enable `runner` only with an explicit positive budget and verified Provider
-   capability. Provider/model work can have background cost; installation and
+8. Enable `runner` only with an explicit positive budget, frozen Census, and
+   verified Extractor/Provider capability. Provider/model work can have background cost; installation and
    scanner-only census do not promise zero cost.
 
 Relevant configuration controls include `capture.sources`,
 `capture.exclude.task_ids`, source-level `include_subagents`, `paused`, mode,
 Provider selection, and Runner budget. Exclusions are applied before new
 observations are accepted; they are not a provider-side deletion mechanism.
+
+The strict activation-evidence schema is:
+
+```json
+{
+  "schema_version": 1,
+  "effective_v2_skill_count": 1,
+  "legacy_v1_skill_count": 0,
+  "mcp_block_count": 1,
+  "memory_root_count": 1,
+  "runtime_hash_matches": true,
+  "config_hash_matches": true,
+  "recall_gate_passed": true,
+  "extractor_capability": "ready",
+  "hook_enabled": false,
+  "hook_trusted": false,
+  "hook_latency_passed": false,
+  "scheduler_enabled": false,
+  "frozen_census": false
+}
+```
+
+Use `not_assessed`, `invalid`, or `unavailable` instead of `ready` when that is
+the truth. Never mark a fact ready merely to obtain a digest.
 
 ## Read and classify
 

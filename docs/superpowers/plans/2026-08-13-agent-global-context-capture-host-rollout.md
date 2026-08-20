@@ -176,6 +176,7 @@ git commit -m "feat: gate capture activation by route digest"
 -MemoryRoot <path>
 -InstallRoot <path>
 -ExpectedActivationDigest <sha256>
+-ActivationEvidencePath <content-free-json>
 -ScheduleMinutes 15
 -IncrementalTokenBudget <positive-int, EnableRunner only>
 ```

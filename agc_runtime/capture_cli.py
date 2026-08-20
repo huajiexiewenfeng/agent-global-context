@@ -39,7 +39,28 @@ def _failed(action: str, code: str, message: str, *, exit_code: int = 2) -> int:
     )
 
 
-def _parse(arguments: list[str]) -> tuple[str, Path, str | None] | None:
+def _parse(arguments: list[str]) -> tuple[str, Path, Any] | None:
+    if (
+        len(arguments) in {5, 7}
+        and arguments[0] == "activation"
+        and arguments[1] == "--root"
+        and arguments[2]
+        and arguments[3] == "--evidence"
+        and arguments[4]
+        and (
+            len(arguments) == 5
+            or (
+                arguments[5] == "--consent-digest"
+                and len(arguments[6]) == 64
+                and all(item in "0123456789abcdef" for item in arguments[6])
+            )
+        )
+    ):
+        return (
+            "activation",
+            Path(arguments[2]),
+            (Path(arguments[4]), arguments[6] if len(arguments) == 7 else None),
+        )
     if (
         len(arguments) == 5
         and arguments[0] == "run"
@@ -127,6 +148,67 @@ def _utc_now() -> str:
         .replace(microsecond=0)
         .isoformat()
         .replace("+00:00", "Z")
+    )
+
+
+def _activation(
+    paths: MemoryPaths, evidence_path: Path, consent_digest: str | None
+) -> int:
+    from agc_runtime.capture_activation import (
+        ActivationEvidence,
+        activation_digest_for,
+        diagnose_activation,
+    )
+
+    try:
+        if evidence_path.is_symlink() or not evidence_path.is_file():
+            raise ValueError
+        if evidence_path.stat().st_size > 8192:
+            raise ValueError
+
+        def no_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+            result: dict[str, Any] = {}
+            for key, value in pairs:
+                if key in result:
+                    raise ValueError
+                result[key] = value
+            return result
+
+        mapping = json.loads(
+            evidence_path.read_text(encoding="utf-8"),
+            object_pairs_hook=no_duplicates,
+            parse_constant=lambda _value: (_ for _ in ()).throw(ValueError()),
+        )
+        evidence = ActivationEvidence.from_mapping(mapping)
+        status = bind_capture_status(
+            capture_status(paths), evidence_kind="capture_cli_root"
+        )
+        report = diagnose_activation(
+            status, evidence, consent_digest=consent_digest
+        )
+    except (
+        OSError,
+        RuntimeError,
+        UnicodeError,
+        TypeError,
+        ValueError,
+        json.JSONDecodeError,
+    ):
+        return _failed(
+            "activation",
+            "invalid_activation_evidence",
+            "Activation evidence is invalid",
+        )
+    data = report.to_mapping()
+    data["activation_digest"] = activation_digest_for(report)
+    return _emit(
+        ToolResponse(
+            tool=_TOOL,
+            action="activation",
+            status="accepted",
+            data=data,
+        ),
+        exit_code=0,
     )
 
 
@@ -589,6 +671,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     if action == "probe":
         return _probe(paths)
+    if action == "activation":
+        evidence_path, consent_digest = mode
+        return _activation(paths, evidence_path, consent_digest)
     if action == "prepare-backfill":
         return _run_prepare_backfill(paths)
     if action == "backfill":

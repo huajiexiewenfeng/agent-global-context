@@ -15,6 +15,8 @@ param(
 
     [string]$ExpectedActivationDigest,
 
+    [string]$ActivationEvidencePath,
+
     [ValidateRange(1, 1440)]
     [int]$ScheduleMinutes = 15,
 
@@ -160,13 +162,39 @@ $planMaterial = @(
     (Get-Sha256FileOrAbsent $env:AGC_CAPTURE_SCHEDULER_STATE),
     $ScheduleMinutes.ToString([System.Globalization.CultureInfo]::InvariantCulture)
 ) -join "`n"
-$activationDigest = Get-Sha256Text $planMaterial
+$hostStateDigest = Get-Sha256Text $planMaterial
+
+if ([string]::IsNullOrWhiteSpace($ActivationEvidencePath)) {
+    Fail-HostConfig 'activation_evidence_required' 'Content-free activation evidence is required'
+}
+$evidencePath = Get-FullPath $ActivationEvidencePath
+if (-not [System.IO.File]::Exists($evidencePath) -or (Test-ReparseAncestor $evidencePath)) {
+    Fail-HostConfig 'activation_evidence_invalid' 'Activation evidence is invalid'
+}
+try {
+    $activationOutput = @(& $captureLauncher 'activation' '--root' $memoryPath '--evidence' $evidencePath 2>$null)
+    $activationExitCode = $LASTEXITCODE
+    if ($activationExitCode -ne 0 -or $activationOutput.Count -ne 1) { throw 'invalid activation response' }
+    $activationResponse = $activationOutput[0] | ConvertFrom-Json
+    if ($activationResponse.status -ne 'accepted' -or
+        $activationResponse.action -ne 'activation' -or
+        $activationResponse.data.activation_digest -notmatch '^[0-9a-f]{64}$') {
+        throw 'invalid activation response'
+    }
+}
+catch {
+    Fail-HostConfig 'activation_evidence_invalid' 'Activation evidence is invalid'
+}
+$activationDigest = [string]$activationResponse.data.activation_digest
 
 if ($Action -eq 'Status') {
     Write-Envelope -Status 'accepted' -Data ([ordered]@{
         mutation_performed = $false
         task_name = $taskName
         activation_digest = $activationDigest
+        host_state_digest = $hostStateDigest
+        route_assessment = [string]$activationResponse.data.route_assessment
+        readiness = $activationResponse.data.readiness
         schedule_minutes = $ScheduleMinutes
         hook_definition_assessment = if ([System.IO.File]::Exists((Join-Path $codexPath 'hooks.json'))) { 'present' } else { 'absent' }
         scheduler_assessment = 'not_assessed'
@@ -179,6 +207,19 @@ if ([string]::IsNullOrWhiteSpace($ExpectedActivationDigest)) {
 if ($ExpectedActivationDigest -notmatch '^[0-9a-f]{64}$' -or
     -not [string]::Equals($ExpectedActivationDigest, $activationDigest, [System.StringComparison]::Ordinal)) {
     Fail-HostConfig 'activation_digest_mismatch' 'Activation digest does not match current Host state'
+}
+
+if ($activationResponse.data.route_assessment -ne 'ready') {
+    Fail-HostConfig 'activation_route_not_ready' 'Capture route is not ready'
+}
+if ($Action -eq 'EnableScanner' -and $activationResponse.data.evidence.recall_gate_passed -ne $true) {
+    Fail-HostConfig 'recall_gate_required' 'Recall Gate evidence is required'
+}
+if ($Action -eq 'EnableHook' -and $activationResponse.data.readiness.scanner_ready -ne $true) {
+    Fail-HostConfig 'scanner_readiness_required' 'Scanner readiness is required'
+}
+if ($Action -eq 'EnableRunner' -and $activationResponse.data.readiness.backfill_runner_ready -ne $true) {
+    Fail-HostConfig 'extractor_capability_required' 'Extractor capability and frozen Census are required'
 }
 
 function Write-AtomicUtf8 {

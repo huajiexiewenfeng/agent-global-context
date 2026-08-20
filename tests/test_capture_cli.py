@@ -457,3 +457,63 @@ def test_scan_does_not_expose_model_daemon_or_semantic_request_surface(tmp_path:
         assert result.returncode != 0
         assert payload["error"]["code"] == "invalid_invocation"
         assert SENTINEL not in result.stdout
+
+
+def test_activation_cli_uses_exact_runtime_digest_and_rejects_invalid_evidence(
+    tmp_path: Path,
+):
+    from agc_runtime.capture_activation import (
+        ActivationEvidence,
+        activation_digest_for,
+        diagnose_activation,
+    )
+    from agc_runtime.capture_status_service import bind_capture_status, capture_status
+
+    memory_root = tmp_path / "memory"
+    evidence_mapping = {
+        "schema_version": 1,
+        "effective_v2_skill_count": 1,
+        "legacy_v1_skill_count": 0,
+        "mcp_block_count": 1,
+        "memory_root_count": 1,
+        "runtime_hash_matches": True,
+        "config_hash_matches": True,
+        "recall_gate_passed": True,
+        "extractor_capability": "ready",
+        "hook_enabled": False,
+        "hook_trusted": False,
+        "hook_latency_passed": False,
+        "scheduler_enabled": False,
+        "frozen_census": False,
+    }
+    evidence_path = tmp_path / "evidence.json"
+    evidence_path.write_text(json.dumps(evidence_mapping), encoding="utf-8")
+
+    result = _invoke(
+        "activation",
+        "--root",
+        str(memory_root),
+        "--evidence",
+        str(evidence_path),
+    )
+    payload = _payload(result)
+    status = bind_capture_status(
+        capture_status(memory_root), evidence_kind="capture_cli_root"
+    )
+    expected = activation_digest_for(
+        diagnose_activation(status, ActivationEvidence.from_mapping(evidence_mapping))
+    )
+    assert result.returncode == 0
+    assert payload["data"]["activation_digest"] == expected
+
+    evidence_path.write_text('{"private":"must-not-leak"}', encoding="utf-8")
+    invalid = _invoke(
+        "activation",
+        "--root",
+        str(memory_root),
+        "--evidence",
+        str(evidence_path),
+    )
+    assert invalid.returncode != 0
+    assert _payload(invalid)["error"]["code"] == "invalid_activation_evidence"
+    assert "private" not in invalid.stdout

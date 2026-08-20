@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -41,12 +42,43 @@ def _host(tmp_path: Path) -> tuple[Path, Path, Path]:
         FIXTURES / "existing-inline-config.toml", codex_home / "config.toml"
     )
     (install_root / "bin" / "agc-capture.cmd").write_text(
-        "@echo off\r\nexit /b 0\r\n", encoding="utf-8"
+        f'@echo off\r\n"{sys.executable}" -m agc_runtime.capture_cli %*\r\n',
+        encoding="utf-8",
     )
     (install_root / "bin" / "agc-capture-hook.cmd").write_text(
         "@echo off\r\nexit /b 0\r\n", encoding="utf-8"
     )
+    _write_activation_evidence(install_root)
     return codex_home, memory_root, install_root
+
+
+def _write_activation_evidence(
+    install_root: Path, *, extractor_capability: str = "ready"
+) -> Path:
+    path = install_root / "activation-evidence.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "effective_v2_skill_count": 1,
+                "legacy_v1_skill_count": 0,
+                "mcp_block_count": 1,
+                "memory_root_count": 1,
+                "runtime_hash_matches": True,
+                "config_hash_matches": True,
+                "recall_gate_passed": True,
+                "extractor_capability": extractor_capability,
+                "hook_enabled": False,
+                "hook_trusted": False,
+                "hook_latency_passed": False,
+                "scheduler_enabled": True,
+                "frozen_census": True,
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    return path
 
 
 def _invoke(
@@ -56,11 +88,15 @@ def _invoke(
     install_root: Path,
     *extra: str,
     inject_failure: str | None = None,
+    extractor_capability: str = "ready",
 ) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env["AGC_CAPTURE_SCHEDULER_STATE"] = str(install_root / "scheduler-state.json")
     if inject_failure is not None:
         env["AGC_CAPTURE_INJECT_FAILURE"] = inject_failure
+    evidence = _write_activation_evidence(
+        install_root, extractor_capability=extractor_capability
+    )
     return subprocess.run(
         [
             "powershell.exe",
@@ -77,6 +113,8 @@ def _invoke(
             str(memory_root),
             "-InstallRoot",
             str(install_root),
+            "-ActivationEvidencePath",
+            str(evidence),
             *extra,
         ],
         cwd=REPOSITORY_ROOT,
@@ -116,6 +154,62 @@ def test_status_is_content_safe_byte_inert_and_deterministic(tmp_path):
     assert not memory_root.exists()
 
 
+def test_status_uses_runtime_activation_digest_and_runner_requires_extractor(tmp_path):
+    codex_home, memory_root, install_root = _host(tmp_path)
+    status = _invoke("Status", codex_home, memory_root, install_root)
+    payload = json.loads(status.stdout)
+    evidence = install_root / "activation-evidence.json"
+    direct = subprocess.run(
+        [
+            str(install_root / "bin" / "agc-capture.cmd"),
+            "activation",
+            "--root",
+            str(memory_root),
+            "--evidence",
+            str(evidence),
+        ],
+        cwd=REPOSITORY_ROOT,
+        text=True,
+        encoding="utf-8",
+        capture_output=True,
+        check=False,
+    )
+
+    assert direct.returncode == 0, direct.stdout + direct.stderr
+    assert payload["data"]["activation_digest"] == json.loads(direct.stdout)["data"]["activation_digest"]
+
+    enabled = _invoke(
+        "EnableScanner",
+        codex_home,
+        memory_root,
+        install_root,
+        "-ExpectedActivationDigest",
+        payload["data"]["activation_digest"],
+    )
+    assert enabled.returncode == 0, enabled.stdout + enabled.stderr
+    unavailable_digest = _digest(
+        codex_home,
+        memory_root,
+        install_root,
+        extractor_capability="unavailable",
+    )
+    before = _tree(memory_root)
+    runner = _invoke(
+        "EnableRunner",
+        codex_home,
+        memory_root,
+        install_root,
+        "-ExpectedActivationDigest",
+        unavailable_digest,
+        "-IncrementalTokenBudget",
+        "1000",
+        extractor_capability="unavailable",
+    )
+    assert runner.returncode == 2
+    assert json.loads(runner.stdout)["error"]["code"] == "extractor_capability_required"
+    assert _tree(memory_root) == before
+
+
 def test_mutation_without_exact_digest_is_rejected_before_any_write(tmp_path):
     codex_home, memory_root, install_root = _host(tmp_path)
     before = (_tree(codex_home), _tree(install_root), _tree(memory_root))
@@ -151,8 +245,20 @@ def test_status_rejects_overlapping_or_missing_host_paths(tmp_path):
     assert json.loads(missing.stdout)["error"]["code"] == "capture_launcher_missing"
 
 
-def _digest(codex_home: Path, memory_root: Path, install_root: Path) -> str:
-    result = _invoke("Status", codex_home, memory_root, install_root)
+def _digest(
+    codex_home: Path,
+    memory_root: Path,
+    install_root: Path,
+    *,
+    extractor_capability: str = "ready",
+) -> str:
+    result = _invoke(
+        "Status",
+        codex_home,
+        memory_root,
+        install_root,
+        extractor_capability=extractor_capability,
+    )
     assert result.returncode == 0, result.stdout + result.stderr
     return json.loads(result.stdout)["data"]["activation_digest"]
 
