@@ -84,10 +84,14 @@ $repository = (Resolve-Path "D:\src\agent-global-context").Path
 The installer leaves one public `agent-global-context` Skill and registers
 exactly three MCP tools through one server: `agc.read`, `agc.write`, and
 `agc.admin`. It keeps unique backups of replaced active files and is safe to
-rerun.
+rerun. The Capture-capable Runtime release is `0.3.0`; the installer also
+publishes stable local `agc-capture.cmd` and `agc-capture-hook.cmd` launchers
+beside `agc-mcp.cmd`.
 
 The installer does not migrate memory and does not enable Codex task capture
-or backfill. Keep v1 read-only as rollback material until a later explicit,
+or backfill. Its packaged defaults remain `capture.enabled=false` and
+`capture.mode=off`; installing the launchers does not register a Hook or a
+scheduled task. Keep v1 read-only as rollback material until a later explicit,
 verified retirement.
 
 ## Repository Layout

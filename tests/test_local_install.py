@@ -30,7 +30,11 @@ RESULT_KEYS = {
     "memory_root",
     "install_root",
     "mcp_executable",
+    "capture_executable",
+    "capture_hook_executable",
     "launcher",
+    "capture_launcher",
+    "capture_hook_launcher",
     "backup_path",
     "restart_required",
 }
@@ -190,6 +194,21 @@ def test_runtime_upgrade_is_inactive_and_failed_upgrade_preserves_active_venv(
     first_snapshot = _tree_snapshot(first_venv)
     first_config = config.read_bytes()
     assert first_executable.is_file()
+    capture_executable = first_venv / "Scripts" / "agc-capture.exe"
+    capture_hook_executable = first_venv / "Scripts" / "agc-capture-hook.exe"
+    assert capture_executable.is_file()
+    assert capture_hook_executable.is_file()
+    installed_package = first_venv / "Lib" / "site-packages" / "agc_runtime"
+    assert (installed_package / "default_config.yaml").is_file()
+    assert (installed_package / "schemas" / "capture-extractor-v1.schema.json").is_file()
+    installed_default = (installed_package / "default_config.yaml").read_text(
+        encoding="utf-8"
+    )
+    assert "enabled: false" in installed_default
+    assert "mode: off" in installed_default
+    assert not memory.exists()
+    assert b"AgentGlobalContext-Capture" not in first_config
+    assert b"hooks" not in first_config.lower()
     assert first_venv.parent == install / "venvs"
     first_probe = subprocess.run(
         [first_executable, "--version"],
@@ -197,8 +216,7 @@ def test_runtime_upgrade_is_inactive_and_failed_upgrade_preserves_active_venv(
         check=False,
     )
     assert first_probe.returncode == 0
-    assert first_probe.stdout.decode("utf-8", errors="strict").strip() == "0.2.0"
-
+    assert first_probe.stdout.decode("utf-8", errors="strict").strip() == "0.3.0"
     runtime_source = repository / "agc_runtime" / "__init__.py"
     runtime_source.write_bytes(runtime_source.read_bytes() + b"\n# upgrade fixture\n")
     failed_env = {
@@ -235,6 +253,8 @@ def test_runtime_upgrade_is_inactive_and_failed_upgrade_preserves_active_venv(
     assert second is not None
     second_executable = Path(str(second["mcp_executable"]))
     assert second_executable.is_file()
+    assert Path(str(second["capture_executable"])).is_file()
+    assert Path(str(second["capture_hook_executable"])).is_file()
     assert second_executable != first_executable
     assert first_executable.is_file()
     second_probe = subprocess.run(
@@ -243,7 +263,7 @@ def test_runtime_upgrade_is_inactive_and_failed_upgrade_preserves_active_venv(
         check=False,
     )
     assert second_probe.returncode == 0
-    assert second_probe.stdout.decode("utf-8", errors="strict").strip() == "0.2.0"
+    assert second_probe.stdout.decode("utf-8", errors="strict").strip() == "0.3.0"
     assert _tree_snapshot(first_venv) == first_snapshot
     _assert_toml_paths(
         config,
@@ -309,8 +329,16 @@ def test_initial_install_backs_up_alpha_skills_and_registers_valid_toml(
 
     expected_executable = install / "venv" / "Scripts" / "agc-mcp.exe"
     launcher = install / "bin" / "agc-mcp.cmd"
+    capture_executable = install / "venv" / "Scripts" / "agc-capture.exe"
+    capture_hook_executable = install / "venv" / "Scripts" / "agc-capture-hook.exe"
+    capture_launcher = install / "bin" / "agc-capture.cmd"
+    capture_hook_launcher = install / "bin" / "agc-capture-hook.cmd"
     assert result["mcp_executable"] == str(expected_executable.resolve())
+    assert result["capture_executable"] == str(capture_executable.resolve())
+    assert result["capture_hook_executable"] == str(capture_hook_executable.resolve())
     assert result["launcher"] == str(launcher.resolve())
+    assert result["capture_launcher"] == str(capture_launcher.resolve())
+    assert result["capture_hook_launcher"] == str(capture_hook_launcher.resolve())
 
     active_agc = sorted(
         path.name for path in skills.glob("agent-global-context*") if path.is_dir()
@@ -343,6 +371,12 @@ def test_initial_install_backs_up_alpha_skills_and_registers_valid_toml(
 
     launcher_text = _strict_utf8_without_bom(launcher)
     assert launcher_text == f'@"{expected_executable.resolve()}" %*\n'
+    assert _strict_utf8_without_bom(capture_launcher) == (
+        f'@"{capture_executable.resolve()}" %*\n'
+    )
+    assert _strict_utf8_without_bom(capture_hook_launcher) == (
+        f'@"{capture_hook_executable.resolve()}" %*\n'
+    )
     for path in (repository / "skills" / "agent-global-context").rglob("*.md"):
         relative = path.relative_to(repository / "skills" / "agent-global-context")
         assert _strict_utf8_without_bom(skills / "agent-global-context" / relative)
@@ -436,6 +470,9 @@ def test_malformed_markers_fail_before_active_mutation(
     before_skills = _tree_snapshot(skills)
     before_config = config.read_bytes()
     install = tmp_path / "runtime"
+    for name in ("agc-mcp.cmd", "agc-capture.cmd", "agc-capture-hook.cmd"):
+        _write_utf8(install / "bin" / name, f"original {name}\n")
+    before_launchers = _tree_snapshot(install / "bin")
 
     completed, result = _invoke(
         repository,
@@ -450,6 +487,7 @@ def test_malformed_markers_fail_before_active_mutation(
     assert result is None
     assert config.read_bytes() == before_config
     assert _tree_snapshot(skills) == before_skills
+    assert _tree_snapshot(install / "bin") == before_launchers
     assert not (install / "backups").exists()
 
 
@@ -559,6 +597,9 @@ def test_caught_mid_mutation_failure_restores_config_and_all_skills(
     before_skills = _tree_snapshot(skills)
     before_config = config.read_bytes()
     install = tmp_path / "runtime"
+    for name in ("agc-mcp.cmd", "agc-capture.cmd", "agc-capture-hook.cmd"):
+        _write_utf8(install / "bin" / name, f"original {name}\n")
+    before_launchers = _tree_snapshot(install / "bin")
 
     completed, result = _invoke(
         repository,
@@ -574,6 +615,7 @@ def test_caught_mid_mutation_failure_restores_config_and_all_skills(
     assert result is None
     assert config.read_bytes() == before_config
     assert _tree_snapshot(skills) == before_skills
+    assert _tree_snapshot(install / "bin") == before_launchers
     backups = list((install / "backups").iterdir())
     assert len(backups) == 1
     assert _tree_snapshot(backups[0])

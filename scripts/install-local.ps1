@@ -842,6 +842,10 @@ $publicNeedsCopy = $false
 $configChanged = $false
 $launcherChanged = $false
 $launcherExisted = $false
+$captureLauncherChanged = $false
+$captureLauncherExisted = $false
+$captureHookLauncherChanged = $false
+$captureHookLauncherExisted = $false
 $pendingRuntimePath = $null
 
 try {
@@ -933,6 +937,12 @@ try {
     $launcher = [System.IO.Path]::GetFullPath(
         (Join-Path $resolvedInstall "bin\agc-mcp.cmd")
     )
+    $captureLauncher = [System.IO.Path]::GetFullPath(
+        (Join-Path $resolvedInstall "bin\agc-capture.cmd")
+    )
+    $captureHookLauncher = [System.IO.Path]::GetFullPath(
+        (Join-Path $resolvedInstall "bin\agc-capture-hook.cmd")
+    )
 
     foreach ($name in $RetiredSkillNames) {
         if (Test-Path -LiteralPath (Join-Path $resolvedSkills $name)) {
@@ -961,6 +971,12 @@ try {
         $mcpExecutable = [System.IO.Path]::GetFullPath(
             (Join-Path $resolvedInstall "venv\Scripts\agc-mcp.exe")
         )
+        $captureExecutable = [System.IO.Path]::GetFullPath(
+            (Join-Path $resolvedInstall "venv\Scripts\agc-capture.exe")
+        )
+        $captureHookExecutable = [System.IO.Path]::GetFullPath(
+            (Join-Path $resolvedInstall "venv\Scripts\agc-capture-hook.exe")
+        )
     }
     else {
         $deploymentKey = Get-RuntimeDeploymentKey -Repository $resolvedRepository
@@ -968,6 +984,8 @@ try {
         $publishedVenv = Join-Path $venvsRoot $deploymentKey
         $venvPython = Join-Path $publishedVenv "Scripts\python.exe"
         $mcpExecutable = Join-Path $publishedVenv "Scripts\agc-mcp.exe"
+        $captureExecutable = Join-Path $publishedVenv "Scripts\agc-capture.exe"
+        $captureHookExecutable = Join-Path $publishedVenv "Scripts\agc-capture-hook.exe"
         $deploymentMarker = Join-Path $publishedVenv ".agc-deployment-key"
 
         if (Test-Path -LiteralPath $publishedVenv) {
@@ -979,6 +997,8 @@ try {
             if (
                 -not (Test-Path -LiteralPath $venvPython -PathType Leaf) -or
                 -not (Test-Path -LiteralPath $mcpExecutable -PathType Leaf) -or
+                -not (Test-Path -LiteralPath $captureExecutable -PathType Leaf) -or
+                -not (Test-Path -LiteralPath $captureHookExecutable -PathType Leaf) -or
                 -not (Test-Path -LiteralPath $deploymentMarker -PathType Leaf) -or
                 (Read-StrictUtf8 -Path $deploymentMarker -Label "Runtime marker").Trim() `
                     -ne $deploymentKey
@@ -1036,7 +1056,18 @@ try {
             if (-not (Test-Path -LiteralPath $mcpExecutable -PathType Leaf)) {
                 throw "The inactive AGC MCP executable was not found."
             }
-            $validationImports = "import agc_runtime"
+            if (
+                -not (Test-Path -LiteralPath $captureExecutable -PathType Leaf) -or
+                -not (Test-Path -LiteralPath $captureHookExecutable -PathType Leaf)
+            ) {
+                throw "The inactive AGC Capture executables were not found."
+            }
+            $validationImports = (
+                "import agc_runtime; from pathlib import Path; " +
+                "p=Path(agc_runtime.__file__).parent; " +
+                "assert (p/'default_config.yaml').is_file(); " +
+                "assert (p/'schemas'/'capture-extractor-v1.schema.json').is_file()"
+            )
             if ([string]::IsNullOrEmpty($env:AGC_INSTALL_TEST_PIP_NO_DEPS)) {
                 $validationImports += "; import mcp"
             }
@@ -1062,6 +1093,8 @@ try {
     }
 
     $mcpExecutable = [System.IO.Path]::GetFullPath($mcpExecutable)
+    $captureExecutable = [System.IO.Path]::GetFullPath($captureExecutable)
+    $captureHookExecutable = [System.IO.Path]::GetFullPath($captureHookExecutable)
     $codexBlock = New-CodexBlock `
         -Executable $mcpExecutable -Memory $resolvedMemory
     $updatedConfig = Update-CodexConfig `
@@ -1081,10 +1114,37 @@ try {
             -First ([System.IO.File]::ReadAllBytes($launcher)) `
             -Second $launcherBytes)
     )
+    $captureBatchExecutable = $captureExecutable.Replace("%", "%%")
+    $captureLauncherText = "@`"$captureBatchExecutable`" %*`n"
+    $captureLauncherBytes = $WriteUtf8.GetBytes(
+        (Get-NormalizedLf -Text $captureLauncherText)
+    )
+    $captureLauncherExisted = Test-Path -LiteralPath $captureLauncher -PathType Leaf
+    $captureLauncherChanged = -not (
+        $captureLauncherExisted -and
+        (Test-BytesEqual `
+            -First ([System.IO.File]::ReadAllBytes($captureLauncher)) `
+            -Second $captureLauncherBytes)
+    )
+    $captureHookBatchExecutable = $captureHookExecutable.Replace("%", "%%")
+    $captureHookLauncherText = "@`"$captureHookBatchExecutable`" %*`n"
+    $captureHookLauncherBytes = $WriteUtf8.GetBytes(
+        (Get-NormalizedLf -Text $captureHookLauncherText)
+    )
+    $captureHookLauncherExisted = Test-Path `
+        -LiteralPath $captureHookLauncher -PathType Leaf
+    $captureHookLauncherChanged = -not (
+        $captureHookLauncherExisted -and
+        (Test-BytesEqual `
+            -First ([System.IO.File]::ReadAllBytes($captureHookLauncher)) `
+            -Second $captureHookLauncherBytes)
+    )
 
     $activeMutationNeeded = (
         $configChanged -or
         $launcherChanged -or
+        $captureLauncherChanged -or
+        $captureHookLauncherChanged -or
         $publicNeedsCopy -or
         $skillsToMove.Count -gt 0
     )
@@ -1113,6 +1173,25 @@ try {
             [System.IO.File]::Copy(
                 $launcher,
                 (Join-Path $launcherBackupDirectory "agc-mcp.cmd"),
+                $false
+            )
+        }
+        if ($captureLauncherExisted -or $captureHookLauncherExisted) {
+            $launcherBackupDirectory = Join-Path $backupPath "bin"
+            [System.IO.Directory]::CreateDirectory($launcherBackupDirectory) |
+                Out-Null
+        }
+        if ($captureLauncherExisted) {
+            [System.IO.File]::Copy(
+                $captureLauncher,
+                (Join-Path $launcherBackupDirectory "agc-capture.cmd"),
+                $false
+            )
+        }
+        if ($captureHookLauncherExisted) {
+            [System.IO.File]::Copy(
+                $captureHookLauncher,
+                (Join-Path $launcherBackupDirectory "agc-capture-hook.cmd"),
                 $false
             )
         }
@@ -1150,6 +1229,13 @@ try {
         if ($launcherChanged) {
             Write-Utf8NoBom -Path $launcher -Text $launcherText
         }
+        if ($captureLauncherChanged) {
+            Write-Utf8NoBom -Path $captureLauncher -Text $captureLauncherText
+        }
+        if ($captureHookLauncherChanged) {
+            Write-Utf8NoBom `
+                -Path $captureHookLauncher -Text $captureHookLauncherText
+        }
 
         # Test-only boundary exercises the same caught-failure rollback path.
         if ($env:AGC_INSTALL_TEST_FAIL_AFTER -eq "config") {
@@ -1165,7 +1251,11 @@ try {
         memory_root = $resolvedMemory
         install_root = $resolvedInstall
         mcp_executable = $mcpExecutable
+        capture_executable = $captureExecutable
+        capture_hook_executable = $captureHookExecutable
         launcher = $launcher
+        capture_launcher = $captureLauncher
+        capture_hook_launcher = $captureHookLauncher
         backup_path = $backupPath
         restart_required = $true
     }
@@ -1211,6 +1301,38 @@ catch {
                 }
                 elseif (Test-Path -LiteralPath $launcher -PathType Leaf) {
                     Remove-Item -LiteralPath $launcher -Force
+                }
+            }
+            if ($captureLauncherChanged) {
+                $captureLauncherBackup = Join-Path $backupPath "bin\agc-capture.cmd"
+                if ($captureLauncherExisted) {
+                    if (Test-Path -LiteralPath $captureLauncherBackup -PathType Leaf) {
+                        [System.IO.File]::Copy(
+                            $captureLauncherBackup, $captureLauncher, $true
+                        )
+                    }
+                }
+                elseif (Test-Path -LiteralPath $captureLauncher -PathType Leaf) {
+                    Remove-Item -LiteralPath $captureLauncher -Force
+                }
+            }
+            if ($captureHookLauncherChanged) {
+                $captureHookLauncherBackup = Join-Path `
+                    $backupPath "bin\agc-capture-hook.cmd"
+                if ($captureHookLauncherExisted) {
+                    if (
+                        Test-Path -LiteralPath $captureHookLauncherBackup `
+                            -PathType Leaf
+                    ) {
+                        [System.IO.File]::Copy(
+                            $captureHookLauncherBackup,
+                            $captureHookLauncher,
+                            $true
+                        )
+                    }
+                }
+                elseif (Test-Path -LiteralPath $captureHookLauncher -PathType Leaf) {
+                    Remove-Item -LiteralPath $captureHookLauncher -Force
                 }
             }
         }

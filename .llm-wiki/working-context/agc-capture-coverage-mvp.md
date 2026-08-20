@@ -292,3 +292,47 @@ Extractor/Runner, token-budget/model-call proof, real-profile shadow backfill,
 continuous hosting, Hook trust and foreground p95 latency, host route
 activation, and binary downgrade prevention remain pending. No live profile
 was read or activated, and the overall Capture Coverage MVP is not complete.
+
+## 2026-08-20 Fast-track and Host Rollout Resume
+
+- Phase A manual backfill and Phase B incremental Runner are implemented and
+  locally installed. The latest production commit is `99fdcbd`; the synthetic
+  Scanner → manual backfill → incremental cycle → status E2E is committed at
+  `c3fe412`.
+- Fresh Phase B evidence: focused Runner/status/CLI/locking `54 passed`,
+  adjacent Store/transaction/budget/extractor/backup `246 passed` with the
+  intentional duplicate-ZIP warning, and the natural full suite `1215 passed`
+  with that same single warning.
+- Runner scope now includes retry/backoff, explicit retry, source drift
+  quarantine, durable incremental budget, per-root single-concurrency lock,
+  truthful backlog/attempt/status/token diagnostics, and installed synthetic
+  operation. Compatible-version automatic reopen and exact source-byte/peak
+  resource sampling are deferred hardening; they do not authorize activation.
+- Host Rollout Task 1 is now active. It must publish version `0.3.0`, add
+  stable `agc-capture.cmd` and `agc-capture-hook.cmd` launchers to the existing
+  transactional installer, prove upgrade rollback, and remain inert by
+  default. Real Codex profile reads, scheduled-task mutation, Hook mutation,
+  Scanner enablement, and model calls remain excluded until their explicit
+  human gates.
+
+### Host Rollout Task 1 evidence
+
+- Authentic RED: the six exact version/install nodes failed because Runtime
+  and package metadata still reported `0.2.0`, and installer output/launchers
+  exposed only `agc-mcp`.
+- GREEN: version aliases/package metadata now report `0.3.0`; the existing
+  content-addressed installer validates and publishes `agc-mcp`,
+  `agc-capture`, and `agc-capture-hook` executables plus stable `.cmd`
+  launchers. All three launchers participate in unique backup, no-op rerun,
+  and caught-failure rollback.
+- Focused `tests/test_local_install.py tests/test_cli_contract.py
+  tests/test_mcp_server.py`: `57 passed`. The exact real upgrade node and the
+  three-launcher rollback node also pass after the final assertions.
+- A fresh `0.3.0` wheel built and installed in a disposable target. Installed
+  imports report `0.3.0`, packaged default config and extractor schema are
+  present, local executables include `agc`, `agc-mcp`, `agc-capture`, and
+  `agc-capture-hook`, and MCP remains exactly `agc.admin`, `agc.read`, and
+  `agc.write`.
+- Inert boundary: packaged defaults remain `enabled: false` / `mode: off`;
+  installation creates no Memory Root, Hook registration, scheduled task, or
+  model invocation. Activation remains a later digest-gated Host action.

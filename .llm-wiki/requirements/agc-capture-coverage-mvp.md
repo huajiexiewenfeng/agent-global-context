@@ -3,7 +3,7 @@
 ## Summary
 
 - title: AGC Codex Task Revision Capture Coverage MVP
-- status: planned
+- status: in-progress
 - flow_id: agc-capture-coverage-mvp
 - why: AGC can govern and recall formal memories, but it cannot prove that completed Codex task revisions were checked for durable signals. The system currently cannot distinguish no useful signal from capture not running or failing.
 - changes: Add a failure-open side-channel capture plane that discovers every in-scope main-task revision, records a truthful Capture Receipt, stores zero to eight safe classified Collected Observations, and exposes read-only capture coverage views. Capture data never enters ordinary Recall; pre-existing Recall lifecycle and budget defects are corrected as an activation gate.
@@ -93,8 +93,8 @@
 | source | done | confirmed v2 North Star, current Runtime evidence, and 2026-08-13 user decisions | 2026-08-13 |
 | design | done | approved written specification in `docs/superpowers/specs/2026-08-13-agent-global-context-high-coverage-capture-design.md` | 2026-08-13 |
 | plan | done | four dependency-ordered TDD plans with AC-01 through AC-20 traceability | 2026-08-13 |
-| development | in progress | Capture Core and Codex Source Census Tasks 1-6 are implemented on `main`; the Source Census Task 6 E2E required one narrow replay fix for the existing single-slot Source Quarantine, while Extractor/Runner and Host rollout remain unimplemented and inactive | 2026-08-19 |
-| testing | in progress | Source Census Task 6 review focused: `4 passed`; ordered adjacent: `100 passed`; complete suite: `648 passed`, one intentional duplicate-ZIP warning; the unchanged clean installed-wheel `agc-capture` and exactly-three-MCP-tools gate remains `2 passed` | 2026-08-19 |
+| development | in progress | Capture Core, Source Census, Extractor, manual/incremental Runner, and Host Rollout Task 1 are implemented on `main`; Host activation/supervision/latency/release verification and every real-profile gate remain inactive | 2026-08-20 |
+| testing | in progress | Phase B full suite: `1215 passed`, one intentional duplicate-ZIP warning. Host Task 1 focused: `57 passed`; fresh `0.3.0` wheel includes default config/schema, four local entry points, and exactly three MCP tools | 2026-08-20 |
 | archive | pending |  | 2026-08-13 |
 
 ## Capture Core Task 6 Evidence
