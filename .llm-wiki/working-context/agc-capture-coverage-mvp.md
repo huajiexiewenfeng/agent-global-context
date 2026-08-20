@@ -392,3 +392,26 @@ was read or activated, and the overall Capture Coverage MVP is not complete.
 - All tests used temporary CodexHome/Memory/Install roots and a fake scheduler.
   No real profile, real Task Scheduler, Hook, transcript, or model was read or
   changed.
+
+### Host Rollout Task 4 evidence
+
+- Authentic RED: `4 failed` because the installed Hook measurement script did
+  not exist. Boundary, real-process, failure, and path tests all failed at that
+  missing artifact.
+- `scripts/measure-capture-hook.ps1` defaults to exactly 1,000 independent
+  launcher invocations with redirected stdin/stdout/stderr. Any non-zero exit
+  or emitted output counts as failure; Hook payload content is never copied to
+  the report.
+- The atomic JSON report records only counts, min/median/p95/max milliseconds,
+  cold/warm sample counts, failure count, launcher and Runtime SHA-256, Host
+  versions, and pass/fail. Passing requires exactly 1,000 samples, zero
+  failures, and p95 strictly below 100 ms; 99.999 passes and 100.000 fails.
+- Marker cleanup snapshots the synthetic dirty spool and deletes only files
+  introduced by measurement; a pre-existing marker remains byte-identical.
+- Task 3 EnableHook already verifies exact report hash, schema, at least 1,000
+  samples, strict p95, pass=true, and current launcher hash before any backup or
+  Hook mutation. A failed/stale report leaves Scanner-only as the supported
+  state.
+- Fresh GREEN: latency-specific `6 passed`; latency + Capture Hook + Activation
+  `35 passed`. No real Hook, profile, Memory Root, transcript, or scheduler was
+  used.

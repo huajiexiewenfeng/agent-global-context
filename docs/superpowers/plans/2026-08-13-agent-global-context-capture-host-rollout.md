@@ -242,22 +242,22 @@ git commit -m "feat: supervise capture on Windows"
 - Writes a content-free signed/hash-bound JSON report with sample count, min/median/p95/max, failures, launcher hash, Runtime hash, Host versions, and pass/fail.
 - Never persists Hook stdin content; test markers use synthetic IDs and are removed after measurement.
 
-- [ ] **Step 1: Add failing benchmark-script tests**
+- [x] **Step 1: Add failing benchmark-script tests**
 
 Test percentile calculation, exactly 1,000 samples, cold/warm mix, launcher failure, marker cleanup, report binding, path quoting, and p95 boundary values of 99.999 and 100.000 ms. A failed or stale report must make Hook readiness false.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 ```powershell
 & '.\.venv\Scripts\python.exe' -m pytest tests/test_capture_hook_latency_script.py -q `
   --basetemp 'C:\tmp\agc-capture-host-red-4'
 ```
 
-- [ ] **Step 3: Implement AC-05 gate**
+- [x] **Step 3: Implement AC-05 gate**
 
 Run the installed command as the Codex user with representative environment and synthetic Stop metadata. Do not optimize by removing validation or atomic spool safety. If p95 is not strictly below 100 ms, `EnableHook` refuses and leaves Scanner-only operating; this is a supported outcome, not a release failure.
 
-- [ ] **Step 4: Verify GREEN and commit**
+- [x] **Step 4: Verify GREEN and commit**
 
 ```powershell
 & '.\.venv\Scripts\python.exe' -m pytest `
