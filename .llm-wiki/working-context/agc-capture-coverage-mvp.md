@@ -336,3 +336,30 @@ was read or activated, and the overall Capture Coverage MVP is not complete.
 - Inert boundary: packaged defaults remain `enabled: false` / `mode: off`;
   installation creates no Memory Root, Hook registration, scheduled task, or
   model invocation. Activation remains a later digest-gated Host action.
+
+### Host Rollout Task 2 evidence
+
+- Authentic RED: `13 failed` because the planned `capture_activation` module,
+  five readiness levels, authorization digest, paused reason, and status
+  activation projection did not exist.
+- `ActivationEvidence` is a strict content-free schema containing only counts,
+  booleans, enum capability state, and hash-match facts. Unknown/missing fields
+  fail with a fixed error. It contains no absolute paths, commands, source
+  text, or user content.
+- `ActivationReport` separates `installed_inert`, `scanner_ready`,
+  `hook_ready`, `backfill_runner_ready`, and `continuous_runner_ready`.
+  Continuous readiness requires an exact SHA-256 digest over Runtime/config,
+  Memory/Source IDs, extractor boundary, budgets, state, exclusion counts, and
+  Host evidence. Consent state and derived readiness are excluded from the
+  digest, avoiding circular authorization.
+- Ordinary Admin/MCP status does not accept Host evidence injection. It emits
+  the same not-assessed digest projection without importing the deferred Host
+  module; the Scanner-only and disabled byte-inert boundaries remain intact.
+- Fresh GREEN: plan-focused Activation/status/MCP plus disabled/scanner-only
+  boundaries `39 passed`; adjacent Core/Census/manual Runner/status/MCP
+  `61 passed`. The only intermediate failures were missing optional MCP and
+  pywin32 dependencies in the Codex test interpreter; the final run used the
+  installed AGC Python for MCP/pywin32 and appended pytest only.
+- No Codex profile, real Memory Root, Hook definition, scheduled task, model,
+  or source transcript was inspected or changed. Host supervision remains the
+  next synthetic-only task.

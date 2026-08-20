@@ -106,6 +106,15 @@ def test_capture_status_is_diagnosable_while_disabled(tmp_path):
     assert status["scanner"]["assessment"] == "not_assessed"
     assert status["scanner"]["code"] == "capture_disabled"
     assert status["scanner"]["operation_eligible"] is False
+    assert status["activation"]["readiness"] == {
+        "installed_inert": True,
+        "scanner_ready": False,
+        "hook_ready": False,
+        "backfill_runner_ready": False,
+        "continuous_runner_ready": False,
+    }
+    assert status["activation"]["route_assessment"] == "not_assessed"
+    assert len(status["activation_digest"]) == 64
     assert not memory_root.exists()
 
 
@@ -166,6 +175,37 @@ def test_direct_admin_api_has_no_host_evidence_injection_surface(tmp_path):
     assert tuple(inspect.signature(capture_status).parameters) == ("value",)
     assert not hasattr(capture_status_service, "HostBindingEvidence")
     assert not hasattr(admin_service, "make_host_bound_admin_dispatch")
+
+
+def test_ac_14_pause_exclusions_and_scanner_only_are_diagnosable_and_recoverable(
+    tmp_path,
+):
+    paths, _source_root = _configured_status_root(tmp_path)
+    config_path = paths.root / "config.yaml"
+    original = config_path.read_text(encoding="utf-8")
+    configured = original.replace(
+        "task_ids: []", "task_ids:\n      - task-excluded", 1
+    ).replace(
+        "project_ids: []", "project_ids:\n      - project-excluded", 1
+    )
+    config_path.write_text(configured, encoding="utf-8")
+
+    active = capture_status(paths)
+    paused_text = configured.replace("paused: false", "paused: true", 1)
+    config_path.write_text(paused_text, encoding="utf-8")
+    paused = capture_status(paths)
+    config_path.write_text(configured, encoding="utf-8")
+    resumed = capture_status(paths)
+
+    assert active["state"]["scanner_only"] is True
+    assert active["scanner"]["exclusions"] == {
+        "task_id_count": 1,
+        "project_id_count": 1,
+        "project_id_assessment": "not_assessed",
+    }
+    assert "capture_paused" in paused["activation_reasons"]
+    assert paused["activation_digest"] != active["activation_digest"]
+    assert resumed["activation_digest"] == active["activation_digest"]
 
 
 def test_capture_status_reports_truthful_durable_scanner_metrics_without_paths(

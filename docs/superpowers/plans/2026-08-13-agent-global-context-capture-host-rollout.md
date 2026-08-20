@@ -51,7 +51,7 @@
 - Packages the default config and extractor schema.
 - Sets the Capture-capable release version to `0.3.0` only after all prior plan suites pass.
 
-- [ ] **Step 1: Add failing inert-install tests**
+- [x] **Step 1: Add failing inert-install tests**
 
 Extend the install harness to assert a fresh install and a 0.2.0 upgrade:
 
@@ -67,7 +67,7 @@ existing notify/config outside managed blocks byte-identical
 
 Test missing/invalid Capture package assets, upgrade failure rollback, percent/non-ASCII paths, and launcher operation from the final content-addressed venv.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 ```powershell
 & '.\.venv\Scripts\python.exe' -m pytest `
@@ -75,13 +75,13 @@ Test missing/invalid Capture package assets, upgrade failure rollback, percent/n
   --basetemp 'C:\tmp\agc-capture-host-red-1'
 ```
 
-- [ ] **Step 3: Extend the transactional installer**
+- [x] **Step 3: Extend the transactional installer**
 
 Reuse its path validation, preflight, unique backups, content-addressed venv, stable launcher swap, and rollback. Install package assets and launchers only. Do not accept an installer flag that silently enables Capture; activation belongs to the separate configurator and requires a digest.
 
 Update documented version expectations to 0.3.0 in the same commit. Keep exactly three MCP tools; new executables are local operations, not MCP tools.
 
-- [ ] **Step 4: Verify GREEN and commit**
+- [x] **Step 4: Verify GREEN and commit**
 
 ```powershell
 & '.\.venv\Scripts\python.exe' -m pytest `
@@ -109,7 +109,7 @@ git commit -m "feat: package capture disabled by default"
 - `capture_status` reports exactly one effective v2 Skill, installed Runtime hash/version, Memory Root ID, configured Source Root IDs, config source, extractor/provider/model boundary, Hook/Scheduler/Runner state, budgets, exclusions, Recall Gate, conflicts, and readiness.
 - Absolute source paths stay local to the host configurator and are not returned through MCP.
 
-- [ ] **Step 1: Add failing AC-01/14 tests**
+- [x] **Step 1: Add failing AC-01/14 tests**
 
 Create exact nodes:
 
@@ -120,7 +120,7 @@ tests/test_capture_status.py::test_ac_14_pause_exclusions_and_scanner_only_are_d
 
 Cover disabled, scanner-only, runner, paused, missing source, invalid extractor, Recall Gate failure, project-level v1 plus user-level v2, multiple MCP blocks, multiple Memory Roots, stale binary/config hash, task/project exclusions, and digest change after any relevant field changes.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 ```powershell
 & '.\.venv\Scripts\python.exe' -m pytest `
@@ -128,7 +128,7 @@ Cover disabled, scanner-only, runner, paused, missing source, invalid extractor,
   --basetemp 'C:\tmp\agc-capture-host-red-2'
 ```
 
-- [ ] **Step 3: Implement fail-closed readiness**
+- [x] **Step 3: Implement fail-closed readiness**
 
 Separate readiness levels:
 
@@ -144,7 +144,7 @@ continuous_runner_ready
 
 Route conflicts are diagnostics only; do not delete project Skills or rewrite unknown config to make readiness pass.
 
-- [ ] **Step 4: Verify GREEN and commit**
+- [x] **Step 4: Verify GREEN and commit**
 
 ```powershell
 & '.\.venv\Scripts\python.exe' -m pytest `

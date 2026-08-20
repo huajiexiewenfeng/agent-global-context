@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import copy
+import json
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +21,95 @@ def _paths(value: MemoryPaths | Path) -> MemoryPaths:
 
 def _fingerprint(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _runtime_fingerprint() -> str:
+    return hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+
+
+def _attach_activation(status: dict[str, Any]) -> dict[str, Any]:
+    # Ordinary status must remain byte-inert and may not import the Host
+    # activation capability. This is the exact not-assessed projection of the
+    # host module's authorization payload.
+    evidence = {
+        "config_hash_matches": None,
+        "effective_v2_skill_count": None,
+        "extractor_capability": "not_assessed",
+        "frozen_census": None,
+        "hook_enabled": None,
+        "hook_latency_passed": None,
+        "hook_trusted": None,
+        "legacy_v1_skill_count": None,
+        "mcp_block_count": None,
+        "memory_root_count": None,
+        "recall_gate_passed": None,
+        "runtime_hash_matches": None,
+        "scheduler_enabled": None,
+        "schema_version": 1,
+    }
+    exclusions = status["scanner"]["exclusions"]
+    authorization = {
+        "schema_version": 1,
+        "runtime": dict(status["runtime"]),
+        "config_source": dict(status["config_source"]),
+        "memory_root_id": status["memory_root"]["fingerprint"],
+        "source_root_ids": sorted(status["source_roots"]["ids"]),
+        "extractor_boundary": dict(status["extractor_boundary"]),
+        "budgets": dict(status["budgets"]),
+        "state": dict(status["state"]),
+        "exclusions": {
+            "task_id_count": exclusions["task_id_count"],
+            "project_id_count": exclusions["project_id_count"],
+        },
+        "host_evidence": evidence,
+    }
+    digest = hashlib.sha256(
+        json.dumps(
+            authorization,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    state = status["state"]
+    installed_inert = (
+        status["runtime"]["version"] == "0.3.0"
+        and state["enabled"] is False
+        and state["mode"] == "off"
+        and state["paused"] is False
+    )
+    reasons = ["route_not_assessed"]
+    if not state["enabled"]:
+        reasons.append("capture_disabled")
+    if state["mode"] == "off":
+        reasons.append("capture_mode_off")
+    if state["paused"]:
+        reasons.append("capture_paused")
+    if status["source_roots"]["configured_count"] == 0:
+        reasons.append("source_roots_unavailable")
+    if status["memory_root"]["assessment"] != "verified":
+        reasons.append("memory_root_binding_not_assessed")
+    reasons.extend(("recall_gate_not_passed", "extractor_capability_not_assessed"))
+    status["activation"] = {
+        "schema_version": 1,
+        "route_assessment": "not_assessed",
+        "conflicts": [],
+        "readiness": {
+            "installed_inert": installed_inert,
+            "scanner_ready": False,
+            "hook_ready": False,
+            "backfill_runner_ready": False,
+            "continuous_runner_ready": False,
+        },
+        "reasons": reasons,
+        "consent_digest_matches": False,
+        "evidence": evidence,
+    }
+    status["activation_digest"] = digest
+    status["activation_ready"] = False
+    status["activation_reasons"] = reasons
+    status["route"] = {"assessment": "not_assessed", "conflicts": []}
+    return status
 
 
 def _scanner_reasons(capture: Any) -> list[str]:
@@ -313,11 +403,6 @@ def bind_capture_status(status: dict[str, Any], *, evidence_kind: str) -> dict[s
         "matches_host_binding": True,
         "evidence": {"kind": evidence_kind},
     }
-    bound["activation_reasons"] = [
-        item
-        for item in bound["activation_reasons"]
-        if item != "memory_root_binding_not_assessed"
-    ]
     scanner = bound["scanner"]
     scanner["operation_reasons"] = [
         item
@@ -325,7 +410,7 @@ def bind_capture_status(status: dict[str, Any], *, evidence_kind: str) -> dict[s
         if item != "memory_root_binding_not_assessed"
     ]
     scanner["operation_eligible"] = not scanner["operation_reasons"]
-    return bound
+    return _attach_activation(bound)
 
 
 def capture_status(value: MemoryPaths | Path) -> dict[str, Any]:
@@ -336,15 +421,6 @@ def capture_status(value: MemoryPaths | Path) -> dict[str, Any]:
     config = load_runtime_config(paths)
     capture = config.capture
     memory_fingerprint = root_fingerprint(paths)
-    reasons: list[str] = []
-    if not capture.enabled:
-        reasons.append("capture_disabled")
-    if capture.mode == "off":
-        reasons.append("capture_mode_off")
-    if not capture.sources:
-        reasons.append("source_roots_unavailable")
-    reasons.extend(("extractor_capability_not_assessed", "route_not_assessed"))
-    reasons.append("memory_root_binding_not_assessed")
     bindings: tuple[Any, ...] = ()
     source_ids: list[str] = []
     if capture.enabled:
@@ -366,12 +442,13 @@ def capture_status(value: MemoryPaths | Path) -> dict[str, Any]:
         runner = _not_assessed_runner(capture)
     else:
         scanner, runner = _scanner_status(paths, capture, bindings)
-    return {
+    status = {
+        "schema_version": 2,
         "config_source": {
             "kind": "memory_root_config" if config_exists else "runtime_default",
             "sha256": _fingerprint(config_text),
         },
-        "runtime": {"version": __version__},
+        "runtime": {"version": __version__, "sha256": _runtime_fingerprint()},
         "memory_root": {
             "fingerprint": memory_fingerprint,
             "assessment": "not_assessed",
@@ -405,9 +482,8 @@ def capture_status(value: MemoryPaths | Path) -> dict[str, Any]:
         "cursor_key": CaptureStore(paths).cursor_key_status(),
         "scanner": scanner,
         "runner": runner,
-        "activation_ready": False,
-        "activation_reasons": reasons,
     }
+    return _attach_activation(status)
 
 
 __all__ = ["bind_capture_status", "capture_status"]
