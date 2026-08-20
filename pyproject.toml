@@ -29,7 +29,7 @@ agc-capture = "agc_runtime.capture_cli:main"
 include = ["agc_runtime*"]
 
 [tool.setuptools.package-data]
-agc_runtime = ["default_config.yaml"]
+agc_runtime = ["default_config.yaml", "UNICODE-LICENSE.txt"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

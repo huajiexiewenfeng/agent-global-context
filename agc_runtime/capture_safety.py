@@ -7,7 +7,12 @@ import unicodedata
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping, TYPE_CHECKING
 
-from agc_runtime.capture_capsule import _canonical_sensitive_text
+from agc_runtime.capture_capsule import (
+    _confusable_skeleton,
+    _contains_mixed_script_atom,
+    _security_skeleton,
+    _sensitive_candidates,
+)
 
 if TYPE_CHECKING:
     from agc_runtime.capture_capsule import CapsulePolicy, TaskCapsule
@@ -93,10 +98,14 @@ _CONNECTION = re.compile(
     r"[^\s/:@]+:[^\s@]+@[^\s]+"
 )
 _KNOWN_TOKEN = re.compile(
-    r"\b(?:sk-[A-Za-z0-9_-]{10,}|ghp_[A-Za-z0-9]{10,}|github_pat_[A-Za-z0-9_]{10,}|"
-    r"AKIA[A-Z0-9]{12,}|AIza[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{10,})\b"
+    r"\b(?:sk-[A-Za-z0-9_-]{10,}|ghp_[A-Za-z0-9_]{10,}|github_pat_[A-Za-z0-9_]{10,}|"
+    r"AKIA[A-Z0-9]{12,}|AIza[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{10,})\b",
+    re.IGNORECASE,
 )
-_JWT = re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{4,}\b")
+_JWT = re.compile(
+    r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{4,}\b",
+    re.IGNORECASE,
+)
 _FENCED = re.compile(r"```.*?```", re.DOTALL)
 _CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _HYPOTHETICAL = re.compile(
@@ -119,7 +128,8 @@ _PROJECT_FACT = re.compile(
     r"(?i)^\s*(?:the\s+)?(?:parser|module|class|function|service|endpoint|database|repository|file|test|build)\b"
 )
 _MULTI_CLAIM = re.compile(
-    r"[,/:;\n，：；、\u2013\u2014]|(?i:\b(?:and|also|plus|but)\b)|(?:以及|并且|而且|和)"
+    r"[,/:;\n，：；、\u2013\u2014]|"
+    r"(?i:\b(?:and|or|also|plus|but|while|whereas|although)\b)|(?:以及|并且|而且|或者|和)"
 )
 _LOG_LINE = re.compile(
     r"(?i)^\s*(?:\d{4}-\d{2}-\d{2}[T ][0-9:.+Z-]+\s+)?"
@@ -145,29 +155,18 @@ _JSON_MAPPING_PAYLOAD = re.compile(
     r"(?:\{[^{}\r\n]{0,400}:[^{}\r\n]{0,400}\}|[\"'][^\"'\r\n]{1,120}[\"']\s*:)"
 )
 _ARRAY_PAYLOAD = re.compile(r"\[[^\[\]\r\n]{0,400}(?:,|:|[\"'])[^\[\]\r\n]{0,400}\]")
-_STRUCTURAL_CHARACTER = re.compile(r"[{}\[\]`~@=\\|<>]")
+_STRUCTURAL_CHARACTER = re.compile(r"[(){}\[\]`~@=\\|<>]")
 _CODE_KEYWORD = re.compile(
-    r"(?i)\b(?:lambda|await|async|import|from|def|class|yield|return|exec|eval)\b"
+    r"(?i)\b(?:lambda|await|import|from|def|class|yield|return|exec|eval)\b"
+)
+_PLAIN_COMMAND_SHAPE = re.compile(
+    r"(?i)\bpython(?:3(?:\.\d+)?)?\s+[A-Za-z0-9_./-]+\.py\b"
 )
 _QUOTED_ASSERTION = re.compile(
     r"(?i)(?:^\s*>|\baccording\s+to\b|"
     r"\b(?:said|says|reported?|reports?|claimed|claims|quoted?)\b|"
     r"[\"“”].*\b(?:i|user)\b)"
 )
-_NEGATION = re.compile(
-    r"(?i)\b(?:no|not|never|cannot|can't|don't|doesn't|didn't|isn't|aren't|wasn't|"
-    r"weren't|won't|wouldn't|couldn't|shouldn't|do not|does not|did not|must not)\b|"
-    r"(?:不|没有|从不|不得)"
-)
-_DOWN_TONER = re.compile(r"(?i)\b(?:hardly|hardly ever|rarely|seldom|scarcely|barely)\b|(?:很少|几乎不)")
-_WORD = re.compile(r"[A-Za-z0-9_]{3,}|[\u3400-\u9fff]{2,}")
-_STOP_WORDS = frozenset(
-    {
-        "the", "user", "and", "for", "with", "that", "this", "from", "has", "have",
-        "prefer", "prefers", "may",
-    }
-)
-
 def _safe_error() -> ValueError:
     return ValueError("capture_safety_contract_invalid")
 
@@ -198,19 +197,12 @@ def _normalize_text(value: str) -> str:
 
 
 def _scrub_known_secrets(text: str, labels: tuple[str, ...]) -> tuple[str, int]:
-    canonical_text = _canonical_sensitive_text(text)
-    if labels and any(label in canonical_text for label in labels):
-        return "[REDACTED]", 1
-    count = 0
-
-    def replace(pattern: re.Pattern[str], value: str) -> str:
-        nonlocal count
-        value, replacements = pattern.subn("[REDACTED]", value)
-        count += replacements
-        return value
-
-    cleaned = text
-    for pattern in (
+    security_view = _confusable_skeleton(text)
+    label_views = _sensitive_candidates(text)
+    pattern_views = tuple(
+        dict.fromkeys((security_view, _security_skeleton(text), *label_views))
+    )
+    patterns = (
         _PARTIAL_PRIVATE_KEY,
         _PRIVATE_KEY,
         _YAML_SECRET_BLOCK,
@@ -221,7 +213,25 @@ def _scrub_known_secrets(text: str, labels: tuple[str, ...]) -> tuple[str, int]:
         _SECRET_ASSIGNMENT,
         _KNOWN_TOKEN,
         _JWT,
+    )
+    if (
+        labels and any(label in view for label in labels for view in label_views)
+    ) or any(
+        pattern.search(view) is not None
+        for pattern in patterns
+        for view in pattern_views
     ):
+        return "[REDACTED]", 1
+    count = 0
+
+    def replace(pattern: re.Pattern[str], value: str) -> str:
+        nonlocal count
+        value, replacements = pattern.subn("[REDACTED]", value)
+        count += replacements
+        return value
+
+    cleaned = text
+    for pattern in patterns:
         cleaned = replace(pattern, cleaned)
     return cleaned, count
 
@@ -229,8 +239,11 @@ def _scrub_known_secrets(text: str, labels: tuple[str, ...]) -> tuple[str, int]:
 def _contains_sensitive_label(text: str, labels: tuple[str, ...]) -> bool:
     if not labels:
         return False
-    canonical_text = _canonical_sensitive_text(text)
-    return any(label in canonical_text for label in labels)
+    return any(
+        label in view
+        for label in labels
+        for view in _sensitive_candidates(text)
+    )
 
 
 _PLAIN_PUNCTUATION = frozenset(".,!?:;/'\"()-_，。！？：；、–—")
@@ -241,6 +254,7 @@ def _is_plain_language_unit(text: str) -> bool:
         not text
         or _STRUCTURAL_CHARACTER.search(text)
         or _CODE_KEYWORD.search(text)
+        or _PLAIN_COMMAND_SHAPE.search(text)
         or _CODE_CALL.search(text)
         or _INLINE_ASSIGNMENT.search(text)
     ):
@@ -253,7 +267,11 @@ def _is_plain_language_unit(text: str) -> bool:
     )
 
 
-def _strip_prohibited_content(text: str) -> tuple[str, bool]:
+def _strip_prohibited_content(
+    text: str,
+    *,
+    enforce_assistant_allowlist: bool = True,
+) -> tuple[str, bool]:
     if (
         re.search(r"(?m)^\s*(?:diff --git|@@ |\*\*\* (?:Begin|End) Patch)", text)
         or "Traceback (most recent call last):" in text
@@ -264,6 +282,10 @@ def _strip_prohibited_content(text: str) -> tuple[str, bool]:
         or _CODE_CALL.search(text)
         or _INLINE_ASSIGNMENT.search(text)
         or not _is_plain_language_unit(text)
+        or (
+            enforce_assistant_allowlist
+            and not _assistant_prefixed_text_is_safe(text)
+        )
     ):
         return "", True
     source_lines = text.split("\n")
@@ -409,152 +431,55 @@ def _record_matches_turn(record: Mapping[str, Any], revision_id: str) -> bool:
     return bool(candidates) and all(candidate == revision_id for candidate in candidates)
 
 
-_USER_DECLARATIVE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
-    (
-        "preference",
-        re.compile(
-            r"(?i)^(?:(?:i|we)\s+(?:(?:do\s+not|don't|never|hardly(?:\s+ever)?|rarely|seldom)\s+)?prefer\b|"
-            r"(?:my|our)\s+(?:preference|priority)\s+(?:is|remains)\b)"
-        ),
-    ),
-    (
-        "avoidance",
-        re.compile(r"(?i)^(?:i|we)\s+(?:(?:hardly(?:\s+ever)?|rarely|seldom)\s+)?avoid\b"),
-    ),
-    (
-        "goal",
-        re.compile(
-            r"(?i)^(?:(?:i|we)\s+(?:aim|plan|intend|want)\s+to\b|"
-            r"(?:my|our)\s+(?:long[- ]term\s+)?goal\s+(?:is|remains)\b)"
-        ),
-    ),
-    (
-        "constraint",
-        re.compile(
-            r"(?i)^(?:(?:i|we)\s+(?:must(?:\s+not)?|cannot|can't|need\s+to|require)\b|"
-            r"(?:my|our)\s+constraint\s+(?:is|requires)\b)"
-        ),
-    ),
-    (
-        "ability",
-        re.compile(
-            r"(?i)^(?:(?:i\s+(?:can\s+reliably|am\s+able\s+to)|"
-            r"we\s+(?:can\s+reliably|are\s+able\s+to))\b|"
-            r"(?:my|our)\s+ability\s+(?:is|allows)\b)"
-        ),
-    ),
-    (
-        "method",
-        re.compile(
-            r"(?i)^(?:i|we)\s+(?:use|follow|reuse)\b.{0,160}\b"
-            r"(?:method|workflow|process|practice|approach)\b"
-        ),
-    ),
-    (
-        "trajectory",
-        re.compile(
-            r"(?i)^(?:(?:i|we)\s+(?:learned\s+to|have\s+learned\s+to|"
-            r"am\s+learning\s+to|are\s+learning\s+to|acquired\b.{0,80}\bskill)\b|"
-            r"(?:my|our)\s+(?:long[- ]term\s+)?(?:research\s+direction|trajectory|"
-            r"learning\s+direction)\b)"
-        ),
-    ),
-    (
-        "principle",
-        re.compile(r"(?i)^(?:my|our)\s+principle\s+(?:is|remains)\b"),
-    ),
-    (
-        "identity",
-        re.compile(r"(?i)^(?:i|we)\s+identify\s+as\b|^(?:my|our)\s+background\s+is\b"),
-    ),
-)
-
-_STATEMENT_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
-    (
-        "preference",
-        re.compile(
-            r"(?i)^the\s+user\s+(?:(?:does\s+not|never|hardly(?:\s+ever)?|rarely|seldom)\s+)?prefers\b|"
-            r"^the\s+user's\s+(?:preference|priority)\s+(?:is|remains)\b"
-        ),
-    ),
-    ("avoidance", re.compile(r"(?i)^the\s+user\s+(?:(?:hardly(?:\s+ever)?|rarely|seldom)\s+)?avoids\b")),
-    (
-        "goal",
-        re.compile(
-            r"(?i)^the\s+user\s+(?:aims|plans|intends|wants)\s+to\b|"
-            r"^the\s+user's\s+(?:long[- ]term\s+)?goal\s+(?:is|remains)\b"
-        ),
-    ),
-    (
-        "constraint",
-        re.compile(
-            r"(?i)^the\s+user\s+(?:must(?:\s+not)?|cannot|can't|needs\s+to|requires)\b|"
-            r"^the\s+user's\s+constraint\s+(?:is|requires)\b"
-        ),
-    ),
-    (
-        "ability",
-        re.compile(
-            r"(?i)^the\s+user\s+(?:can\s+reliably|is\s+able\s+to|"
-            r"demonstrated\s+ability\s+to)\b|^the\s+user's\s+ability\s+(?:is|allows)\b"
-        ),
-    ),
-    (
-        "method",
-        re.compile(
-            r"(?i)^the\s+user\s+(?:uses|follows|reuses)\b.{0,160}\b"
-            r"(?:method|workflow|process|practice|approach)\b"
-        ),
-    ),
-    (
-        "trajectory",
-        re.compile(
-            r"(?i)^the\s+user\s+(?:learned\s+to|has\s+learned\s+to|"
-            r"is\s+learning\s+to|acquired\b.{0,80}\bskill)\b|"
-            r"^the\s+user's\s+(?:long[- ]term\s+)?(?:research\s+direction|trajectory|"
-            r"learning\s+direction)\b"
-        ),
-    ),
-    ("principle", re.compile(r"(?i)^the\s+user's\s+principle\s+(?:is|remains)\b")),
-    (
-        "identity",
-        re.compile(
-            r"(?i)^the\s+user\s+identifies\s+as\b|^the\s+user's\s+background\s+is\b"
-        ),
-    ),
-)
-
-_YOU_STATEMENT_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
-    ("preference", re.compile(r"(?i)^you\s+(?:(?:do\s+not|never|hardly(?:\s+ever)?|rarely|seldom)\s+)?prefer\b")),
-    ("avoidance", re.compile(r"(?i)^you\s+(?:(?:hardly(?:\s+ever)?|rarely|seldom)\s+)?avoid\b")),
-    ("goal", re.compile(r"(?i)^you\s+(?:aim|plan|intend|want)\s+to\b")),
-    ("constraint", re.compile(r"(?i)^you\s+(?:must(?:\s+not)?|cannot|can't|need\s+to|require)\b")),
-    ("ability", re.compile(r"(?i)^you\s+(?:can\s+reliably|are\s+able\s+to|demonstrated\s+ability\s+to)\b")),
-    (
-        "method",
-        re.compile(
-            r"(?i)^you\s+(?:use|follow|reuse)\b.{0,160}\b"
-            r"(?:method|workflow|process|practice|approach)\b"
-        ),
-    ),
-    (
-        "trajectory",
-        re.compile(
-            r"(?i)^you\s+(?:learned\s+to|have\s+learned\s+to|are\s+learning\s+to|"
-            r"acquired\b.{0,80}\bskill)\b"
-        ),
-    ),
-    ("identity", re.compile(r"(?i)^you\s+identify\s+as\b")),
-)
-
 _ASSISTANT_PREFIX = re.compile(
     r"(?i)^\s*(?P<prefix>decision|result|constraint|method|next(?:\s+step)?)\s*:\s*(?P<body>\S.*)$"
 )
+_SIMPLE_ASSISTANT_RESULT = re.compile(
+    r"(?i)^(?:tests? pass(?:ed)?|verification (?:passes|passed)|"
+    r"build (?:passes|passed)|the safe hash is stable)$"
+)
+
+
+def _assistant_body_is_safe(prefix: str, body: str) -> bool:
+    canonical_prefix = _security_skeleton(prefix)
+    if canonical_prefix.startswith("next"):
+        canonical_prefix = "next"
+    complete = f"{prefix}: {body}"
+    if _assistant_user_proposition(complete) is not None:
+        return True
+    result_body = _normalize_text(body).rstrip(".!?。！？").strip()
+    if canonical_prefix == "result":
+        return _SIMPLE_ASSISTANT_RESULT.fullmatch(_security_skeleton(result_body)) is not None
+    allowed_actions = _ASSISTANT_PREFIX_ACTIONS.get(canonical_prefix)
+    if allowed_actions is None:
+        return False
+    tokens = result_body.split(" ")
+    return _action_phrase_skeleton(
+        tokens,
+        allowed_actions=allowed_actions,
+        allow_in_phrase=canonical_prefix == "constraint",
+    ) is not None
+
+
+def _assistant_prefixed_text_is_safe(text: str) -> bool:
+    for raw_unit in re.split(r"\n+|(?<=[.!?。！？])\s+", text):
+        unit = _normalize_text(raw_unit)
+        if not unit:
+            continue
+        prefixed = _ASSISTANT_PREFIX.fullmatch(unit)
+        if prefixed is not None and not _assistant_body_is_safe(
+            prefixed.group("prefix"), prefixed.group("body")
+        ):
+            return False
+    return True
 
 
 def _one_plain_clause(text: str, *, subject_pattern: re.Pattern[str]) -> str | None:
     normalized = _normalize_text(text)
-    if not _is_plain_language_unit(normalized) or _MULTI_CLAIM.search(normalized):
+    if (
+        not _is_plain_language_unit(normalized)
+        or _MULTI_CLAIM.search(normalized)
+    ):
         return None
     stripped = normalized.rstrip()
     if stripped.endswith((".", "。")):
@@ -578,45 +503,295 @@ _USER_EVIDENCE_SUBJECT = re.compile(r"(?i)^(?:i|my|we|our)\b\s*")
 _PERSISTED_USER_SUBJECT = re.compile(r"(?i)^(?:the\s+user|the\s+user's|the\s+user’s)\b\s*")
 _ASSISTANT_USER_SUBJECT = re.compile(r"(?i)^(?:you|the\s+user|the\s+user's|the\s+user’s)\b\s*")
 
+_PatternSpec = tuple[str, str, re.Pattern[str]]
+_Proposition = tuple[str, str, str]
+
+_USER_PROPOSITION_PATTERNS: tuple[_PatternSpec, ...] = (
+    ("preference", "negative", re.compile(r"(?i)^(?:i|we)\s+(?:do\s+not|don't)\s+prefer\s+(?P<object>.+)$")),
+    ("preference", "negative", re.compile(r"(?i)^(?:i|we)\s+never\s+prefer\s+(?P<object>.+)$")),
+    ("preference", "down_toned", re.compile(r"(?i)^(?:i|we)\s+(?:hardly(?:\s+ever)?|rarely|seldom)\s+prefer\s+(?P<object>.+)$")),
+    ("preference", "positive", re.compile(r"(?i)^(?:i|we)\s+prefer\s+(?P<object>.+)$")),
+    ("preference", "positive", re.compile(r"(?i)^(?:my|our)\s+(?:preference|priority)\s+(?:is|remains)\s+(?P<object>.+)$")),
+    ("avoidance", "down_toned", re.compile(r"(?i)^(?:i|we)\s+(?:hardly(?:\s+ever)?|rarely|seldom)\s+avoid\s+(?P<object>.+)$")),
+    ("avoidance", "positive", re.compile(r"(?i)^(?:i|we)\s+avoid\s+(?P<object>.+)$")),
+    ("goal", "positive", re.compile(r"(?i)^(?:i|we)\s+(?:aim|plan|intend|want)\s+to\s+(?P<object>.+)$")),
+    ("goal", "positive", re.compile(r"(?i)^(?:my|our)\s+(?:long[- ]term\s+)?goal\s+(?:is|remains)\s+to\s+(?P<object>.+)$")),
+    ("constraint", "negative", re.compile(r"(?i)^(?:i|we)\s+(?:must\s+not|cannot|can't)\s+(?P<object>.+)$")),
+    ("constraint", "positive", re.compile(r"(?i)^(?:i|we)\s+(?:must|need\s+to|require)\s+(?P<object>.+)$")),
+    ("ability", "positive", re.compile(r"(?i)^(?:i\s+(?:can\s+reliably|am\s+able\s+to)|we\s+(?:can\s+reliably|are\s+able\s+to))\s+(?P<object>.+)$")),
+    ("method", "positive", re.compile(r"(?i)^(?:i|we)\s+(?:use|follow|reuse)\s+(?P<object>.+)$")),
+    ("trajectory", "positive", re.compile(r"(?i)^(?:i|we)\s+(?:learned\s+to|have\s+learned\s+to|am\s+learning\s+to|are\s+learning\s+to)\s+(?P<object>.+)$")),
+    ("trajectory", "positive", re.compile(r"(?i)^(?:my|our)\s+(?:long[- ]term\s+)?(?:research\s+direction|trajectory|learning\s+direction)(?:\s+now)?\s+prioritizes\s+(?P<object>.+)$")),
+    ("principle", "positive", re.compile(r"(?i)^(?:my|our)\s+principle\s+(?:is|remains)\s+(?P<object>.+)$")),
+    ("identity", "positive", re.compile(r"(?i)^(?:i|we)\s+identify\s+as\s+(?P<object>.+)$")),
+    ("identity", "positive", re.compile(r"(?i)^(?:my|our)\s+background\s+is\s+(?P<object>.+)$")),
+)
+
+_STATEMENT_PROPOSITION_PATTERNS: tuple[_PatternSpec, ...] = (
+    ("preference", "negative", re.compile(r"(?i)^the\s+user\s+does\s+not\s+prefer\s+(?P<object>.+)$")),
+    ("preference", "negative", re.compile(r"(?i)^the\s+user\s+never\s+prefers\s+(?P<object>.+)$")),
+    ("preference", "down_toned", re.compile(r"(?i)^the\s+user\s+(?:hardly(?:\s+ever)?|rarely|seldom)\s+prefers\s+(?P<object>.+)$")),
+    ("preference", "positive", re.compile(r"(?i)^the\s+user\s+prefers\s+(?P<object>.+)$")),
+    ("preference", "positive", re.compile(r"(?i)^the\s+user's\s+(?:preference|priority)\s+(?:is|remains)\s+(?P<object>.+)$")),
+    ("avoidance", "down_toned", re.compile(r"(?i)^the\s+user\s+(?:hardly(?:\s+ever)?|rarely|seldom)\s+avoids\s+(?P<object>.+)$")),
+    ("avoidance", "positive", re.compile(r"(?i)^the\s+user\s+avoids\s+(?P<object>.+)$")),
+    ("goal", "positive", re.compile(r"(?i)^the\s+user\s+(?:aims|plans|intends|wants)\s+to\s+(?P<object>.+)$")),
+    ("goal", "positive", re.compile(r"(?i)^the\s+user's\s+(?:long[- ]term\s+)?goal\s+(?:is|remains)\s+to\s+(?P<object>.+)$")),
+    ("constraint", "negative", re.compile(r"(?i)^the\s+user\s+(?:must\s+not|cannot|can't)\s+(?P<object>.+)$")),
+    ("constraint", "positive", re.compile(r"(?i)^the\s+user\s+(?:must|needs\s+to|requires)\s+(?P<object>.+)$")),
+    ("ability", "positive", re.compile(r"(?i)^the\s+user\s+(?:can\s+reliably|is\s+able\s+to|demonstrated\s+ability\s+to)\s+(?P<object>.+)$")),
+    ("method", "positive", re.compile(r"(?i)^the\s+user\s+(?:uses|follows|reuses)\s+(?P<object>.+)$")),
+    ("trajectory", "positive", re.compile(r"(?i)^the\s+user\s+(?:learned\s+to|has\s+learned\s+to|is\s+learning\s+to)\s+(?P<object>.+)$")),
+    ("trajectory", "positive", re.compile(r"(?i)^the\s+user's\s+(?:long[- ]term\s+)?(?:research\s+direction|trajectory|learning\s+direction)(?:\s+now)?\s+prioritizes\s+(?P<object>.+)$")),
+    ("principle", "positive", re.compile(r"(?i)^the\s+user's\s+principle\s+(?:is|remains)\s+(?P<object>.+)$")),
+    ("identity", "positive", re.compile(r"(?i)^the\s+user\s+identifies\s+as\s+(?P<object>.+)$")),
+    ("identity", "positive", re.compile(r"(?i)^the\s+user's\s+background\s+is\s+(?P<object>.+)$")),
+)
+
+_YOU_PROPOSITION_PATTERNS: tuple[_PatternSpec, ...] = (
+    ("preference", "negative", re.compile(r"(?i)^you\s+(?:do\s+not|don't|never)\s+prefer\s+(?P<object>.+)$")),
+    ("preference", "down_toned", re.compile(r"(?i)^you\s+(?:hardly(?:\s+ever)?|rarely|seldom)\s+prefer\s+(?P<object>.+)$")),
+    ("preference", "positive", re.compile(r"(?i)^you\s+prefer\s+(?P<object>.+)$")),
+    ("avoidance", "positive", re.compile(r"(?i)^you\s+avoid\s+(?P<object>.+)$")),
+    ("goal", "positive", re.compile(r"(?i)^you\s+(?:aim|plan|intend|want)\s+to\s+(?P<object>.+)$")),
+    ("constraint", "negative", re.compile(r"(?i)^you\s+(?:must\s+not|cannot|can't)\s+(?P<object>.+)$")),
+    ("constraint", "positive", re.compile(r"(?i)^you\s+(?:must|need\s+to|require)\s+(?P<object>.+)$")),
+    ("ability", "positive", re.compile(r"(?i)^you\s+(?:can\s+reliably|are\s+able\s+to|demonstrated\s+ability\s+to)\s+(?P<object>.+)$")),
+    ("method", "positive", re.compile(r"(?i)^you\s+(?:use|follow|reuse)\s+(?P<object>.+)$")),
+    ("trajectory", "positive", re.compile(r"(?i)^you\s+(?:learned\s+to|have\s+learned\s+to|are\s+learning\s+to)\s+(?P<object>.+)$")),
+    ("identity", "positive", re.compile(r"(?i)^you\s+identify\s+as\s+(?P<object>.+)$")),
+)
+
+_ACTION_OBJECT_CLASSES = frozenset({"goal", "constraint", "ability"})
+_ACTION_VERBS = frozenset(
+    {
+        "adopt", "apply", "avoid", "choose", "follow", "keep", "learn",
+        "perform", "prioritize", "render", "reuse", "review", "run", "store",
+        "update", "use", "validate",
+    }
+)
+_DOMAIN_MODIFIERS = frozenset(
+    {
+        "async", "backend", "brief", "clear", "code", "concise", "data",
+        "detailed", "deterministic", "direct", "documented", "error",
+        "established", "failing", "frontend", "generated", "plain",
+        "practical", "privacy", "product", "project", "release", "remote",
+        "research", "review", "rust", "safe", "security", "short",
+        "software", "stable", "status", "structured", "team", "test",
+        "written",
+    }
+)
+_COMMON_NOUN_HEADS = frozenset(
+    {
+        "answers", "architect", "communication", "controls", "conventions",
+        "coverage", "credentials", "data", "direction", "engineer", "examples",
+        "explanations", "feedback", "gate", "hashes", "hooks", "language",
+        "manager", "meetings", "memory", "messages", "method", "methods",
+        "notes", "output", "package", "packages", "practice", "privacy", "process",
+        "replies", "responses", "review", "scientist", "storage", "summaries",
+        "tests", "tooling", "verification", "workflow", "workflows", "work",
+    }
+)
+_PREDICATIVE_ADJECTIVES = frozenset(
+    {"brief", "concise", "deterministic", "first", "readable", "safe", "secure", "short"}
+)
+_REJECTED_ATOM_SKELETONS = frozenset(
+    {
+        "a", "according", "allegedly", "also", "although", "am", "an", "and",
+        "are", "as", "based", "be", "because", "been", "being", "believe",
+        "believed", "believes", "break", "breaks", "broke", "broken", "but",
+        "can", "cannot", "claim", "claimed", "claims", "could", "did", "do",
+        "does", "fail", "failed", "fails", "for", "from", "had", "has", "have",
+        "if", "in", "intend", "intends", "is", "may", "maybe", "might", "must",
+        "need", "needs", "of", "on", "or", "per", "perhaps", "plan", "plans",
+        "plus", "possibly", "prefer", "preferred", "prefers", "provided", "quote",
+        "quoted", "report", "reported", "reportedly", "reports", "require",
+        "requires", "said", "say", "says", "should", "sit", "sits", "the", "to",
+        "under", "unless", "view", "views", "want", "wants", "was", "were", "when",
+        "whenever", "whereas", "while", "with", "would",
+        "after", "he", "her", "him", "it", "lest", "occur", "occurs", "she",
+        "that", "them", "these", "they", "this", "those", "until", "whichever",
+        "which", "who", "whoever", "whom", "whose", "whether",
+        "adopt", "adopts", "adopted", "apply", "applies", "applied", "avoid",
+        "avoids", "avoided", "choose", "chooses", "chose", "follow", "follows",
+        "followed", "keep", "keeps", "kept", "learn", "learns", "learned",
+        "perform", "performs", "performed", "prioritize", "prioritizes", "prioritized",
+        "render", "renders", "rendered", "reuse", "reuses", "reused", "reviews",
+        "reviewed", "run", "runs", "ran", "store", "stores", "stored",
+        "update", "updates", "updated", "use", "uses", "used", "validate",
+        "validates", "validated",
+    }
+)
+_ASSISTANT_PREFIX_ACTIONS = {
+    "decision": frozenset({"adopt", "choose", "keep", "use"}),
+    "method": frozenset({"apply", "follow", "reuse", "use"}),
+    "next": frozenset({"apply", "review", "run", "update", "validate"}),
+    "constraint": frozenset({"keep", "store", "use"}),
+}
+def _nominal_token_is_valid(token: str) -> bool:
+    compatibility = unicodedata.normalize("NFKC", token)
+    return bool(compatibility) and not (
+        compatibility.startswith("-")
+        or compatibility.endswith("-")
+        or "--" in compatibility
+        or any(
+            character != "-"
+            and unicodedata.category(character)[0] not in {"L", "M", "N"}
+            for character in compatibility
+        )
+    )
+
+
+def _safe_atom_skeleton(token: str) -> str | None:
+    if not _nominal_token_is_valid(token):
+        return None
+    skeleton = _security_skeleton(token)
+    if (
+        not skeleton
+        or " " in skeleton
+        or _contains_mixed_script_atom(token)
+        or skeleton in _REJECTED_ATOM_SKELETONS
+        or skeleton.endswith("ly")
+    ):
+        return None
+    return skeleton
+
+
+def _modifier_skeleton(token: str) -> str | None:
+    skeleton = _safe_atom_skeleton(token)
+    if skeleton is None:
+        return None
+    if "-" in skeleton:
+        pieces = skeleton.split("-")
+        if not all(piece and _modifier_skeleton(piece) is not None for piece in pieces):
+            return None
+        return skeleton
+    if skeleton in _DOMAIN_MODIFIERS:
+        return skeleton
+    return None
+
+
+def _noun_head_skeleton(token: str) -> str | None:
+    skeleton = _safe_atom_skeleton(token)
+    if skeleton in _COMMON_NOUN_HEADS:
+        return skeleton
+    return None
+
+
+def _predicative_adjective_skeleton(token: str) -> str | None:
+    skeleton = _safe_atom_skeleton(token)
+    if skeleton in _PREDICATIVE_ADJECTIVES:
+        return skeleton
+    return None
+
+
+def _nominal_atoms_skeleton(
+    tokens: list[str],
+    *,
+    predicate_class: str | None = None,
+) -> tuple[str, ...] | None:
+    if len(tokens) not in {1, 2}:
+        return None
+    if len(tokens) == 1:
+        atom = _safe_atom_skeleton(tokens[0])
+        return (atom,) if atom is not None else None
+    modifier = _modifier_skeleton(tokens[0])
+    head = _noun_head_skeleton(tokens[1])
+    if modifier is not None and head is not None:
+        return modifier, head
+    if predicate_class in {"preference", "principle"}:
+        nominal = _noun_head_skeleton(tokens[0])
+        adjective = _predicative_adjective_skeleton(tokens[1])
+        if nominal is not None and adjective is not None:
+            return nominal, adjective
+    return None
+
+
+def _action_phrase_skeleton(
+    tokens: list[str],
+    *,
+    allowed_actions: frozenset[str] = _ACTION_VERBS,
+    allow_in_phrase: bool = True,
+) -> tuple[str, ...] | None:
+    skeletons = [_security_skeleton(token) for token in tokens]
+    if not skeletons or skeletons[0] not in allowed_actions:
+        return None
+    if allow_in_phrase and len(tokens) in {4, 5} and skeletons[-2] == "in":
+        direct = _nominal_atoms_skeleton(tokens[1:-2])
+        location = _nominal_atoms_skeleton(tokens[-1:])
+        if direct is None or location is None:
+            return None
+        return (skeletons[0], *direct, "in", *location)
+    if skeletons[0] == "keep" and len(tokens) == 3:
+        nominal = _noun_head_skeleton(tokens[1])
+        adjective = _predicative_adjective_skeleton(tokens[2])
+        if nominal is not None and adjective is not None:
+            return skeletons[0], nominal, adjective
+    complement = _nominal_atoms_skeleton(tokens[1:])
+    return (skeletons[0], *complement) if complement is not None else None
+
+
+def _simple_nominal_phrase(value: str, predicate_class: str) -> str | None:
+    surface = re.sub(r"\s+", " ", value).strip()
+    tokens = surface.split(" ") if surface else []
+    if not tokens or not all(_nominal_token_is_valid(token) for token in tokens):
+        return None
+    folded = [_security_skeleton(token) for token in tokens]
+    action_object = predicate_class in _ACTION_OBJECT_CLASSES or (
+        predicate_class == "trajectory" and folded[0] in _ACTION_VERBS
+    )
+    if action_object:
+        action = _action_phrase_skeleton(tokens)
+        return " ".join(action) if action is not None else None
+    nominal = _nominal_atoms_skeleton(tokens, predicate_class=predicate_class)
+    return " ".join(nominal) if nominal is not None else None
+
 
 def _class_from_patterns(
     text: str,
-    patterns: tuple[tuple[str, re.Pattern[str]], ...],
+    patterns: tuple[_PatternSpec, ...],
     *,
     subject_pattern: re.Pattern[str],
-) -> str | None:
+) -> _Proposition | None:
     clause = _one_plain_clause(text, subject_pattern=subject_pattern)
     if clause is None:
         return None
-    matches = [predicate_class for predicate_class, pattern in patterns if pattern.search(clause)]
+    matches: list[_Proposition] = []
+    for predicate_class, polarity, pattern in patterns:
+        match = pattern.fullmatch(clause)
+        if match is None:
+            continue
+        normalized_object = _simple_nominal_phrase(match.group("object"), predicate_class)
+        if normalized_object is not None:
+            matches.append((predicate_class, polarity, normalized_object))
     return matches[0] if len(matches) == 1 else None
 
 
-def _user_declarative_predicate_class(text: str) -> str | None:
+def _user_proposition(text: str) -> _Proposition | None:
     return _class_from_patterns(
         text,
-        _USER_DECLARATIVE_PATTERNS,
+        _USER_PROPOSITION_PATTERNS,
         subject_pattern=_USER_EVIDENCE_SUBJECT,
     )
 
 
-def _statement_predicate_class(text: str) -> str | None:
+def _statement_proposition(text: str) -> _Proposition | None:
     return _class_from_patterns(
         text,
-        _STATEMENT_PATTERNS,
+        _STATEMENT_PROPOSITION_PATTERNS,
         subject_pattern=_PERSISTED_USER_SUBJECT,
     )
 
 
-def _assistant_user_predicate_class(text: str) -> str | None:
+def _assistant_user_proposition(text: str) -> _Proposition | None:
     prefixed = _ASSISTANT_PREFIX.fullmatch(_normalize_text(text))
     if prefixed is None:
         return None
     body = prefixed.group("body")
     if re.match(r"(?i)^you\b", body):
-        patterns = _YOU_STATEMENT_PATTERNS
+        patterns = _YOU_PROPOSITION_PATTERNS
     elif re.match(r"(?i)^the\s+user(?:'s|’s)?\b", body):
-        patterns = _STATEMENT_PATTERNS
+        patterns = _STATEMENT_PROPOSITION_PATTERNS
     else:
         return None
     return _class_from_patterns(
@@ -626,12 +801,19 @@ def _assistant_user_predicate_class(text: str) -> str | None:
     )
 
 
-def _polarity_class(text: str) -> str:
-    if _DOWN_TONER.search(text):
-        return "down_toned"
-    if _NEGATION.search(text):
-        return "negative"
-    return "positive"
+def _user_declarative_predicate_class(text: str) -> str | None:
+    proposition = _user_proposition(text)
+    return proposition[0] if proposition is not None else None
+
+
+def _statement_predicate_class(text: str) -> str | None:
+    proposition = _statement_proposition(text)
+    return proposition[0] if proposition is not None else None
+
+
+def _assistant_user_predicate_class(text: str) -> str | None:
+    proposition = _assistant_user_proposition(text)
+    return proposition[0] if proposition is not None else None
 
 
 def _user_has_high_signal(text: str) -> bool:
@@ -678,7 +860,11 @@ def _relative_locators(text: str) -> tuple[str, ...]:
 
 def _assistant_kind(text: str) -> tuple[str, int] | None:
     prefixed = _ASSISTANT_PREFIX.fullmatch(text)
-    if prefixed is None or not _is_plain_language_unit(prefixed.group("body")):
+    if (
+        prefixed is None
+        or not _is_plain_language_unit(prefixed.group("body"))
+        or not _assistant_body_is_safe(prefixed.group("prefix"), prefixed.group("body"))
+    ):
         return None
     prefix = re.sub(r"\s+", " ", prefixed.group("prefix").casefold())
     if prefix.startswith("next"):
@@ -972,14 +1158,6 @@ def _capsule_evidence(capsule: "TaskCapsule") -> dict[str, frozenset[str]]:
     return {value: frozenset(kinds) for value, kinds in provenance.items()}
 
 
-def _substantive_words(text: str) -> set[str]:
-    return {
-        token.casefold()
-        for token in _WORD.findall(text)
-        if token.casefold() not in _STOP_WORDS
-    }
-
-
 def _draft_is_unsafe(draft: ObservationDraft, capsule: "TaskCapsule") -> bool:
     if draft.sensitivity not in {"normal", "personal"}:
         return True
@@ -991,7 +1169,10 @@ def _draft_is_unsafe(draft: ObservationDraft, capsule: "TaskCapsule") -> bool:
         return True
     if _PSYCHOLOGICAL.search(draft.statement):
         return True
-    stripped, changed = _strip_prohibited_content(combined)
+    stripped, changed = _strip_prohibited_content(
+        combined,
+        enforce_assistant_allowlist=False,
+    )
     return changed or not stripped
 
 
@@ -1017,8 +1198,9 @@ def _evidence_form_is_assertive(evidence: str) -> bool:
 def _provenance_supports_mode(
     draft: ObservationDraft,
     evidence_provenance: dict[str, frozenset[str]],
-    predicate_class: str,
+    proposition: _Proposition,
 ) -> bool:
+    predicate_class = proposition[0]
     if draft.assertion_mode == "direct":
         allowed = frozenset({"user_signal"})
     elif draft.assertion_mode == "behavior_observed":
@@ -1030,7 +1212,7 @@ def _provenance_supports_mode(
         user_supported = (
             "user_signal" in provenance
             and "user_signal" in allowed
-            and _user_declarative_predicate_class(evidence) == predicate_class
+            and _user_proposition(evidence) == proposition
         )
         assistant_provenance = provenance.intersection(
             {"decision_result", "reusable_method", "next_step"}
@@ -1038,7 +1220,7 @@ def _provenance_supports_mode(
         assistant_supported = bool(assistant_provenance.intersection(allowed))
         assistant_supported = (
             assistant_supported
-            and _assistant_user_predicate_class(evidence) == predicate_class
+            and _assistant_user_proposition(evidence) == proposition
         )
         if assistant_provenance and predicate_class in {
             "preference",
@@ -1085,19 +1267,10 @@ def _draft_is_policy_valid(
         return False
     if not all(_evidence_form_is_assertive(evidence) for evidence in draft.evidence):
         return False
-    predicate_class = _statement_predicate_class(draft.statement)
-    if predicate_class is None:
+    proposition = _statement_proposition(draft.statement)
+    if proposition is None:
         return False
-    if not _provenance_supports_mode(draft, evidence_provenance, predicate_class):
-        return False
-    statement_polarity = _polarity_class(draft.statement)
-    if any(_polarity_class(evidence) != statement_polarity for evidence in draft.evidence):
-        return False
-    evidence_words = _substantive_words(" ".join(draft.evidence))
-    statement_words = _substantive_words(draft.statement)
-    if statement_words and (
-        len(statement_words.intersection(evidence_words)) / len(statement_words) < 0.75
-    ):
+    if not _provenance_supports_mode(draft, evidence_provenance, proposition):
         return False
     return True
 

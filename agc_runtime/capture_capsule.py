@@ -9,6 +9,7 @@ import unicodedata
 from dataclasses import dataclass, field, replace
 from typing import Any, Iterable, Mapping
 
+from agc_runtime._unicode_confusables import RAW_CONFUSABLE_CLOSURE
 from agc_runtime.capture_contracts import CAPTURE_SCHEMA_VERSION, RevisionRef
 
 
@@ -39,9 +40,117 @@ def _sha256(value: Mapping[str, Any]) -> str:
     return hashlib.sha256(_canonical_json(value)).hexdigest()
 
 
-def _canonical_sensitive_text(value: str) -> str:
-    normalized = unicodedata.normalize("NFC", value)
-    return re.sub(r"\s+", " ", normalized).strip().casefold()
+def _security_skeleton(value: str) -> str:
+    try:
+        compatibility = unicodedata.normalize("NFKC", value).casefold()
+        decomposed = unicodedata.normalize("NFKD", compatibility)
+    except (AttributeError, TypeError, UnicodeError) as error:
+        raise _contract_error() from error
+    without_marks = "".join(
+        character
+        for character in decomposed
+        if unicodedata.category(character) not in {"Mn", "Mc", "Me"}
+    )
+    return re.sub(r"\s+", " ", without_marks).strip()
+
+
+_CONFUSABLE_SCRIPT_NAMES = frozenset({"Latin", "Cyrillic", "Greek"})
+
+
+def _confusable_skeleton(value: str) -> str:
+    """Return the vendored Unicode 17 UTS #39-derived security view."""
+
+    try:
+        mapped = "".join(
+            RAW_CONFUSABLE_CLOSURE.get(
+                ord(character),
+                unicodedata.normalize("NFD", character),
+            )
+            for character in value
+        )
+        compatibility = unicodedata.normalize("NFKC", mapped.casefold())
+        decomposed = unicodedata.normalize("NFKD", compatibility)
+    except (AttributeError, TypeError, UnicodeError) as error:
+        raise _contract_error() from error
+    return "".join(
+        character
+        for character in decomposed
+        if unicodedata.category(character) not in {"Mn", "Mc", "Me"}
+    )
+
+
+def _letter_script(character: str) -> str:
+    name = unicodedata.name(character, "")
+    markers = (
+        ("LATIN", "Latin"),
+        ("CYRILLIC", "Cyrillic"),
+        ("GREEK", "Greek"),
+        ("CJK", "Han"),
+        ("IDEOGRAPH", "Han"),
+        ("HIRAGANA", "Hiragana"),
+        ("KATAKANA", "Katakana"),
+        ("HANGUL", "Hangul"),
+        ("HEBREW", "Hebrew"),
+        ("ARABIC", "Arabic"),
+        ("DEVANAGARI", "Devanagari"),
+    )
+    return next(
+        (script for marker, script in markers if marker in name),
+        f"Other:{name.split(' ', 1)[0]}",
+    )
+
+
+def _contains_mixed_script_atom(value: str) -> bool:
+    try:
+        compatibility = unicodedata.normalize("NFKC", value)
+    except (AttributeError, TypeError, UnicodeError) as error:
+        raise _contract_error() from error
+    scripts: set[str] = set()
+    for character in compatibility:
+        category = unicodedata.category(character)
+        if category.startswith("L"):
+            script = _letter_script(character)
+            if script in _CONFUSABLE_SCRIPT_NAMES:
+                scripts.add(script)
+                if len(scripts) > 1:
+                    return True
+            else:
+                scripts.clear()
+        elif not category.startswith("M"):
+            scripts.clear()
+    return False
+
+
+def _sensitive_candidate_views(value: str) -> tuple[str, ...]:
+    try:
+        surface_variants = (
+            value,
+            value.lower(),
+            value.upper(),
+            value.casefold(),
+        )
+        security_inputs = (
+            *surface_variants,
+            *(unicodedata.normalize("NFKC", variant) for variant in surface_variants),
+        )
+    except (AttributeError, TypeError, UnicodeError) as error:
+        raise _contract_error() from error
+    return tuple(
+        re.sub(r"\s+", " ", candidate).strip()
+        for candidate in map(_confusable_skeleton, security_inputs)
+    )
+
+
+def _sensitive_candidates(value: str) -> tuple[str, ...]:
+    return tuple(
+        sorted(
+            {
+                candidate
+                for candidate in _sensitive_candidate_views(value)
+                if candidate
+            }
+        )
+    )
 
 
 @dataclass(frozen=True)
@@ -70,6 +179,9 @@ class CapsulePolicy:
                 and 1 <= len(label) <= 64
                 and "\n" not in label
                 and "\r" not in label
+                and not any(
+                    unicodedata.category(character).startswith("C") for character in label
+                )
                 for label in self.sensitive_labels
             )
         )
@@ -89,8 +201,19 @@ class CapsulePolicy:
             or not labels_valid
         ):
             raise _contract_error()
+        label_candidate_views = tuple(
+            _sensitive_candidate_views(label) for label in self.sensitive_labels
+        )
+        if any(not all(views) for views in label_candidate_views):
+            raise _contract_error()
         canonical_labels = tuple(
-            dict.fromkeys(_canonical_sensitive_text(label) for label in self.sensitive_labels)
+            sorted(
+                {
+                    candidate
+                    for views in label_candidate_views
+                    for candidate in views
+                }
+            )
         )
         object.__setattr__(self, "sensitive_labels", canonical_labels)
 

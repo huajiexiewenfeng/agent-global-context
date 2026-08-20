@@ -1,0 +1,184 @@
+"""Generate the vendored Unicode 17 UTS #39 raw-codepoint closure.
+
+This is a build-time tool. The runtime never downloads Unicode data.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import platform
+import re
+import unicodedata
+from pathlib import Path
+from typing import Iterable, Mapping
+
+
+UNICODE_SECURITY_VERSION = "17.0.0"
+SOURCE_URL = "https://www.unicode.org/Public/17.0.0/security/confusables.txt"
+SOURCE_SHA256 = "091c7f82fc39ef208faf8f94d29c244de99254675e09de163160c810d13ef22a"
+LICENSE_NOTICE = "UNICODE-LICENSE.txt"
+LICENSE_URL = "https://www.unicode.org/license.txt"
+PINNED_PYTHON_VERSION = "3.12.13"
+PINNED_UNIDATA_VERSION = "15.0.0"
+_EXPECTED_DIRECT_ASCII_COUNT = 2139
+_VERSION = re.compile(r"^# Version:\s*(\S+)\s*$", re.MULTILINE)
+
+
+def _require_pinned_toolchain(
+    *,
+    python_version: str | None = None,
+    unidata_version: str | None = None,
+) -> None:
+    actual_python = platform.python_version() if python_version is None else python_version
+    actual_unidata = (
+        unicodedata.unidata_version
+        if unidata_version is None
+        else unidata_version
+    )
+    if (
+        actual_python != PINNED_PYTHON_VERSION
+        or actual_unidata != PINNED_UNIDATA_VERSION
+    ):
+        raise ValueError("unicode_confusables_generator_toolchain_mismatch")
+
+
+def _raw_mapping_from_rows(rows: Iterable[tuple[int, str]]) -> dict[int, str]:
+    mapping: dict[int, str] = {}
+    for source, target in rows:
+        if source in mapping:
+            raise ValueError(f"duplicate confusable source U+{source:04X}")
+        mapping[source] = target
+    return mapping
+
+
+def _resolve_raw_closure(mapping: Mapping[int, str]) -> dict[int, str]:
+    """Resolve exact raw-codepoint mappings to a fixed point; reject cycles."""
+
+    resolved: dict[int, str] = {}
+    visiting: list[int] = []
+
+    def resolve(codepoint: int) -> str:
+        if codepoint in resolved:
+            return resolved[codepoint]
+        target = mapping.get(codepoint)
+        if target is None:
+            return chr(codepoint)
+        if codepoint in visiting:
+            start = visiting.index(codepoint)
+            cycle = " -> ".join(
+                f"U+{value:04X}" for value in (*visiting[start:], codepoint)
+            )
+            raise ValueError(f"confusable mapping cycle: {cycle}")
+        visiting.append(codepoint)
+        expanded = "".join(resolve(ord(character)) for character in target)
+        visiting.pop()
+        resolved[codepoint] = expanded
+        return expanded
+
+    for source in sorted(mapping):
+        resolve(source)
+    return dict(sorted(resolved.items()))
+
+
+def _post_mapping_normalize(value: str) -> str:
+    decomposed = unicodedata.normalize("NFKD", value.casefold())
+    return "".join(
+        character
+        for character in decomposed
+        if unicodedata.category(character) not in {"Mn", "Mc", "Me"}
+    )
+
+
+def _parse_source(raw: bytes) -> tuple[tuple[int, str], ...]:
+    if hashlib.sha256(raw).hexdigest() != SOURCE_SHA256:
+        raise ValueError("unexpected confusables.txt SHA256")
+    text = raw.decode("utf-8")
+    version = _VERSION.search(text)
+    if version is None or version.group(1) != UNICODE_SECURITY_VERSION:
+        raise ValueError("unexpected confusables.txt version")
+    rows: list[tuple[int, str]] = []
+    for line in text.splitlines():
+        body = line.partition("#")[0].strip()
+        if not body:
+            continue
+        fields = [field.strip() for field in body.split(";")]
+        if len(fields) < 3:
+            raise ValueError("malformed confusables.txt row")
+        source_fields = fields[0].split()
+        if len(source_fields) != 1:
+            raise ValueError("expected a single-codepoint source")
+        source = int(source_fields[0], 16)
+        target = "".join(chr(int(value, 16)) for value in fields[1].split())
+        rows.append((source, target))
+    return tuple(rows)
+
+
+def build_artifacts(raw: bytes) -> tuple[dict[int, str], dict[int, str]]:
+    """Build exact raw closure and the exhaustive direct-ASCII invariant."""
+
+    _require_pinned_toolchain()
+    raw_mapping = _raw_mapping_from_rows(_parse_source(raw))
+    closure = _resolve_raw_closure(raw_mapping)
+    direct_ascii = {
+        source: expected
+        for source, target in closure.items()
+        if (expected := _post_mapping_normalize(target)).isascii() and expected
+    }
+    if len(direct_ascii) != _EXPECTED_DIRECT_ASCII_COUNT:
+        raise ValueError("unicode_confusables_direct_ascii_invariant_invalid")
+    return closure, direct_ascii
+
+
+def _render_mapping(name: str, mapping: Mapping[int, str]) -> str:
+    entries = "\n".join(
+        f"    0x{source:04X}: {target!r}," for source, target in mapping.items()
+    )
+    return f"{name} = MappingProxyType({{\n{entries}\n}})"
+
+
+def render_module(
+    closure: Mapping[int, str],
+    direct_ascii: Mapping[int, str],
+) -> str:
+    return f'''# Generated by scripts/generate_unicode_confusables.py; DO NOT EDIT.
+# Unicode Security Mechanisms for UTS #39, Version {UNICODE_SECURITY_VERSION}.
+# Source: {SOURCE_URL}
+# Source SHA256: {SOURCE_SHA256}
+# Generator: CPython {PINNED_PYTHON_VERSION}; unicodedata {PINNED_UNIDATA_VERSION}
+# Unicode License v3 notice: {LICENSE_NOTICE}
+"""Vendored Unicode 17 UTS #39-derived raw-codepoint closure."""
+
+from types import MappingProxyType
+
+UNICODE_SECURITY_VERSION = {UNICODE_SECURITY_VERSION!r}
+SOURCE_URL = {SOURCE_URL!r}
+SOURCE_SHA256 = {SOURCE_SHA256!r}
+GENERATOR_PYTHON_VERSION = {PINNED_PYTHON_VERSION!r}
+GENERATOR_UNIDATA_VERSION = {PINNED_UNIDATA_VERSION!r}
+LICENSE_NOTICE = {LICENSE_NOTICE!r}
+LICENSE_URL = {LICENSE_URL!r}
+
+{_render_mapping("RAW_CONFUSABLE_CLOSURE", closure)}
+
+{_render_mapping("OFFICIAL_DIRECT_ASCII", direct_ascii)}
+'''
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("source", type=Path)
+    parser.add_argument("output", type=Path)
+    args = parser.parse_args()
+    raw = args.source.read_bytes()
+    closure, direct_ascii = build_artifacts(raw)
+    args.output.write_text(
+        render_module(closure, direct_ascii),
+        encoding="utf-8",
+        newline="\n",
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
