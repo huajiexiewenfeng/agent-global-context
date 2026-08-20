@@ -30,6 +30,7 @@ include = ["agc_runtime*"]
 
 [tool.setuptools.package-data]
 agc_runtime = ["default_config.yaml", "UNICODE-LICENSE.txt"]
+"*" = ["schemas/capture-extractor-v1.schema.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

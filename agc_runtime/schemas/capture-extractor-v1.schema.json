@@ -1,0 +1,132 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agent-global-context:capture-extractor-v1",
+  "title": "Agent Global Context Capture Extractor Output",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "drafts"],
+  "properties": {
+    "schema_version": {
+      "const": "capture-extractor-v1"
+    },
+    "drafts": {
+      "type": "array",
+      "minItems": 0,
+      "maxItems": 8,
+      "items": {
+        "$ref": "#/$defs/observation_draft"
+      }
+    }
+  },
+  "$defs": {
+    "observation_draft": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "statement",
+        "assertion",
+        "primary_category",
+        "kind",
+        "scopes",
+        "project_scope",
+        "confidence",
+        "sensitivity",
+        "signal_type",
+        "evidence",
+        "priority",
+        "locator"
+      ],
+      "properties": {
+        "statement": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300
+        },
+        "assertion": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["subject", "mode", "modality"],
+          "properties": {
+            "subject": {"const": "user"},
+            "mode": {
+              "enum": ["direct", "behavior_observed", "agent_inferred"]
+            },
+            "modality": {"const": "asserted"}
+          }
+        },
+        "primary_category": {
+          "enum": ["personal_growth", "research", "learning", "project", "work"]
+        },
+        "kind": {
+          "enum": [
+            "identity",
+            "principle",
+            "preference",
+            "interest",
+            "capability",
+            "goal",
+            "pattern",
+            "context"
+          ]
+        },
+        "scopes": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+          }
+        },
+        "project_scope": {
+          "oneOf": [
+            {"type": "null"},
+            {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$"
+            }
+          ]
+        },
+        "confidence": {
+          "enum": ["tentative", "observed", "confirmed", "disputed"]
+        },
+        "sensitivity": {
+          "enum": ["normal", "personal", "sensitive", "secret"]
+        },
+        "signal_type": {
+          "enum": [
+            "explicit_user_state",
+            "decision_or_constraint",
+            "verified_outcome",
+            "reusable_method",
+            "learning_change",
+            "research_change",
+            "capability_evidence",
+            "open_commitment"
+          ]
+        },
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 600
+          }
+        },
+        "priority": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4
+        },
+        "locator": {
+          "type": "string",
+          "pattern": "^(user|final|result|method|next):[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$"
+        }
+      }
+    }
+  }
+}
