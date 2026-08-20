@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, field as dataclass_field
 from typing import Any, Callable, Mapping
 
 
@@ -142,6 +142,98 @@ class TokenUsage:
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
             "total_tokens": self.total_tokens,
+        }
+
+
+@dataclass(frozen=True)
+class TokenReservation:
+    schema_version: int
+    reservation_id: str
+    pool: str
+    census_id: str | None
+    capture_key: CaptureKey = dataclass_field(repr=False)
+    attempt: int = 0
+    maximum_usage: TokenUsage = dataclass_field(
+        default_factory=lambda: TokenUsage(0, 0, 0)
+    )
+    reserved_at: str = ""
+
+    def __post_init__(self) -> None:
+        from agc_runtime.capture_budget import validate_token_reservation
+
+        validate_token_reservation(self)
+
+    @classmethod
+    def from_mapping(cls, value: Any) -> "TokenReservation":
+        from agc_runtime.capture_schema import token_reservation_from_mapping
+
+        try:
+            return token_reservation_from_mapping(value)
+        except (AttributeError, TypeError, ValueError, UnicodeError) as error:
+            raise ValueError("capture_budget_contract_invalid") from error
+
+    def to_mapping(self) -> dict[str, Any]:
+        try:
+            return TokenReservation.from_mapping(
+                self._to_mapping_unchecked()
+            )._to_mapping_unchecked()
+        except (AttributeError, TypeError, ValueError, UnicodeError) as error:
+            raise ValueError("capture_budget_contract_invalid") from error
+
+    def _to_mapping_unchecked(self) -> dict[str, Any]:
+        return {
+            "schema_version": self.schema_version,
+            "reservation_id": self.reservation_id,
+            "pool": self.pool,
+            "census_id": self.census_id,
+            "capture_key": self.capture_key._to_mapping_unchecked(),
+            "attempt": self.attempt,
+            "maximum_usage": self.maximum_usage._to_mapping_unchecked(),
+            "reserved_at": self.reserved_at,
+        }
+
+
+@dataclass(frozen=True)
+class BudgetSettlement:
+    schema_version: int
+    reservation_id: str
+    capture_key: CaptureKey = dataclass_field(repr=False)
+    charged_usage: TokenUsage = dataclass_field(
+        default_factory=lambda: TokenUsage(0, 0, 0)
+    )
+    usage_quality: str = ""
+    settled_at: str = ""
+
+    def __post_init__(self) -> None:
+        from agc_runtime.capture_budget import validate_budget_settlement
+
+        validate_budget_settlement(self)
+
+    @classmethod
+    def from_mapping(cls, value: Any) -> "BudgetSettlement":
+        from agc_runtime.capture_schema import budget_settlement_from_mapping
+
+        try:
+            return budget_settlement_from_mapping(value)
+        except (AttributeError, TypeError, ValueError, UnicodeError) as error:
+            raise ValueError("capture_budget_contract_invalid") from error
+
+    def to_mapping(self) -> dict[str, Any]:
+        try:
+            return BudgetSettlement.from_mapping(
+                self._to_mapping_unchecked()
+            )._to_mapping_unchecked()
+        except (AttributeError, TypeError, ValueError, UnicodeError) as error:
+            raise ValueError("capture_budget_contract_invalid") from error
+
+    def _to_mapping_unchecked(self) -> dict[str, Any]:
+        return {
+            "schema_version": self.schema_version,
+            "reservation_id": self.reservation_id,
+            "capture_key": self.capture_key._to_mapping_unchecked(),
+            "charged_usage": self.charged_usage._to_mapping_unchecked(),
+            "usage_quality": self.usage_quality,
+            "settled_at": self.settled_at,
         }
 
 

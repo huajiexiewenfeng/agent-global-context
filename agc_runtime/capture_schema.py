@@ -8,9 +8,9 @@ from datetime import datetime
 from typing import Any
 
 from agc_runtime.capture_contracts import (
-    CAPTURE_SCHEMA_VERSION, CAPTURE_STATUSES, CaptureKey, CaptureLease,
+    CAPTURE_SCHEMA_VERSION, CAPTURE_STATUSES, BudgetSettlement, CaptureKey, CaptureLease,
     CaptureReceipt, CaptureSuppressionTombstone, CollectedObservation, LedgerEntry,
-    RevisionRef, SanitizedError, SourceQuarantine, TokenUsage,
+    RevisionRef, SanitizedError, SourceQuarantine, TokenReservation, TokenUsage,
     observation_fingerprint_for, observation_id_for, receipt_id_for, tombstone_id_for,
 )
 
@@ -223,6 +223,73 @@ def token_usage_from_mapping(value: Any) -> TokenUsage:
     if total_tokens != input_tokens + output_tokens:
         raise ValueError("TokenUsage.total_tokens must equal input_tokens + output_tokens")
     return TokenUsage(input_tokens, output_tokens, total_tokens)
+
+
+def token_reservation_from_mapping(value: Any) -> TokenReservation:
+    root = _strict(
+        value,
+        "TokenReservation",
+        {
+            "schema_version",
+            "reservation_id",
+            "pool",
+            "census_id",
+            "capture_key",
+            "attempt",
+            "maximum_usage",
+            "reserved_at",
+        },
+    )
+    return TokenReservation(
+        _schema(root["schema_version"], "TokenReservation"),
+        validate_capture_id(
+            root["reservation_id"], "TokenReservation.reservation_id", "br_"
+        ),
+        _enum(
+            root["pool"],
+            "TokenReservation.pool",
+            frozenset({"backfill", "incremental"}),
+        ),
+        _nfc_string(
+            root["census_id"],
+            "TokenReservation.census_id",
+            maximum=80,
+            nullable=True,
+        ),
+        capture_key_from_mapping(root["capture_key"]),
+        _integer(root["attempt"], "TokenReservation.attempt", minimum=1),
+        token_usage_from_mapping(root["maximum_usage"]),
+        _utc(root["reserved_at"], "TokenReservation.reserved_at"),
+    )
+
+
+def budget_settlement_from_mapping(value: Any) -> BudgetSettlement:
+    root = _strict(
+        value,
+        "BudgetSettlement",
+        {
+            "schema_version",
+            "reservation_id",
+            "capture_key",
+            "charged_usage",
+            "usage_quality",
+            "settled_at",
+        },
+    )
+    return BudgetSettlement(
+        _schema(root["schema_version"], "BudgetSettlement"),
+        validate_capture_id(
+            root["reservation_id"], "BudgetSettlement.reservation_id", "br_"
+        ),
+        capture_key_from_mapping(root["capture_key"]),
+        token_usage_from_mapping(root["charged_usage"]),
+        _enum(
+            root["usage_quality"],
+            "BudgetSettlement.usage_quality",
+            _USAGE_QUALITIES,
+        ),
+        _utc(root["settled_at"], "BudgetSettlement.settled_at"),
+    )
 
 
 def sanitized_error_from_mapping(value: Any) -> SanitizedError:
