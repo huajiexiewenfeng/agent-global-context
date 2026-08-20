@@ -17,9 +17,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Sequence
 
 from agc_runtime.capture_contracts import (
-    CAPTURE_SCHEMA_VERSION, CAPTURE_STATUSES, CaptureKey, CaptureLease, CaptureReceipt,
+    CAPTURE_SCHEMA_VERSION, CAPTURE_STATUSES, BudgetSettlement, CaptureKey, CaptureLease, CaptureReceipt,
     CaptureSuppressionTombstone, CollectedObservation, LedgerEntry, RevisionRef,
-    SanitizedError, SourceQuarantine, receipt_id_for, tombstone_id_for,
+    SanitizedError, SourceQuarantine, TokenReservation, receipt_id_for, tombstone_id_for,
     validate_capture_transition,
 )
 from agc_runtime.capture_transaction import (
@@ -1197,7 +1197,28 @@ class CaptureStore:
         except ValueError:
             return False
 
-    def commit_extraction(self, lease: CaptureLease, observations: Sequence[CollectedObservation], terminal_receipt: CaptureReceipt) -> CommitResult:
+    def commit_extraction(
+        self,
+        lease: CaptureLease,
+        observations: Sequence[CollectedObservation],
+        terminal_receipt: CaptureReceipt,
+        *,
+        reservation: TokenReservation | None = None,
+        settlement: BudgetSettlement | None = None,
+    ) -> CommitResult:
+        if (reservation is None) != (settlement is None):
+            raise ValueError("budget reservation and settlement must be provided together")
+        if reservation is not None and settlement is not None:
+            reservation = TokenReservation.from_mapping(reservation.to_mapping())
+            settlement = BudgetSettlement.from_mapping(settlement.to_mapping())
+            if (
+                reservation.capture_key != lease.capture_key
+                or settlement.capture_key != lease.capture_key
+                or settlement.reservation_id != reservation.reservation_id
+                or terminal_receipt.token_usage != settlement.charged_usage
+                or terminal_receipt.usage_quality != settlement.usage_quality
+            ):
+                raise ValueError("capture_budget_conflict")
         with capture_write_lock(self.paths):
             self._ensure_layout_locked()
             self._assert_lease(lease)
@@ -1205,8 +1226,10 @@ class CaptureStore:
             terminal_receipt.to_mapping()
             if current.key != lease.capture_key or terminal_receipt.key != lease.capture_key or terminal_receipt.receipt_id != current.receipt_id or terminal_receipt.status != "complete":
                 raise ValueError("terminal receipt must be complete for the leased key")
-            immutable = ("adapter_version", "source_schema_version", "identity_quality", "source_fingerprint", "source_hash_schema_version", "capsule_hash", "capsule_schema_version", "settled_at", "discovered_at", "attempt_count", "extractor_id", "extractor_version", "extractor_schema_version", "taxonomy_version", "usage_quality", "redacted_by_forget", "forgotten_observation_count")
+            immutable = ("adapter_version", "source_schema_version", "identity_quality", "source_fingerprint", "source_hash_schema_version", "capsule_hash", "capsule_schema_version", "settled_at", "discovered_at", "attempt_count", "extractor_id", "extractor_version", "extractor_schema_version", "taxonomy_version", "redacted_by_forget", "forgotten_observation_count")
             if any(getattr(current, field) != getattr(terminal_receipt, field) for field in immutable):
+                raise ValueError("terminal receipt changes bound receipt metadata")
+            if reservation is None and current.usage_quality != terminal_receipt.usage_quality:
                 raise ValueError("terminal receipt changes bound receipt metadata")
             unique = self._unique_observations(observations, current.receipt_id)
             if terminal_receipt.observation_count != len(unique):
@@ -1235,6 +1258,12 @@ class CaptureStore:
                 self._point(f"before:observation:{index}")
                 atomic_write_json(self._observation_path(observation.observation_id), observation.to_mapping())
                 self._point(f"after:observation:{index}")
+            if reservation is not None and settlement is not None:
+                from agc_runtime.capture_budget import persist_settlement_locked
+
+                self._point("before:budget:settlement")
+                persist_settlement_locked(self.paths, reservation, settlement)
+                self._point("after:budget:settlement")
             self._point("before:ledger")
             self._write_ledger(terminal_receipt, status="complete", processed_at=terminal_receipt.updated_at)
             self._point("after:ledger")
@@ -1245,6 +1274,67 @@ class CaptureStore:
             self._cleanup_ids(current.receipt_id, ids, remove_manifest=False)
             self._point("after:cleanup")
             return CommitResult(current.receipt_id, len(unique))
+
+    def transition_with_settlement(
+        self,
+        lease: CaptureLease,
+        *,
+        expected: frozenset[str],
+        target: str,
+        patch: ReceiptTransitionPatch,
+        reservation: TokenReservation,
+        settlement: BudgetSettlement,
+    ) -> CaptureReceipt:
+        from agc_runtime.capture_budget import persist_settlement_locked
+
+        if not isinstance(patch, ReceiptTransitionPatch):
+            raise ValueError("transition patch must be strict")
+        if patch.source_fingerprint is not None:
+            raise ValueError("transition patch cannot change immutable metadata")
+        reservation = TokenReservation.from_mapping(reservation.to_mapping())
+        settlement = BudgetSettlement.from_mapping(settlement.to_mapping())
+        if (
+            reservation.capture_key != lease.capture_key
+            or settlement.capture_key != lease.capture_key
+            or settlement.reservation_id != reservation.reservation_id
+        ):
+            raise ValueError("capture_budget_conflict")
+        with capture_write_lock(self.paths):
+            self._ensure_layout_locked()
+            self._assert_lease(lease)
+            current = self._read_receipt(receipt_id_for(lease.capture_key))
+            if current.status not in expected:
+                raise ValueError("receipt status does not match expected set")
+            validate_capture_transition(
+                current.status, target, reopen_reason=patch.reopen_reason
+            )
+            self._point("before:budget:settlement")
+            persist_settlement_locked(self.paths, reservation, settlement)
+            self._point("after:budget:settlement")
+            updated = replace(
+                current,
+                status=target,
+                updated_at=patch.updated_at or self._clock(),
+                next_retry_at=patch.next_retry_at,
+                sanitized_error=patch.sanitized_error,
+                token_usage=settlement.charged_usage,
+                usage_quality=settlement.usage_quality,
+            )
+            updated = CaptureReceipt.from_mapping(updated.to_mapping())
+            transition_journal = {
+                "schema_version": CAPTURE_SCHEMA_VERSION,
+                "operation": "transition",
+                "receipt_id": current.receipt_id,
+                "expected_status": current.status,
+                "target_status": target,
+            }
+            atomic_write_json(
+                self._transition_journal_path(current.receipt_id), transition_journal
+            )
+            self._write_receipt(updated)
+            self._write_ledger(updated, status=target, processed_at=None)
+            safe_unlink(self._transition_journal_path(current.receipt_id))
+            return updated
 
     def transition(self, lease: CaptureLease, *, expected: frozenset[str], target: str, patch: ReceiptTransitionPatch) -> CaptureReceipt:
         if not isinstance(patch, ReceiptTransitionPatch):

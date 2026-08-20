@@ -1,14 +1,167 @@
 from __future__ import annotations
 
 from pathlib import Path
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from agc_runtime.capture_store import CaptureStore
+from agc_runtime.capture_store import CaptureStore, ReceiptTransitionPatch
 from agc_runtime.capture_transaction import atomic_write_json
 from tests.test_capture_store import _complete_receipt, _key, _observation, _receipt
-from agc_runtime.capture_contracts import CaptureKey, CaptureReceipt, CollectedObservation, observation_id_for, receipt_id_for
+from agc_runtime.capture_budget import CaptureTokenBudget
+from agc_runtime.capture_contracts import CaptureKey, CaptureReceipt, CollectedObservation, RevisionRef, SanitizedError, TokenUsage, observation_id_for, receipt_id_for
 from agc_runtime.paths import MemoryPaths
+
+
+def _transaction_budget(
+    store: CaptureStore,
+) -> tuple[CaptureTokenBudget, object, object]:
+    from agc_runtime.capture_source import SourceBindingKey, TimeWindow
+
+    key = _key()
+    end = datetime(2026, 8, 13, 12, tzinfo=timezone.utc)
+    start = end - timedelta(days=7)
+    revision = RevisionRef.from_mapping(
+        {
+            "schema_version": 1,
+            "capture_key": key.to_mapping(),
+            "rollout_anchor_id": "rollout-1",
+            "completed_at": "2026-08-12T12:00:00Z",
+            "locator": "sessions/synthetic",
+            "identity_quality": "session_id",
+            "adapter_version": "1",
+            "source_schema_version": "1",
+        }
+    )
+    census = store.freeze_census(
+        binding=SourceBindingKey(1, key.adapter_id, key.source_root_id),
+        window=TimeWindow(
+            1,
+            start.isoformat().replace("+00:00", "Z"),
+            end.isoformat().replace("+00:00", "Z"),
+        ),
+        started_at=end.isoformat().replace("+00:00", "Z"),
+        revisions=(revision,),
+    )
+    budget = CaptureTokenBudget(
+        store.paths,
+        pool="backfill",
+        census_id=census.census_id,
+        ceiling=100_000,
+        clock=lambda: "2026-08-13T12:00:00Z",
+    )
+    reservation = budget.reserve(key, 1, TokenUsage(1, 2, 3))
+    settlement = budget.prepare_settlement(reservation, TokenUsage(1, 2, 3))
+    return budget, reservation, settlement
+
+
+def test_extraction_commit_persists_budget_settlement_before_complete_receipt(
+    tmp_path: Path,
+) -> None:
+    store = CaptureStore(
+        MemoryPaths.from_root(tmp_path / "memory"),
+        clock=lambda: "2026-08-13T12:00:00Z",
+    )
+    budget, reservation, settlement = _transaction_budget(store)
+    receipt = CaptureReceipt.from_mapping(
+        {
+            **_receipt().to_mapping(),
+            "token_usage": TokenUsage(0, 0, 0).to_mapping(),
+            "usage_quality": "reserved",
+        }
+    )
+    terminal = CaptureReceipt.from_mapping(
+        {
+            **_complete_receipt(receipt, 0).to_mapping(),
+            "token_usage": settlement.charged_usage.to_mapping(),
+            "usage_quality": settlement.usage_quality,
+        }
+    )
+    store.register_extraction(receipt)
+    lease = store.acquire_lease(
+        _key(), owner_id="worker", now="2026-08-13T12:00:00Z", ttl_seconds=60
+    )
+    assert lease is not None
+
+    store.commit_extraction(
+        lease,
+        (),
+        terminal,
+        reservation=reservation,
+        settlement=settlement,
+    )
+
+    assert store.read_receipt(receipt.receipt_id).status == "complete"
+    assert budget.snapshot().charged_tokens == 3
+    assert budget.snapshot().settlements == 1
+
+
+def test_crash_after_settlement_before_receipt_recovers_without_double_charge(
+    tmp_path: Path,
+) -> None:
+    paths = MemoryPaths.from_root(tmp_path / "memory")
+    store = CaptureStore(
+        paths,
+        crash_at="after:budget:settlement",
+        clock=lambda: "2026-08-13T12:00:00Z",
+    )
+    budget, reservation, settlement = _transaction_budget(store)
+    receipt = _receipt()
+    store.register_extraction(receipt)
+    lease = store.acquire_lease(
+        _key(), owner_id="worker", now="2026-08-13T12:00:00Z", ttl_seconds=60
+    )
+    assert lease is not None
+
+    with pytest.raises(RuntimeError, match="injected crash"):
+        store.commit_extraction(
+            lease,
+            (),
+            _complete_receipt(receipt, 0),
+            reservation=reservation,
+            settlement=settlement,
+        )
+
+    recovered = CaptureStore(paths)
+    recovered.recover_transactions(now="2026-08-13T12:02:00Z")
+    assert recovered.read_receipt(receipt.receipt_id).status == "retryable"
+    assert budget.snapshot().charged_tokens == 3
+    assert budget.settle(reservation, TokenUsage(1, 2, 3)) == settlement
+    assert budget.snapshot().charged_tokens == 3
+
+
+def test_failure_transition_and_budget_settlement_converge_together(
+    tmp_path: Path,
+) -> None:
+    store = CaptureStore(
+        MemoryPaths.from_root(tmp_path / "memory"),
+        clock=lambda: "2026-08-13T12:00:00Z",
+    )
+    budget, reservation, settlement = _transaction_budget(store)
+    receipt = _receipt()
+    store.register_extraction(receipt)
+    lease = store.acquire_lease(
+        _key(), owner_id="worker", now="2026-08-13T12:00:00Z", ttl_seconds=60
+    )
+    assert lease is not None
+
+    updated = store.transition_with_settlement(
+        lease,
+        expected=frozenset({"extracting"}),
+        target="retryable",
+        patch=ReceiptTransitionPatch(
+            updated_at="2026-08-13T12:00:00Z",
+            next_retry_at="2026-08-13T12:05:00Z",
+            sanitized_error=SanitizedError("extractor", "timeout", True),
+        ),
+        reservation=reservation,
+        settlement=settlement,
+    )
+
+    assert updated.status == "retryable"
+    assert updated.token_usage == settlement.charged_usage
+    assert updated.usage_quality == settlement.usage_quality
+    assert budget.snapshot().charged_tokens == 3
 
 
 @pytest.mark.parametrize(

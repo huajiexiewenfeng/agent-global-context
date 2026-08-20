@@ -1,16 +1,27 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import datetime, timedelta, timezone
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from threading import Barrier
 
 import pytest
 
-from agc_runtime.capture_budget import reservation_id_for
+from agc_runtime.capture_budget import (
+    BudgetUnavailable,
+    CaptureTokenBudget,
+    reservation_id_for,
+)
 from agc_runtime.capture_contracts import (
     BudgetSettlement,
     CaptureKey,
     TokenReservation,
     TokenUsage,
+    RevisionRef,
 )
+from agc_runtime.capture_store import CaptureStore
+from agc_runtime.paths import MemoryPaths
 
 
 def _key() -> CaptureKey:
@@ -178,3 +189,186 @@ def test_token_usage_object_is_preserved_by_budget_contracts() -> None:
 
     assert reservation.maximum_usage == TokenUsage(700, 300, 1000)
     assert settlement.charged_usage == TokenUsage(600, 200, 800)
+
+
+def _frozen_budget(
+    tmp_path: Path,
+    *,
+    ceiling: int | None = 100_000,
+) -> tuple[CaptureTokenBudget, CaptureKey, str]:
+    from agc_runtime.capture_source import SourceBindingKey, TimeWindow
+
+    paths = MemoryPaths.from_root(tmp_path / "memory")
+    store = CaptureStore(paths, clock=lambda: "2026-08-20T00:00:00Z")
+    key = _key()
+    revision = RevisionRef.from_mapping(
+        {
+            "schema_version": 1,
+            "capture_key": key.to_mapping(),
+            "rollout_anchor_id": "rollout-1",
+            "completed_at": "2026-08-19T00:00:00Z",
+            "locator": "sessions/active.jsonl",
+            "identity_quality": "session_id",
+            "adapter_version": "1",
+            "source_schema_version": "1",
+        }
+    )
+    end = datetime(2026, 8, 20, tzinfo=timezone.utc)
+    start = end - timedelta(days=7)
+    census = store.freeze_census(
+        binding=SourceBindingKey(
+            1,
+            key.adapter_id,
+            key.source_root_id,
+        ),
+        window=TimeWindow(
+            1,
+            start.isoformat().replace("+00:00", "Z"),
+            end.isoformat().replace("+00:00", "Z"),
+        ),
+        started_at=end.isoformat().replace("+00:00", "Z"),
+        revisions=(revision,),
+    )
+    return (
+        CaptureTokenBudget(
+            paths,
+            pool="backfill",
+            census_id=census.census_id,
+            ceiling=ceiling,
+            clock=lambda: "2026-08-20T00:01:00Z",
+        ),
+        key,
+        census.census_id,
+    )
+
+
+def test_ac_15_backfill_never_exceeds_actual_or_reserved_ceiling(
+    tmp_path: Path,
+) -> None:
+    budget, key, _ = _frozen_budget(tmp_path)
+
+    reservation = budget.reserve(key, 1, TokenUsage(70_000, 30_000, 100_000))
+
+    assert reservation.maximum_usage.total_tokens == 100_000
+    snapshot = budget.snapshot()
+    assert snapshot.charged_tokens == 100_000
+    assert snapshot.remaining_tokens == 0
+    with pytest.raises(BudgetUnavailable, match="capture_budget_unavailable"):
+        budget.reserve(key, 2, TokenUsage(1, 0, 1))
+
+
+def test_concurrent_exact_boundary_allows_only_one_winner(tmp_path: Path) -> None:
+    budget, key, _ = _frozen_budget(tmp_path, ceiling=1)
+    barrier = Barrier(2)
+
+    def reserve(attempt: int) -> str:
+        barrier.wait()
+        try:
+            return budget.reserve(key, attempt, TokenUsage(1, 0, 1)).reservation_id
+        except (BudgetUnavailable, RuntimeError):
+            return "unavailable"
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = tuple(executor.map(reserve, (1, 2)))
+
+    assert sum(item.startswith("br_") for item in results) == 1
+    assert results.count("unavailable") == 1
+    assert len(tuple(budget.paths.capture.budgets.glob("reservation-*.json"))) == 1
+
+
+def test_one_token_over_is_refused_without_a_reservation_file(tmp_path: Path) -> None:
+    budget, key, _ = _frozen_budget(tmp_path, ceiling=999)
+
+    with pytest.raises(BudgetUnavailable, match="capture_budget_unavailable"):
+        budget.reserve(key, 1, TokenUsage(700, 300, 1000))
+
+    assert not tuple(budget.paths.capture.budgets.glob("reservation-*.json"))
+
+
+def test_actual_usage_replaces_active_reservation_charge(tmp_path: Path) -> None:
+    budget, key, _ = _frozen_budget(tmp_path, ceiling=1_500)
+    reservation = budget.reserve(key, 1, TokenUsage(700, 300, 1000))
+
+    settlement = budget.settle(reservation, TokenUsage(400, 100, 500))
+
+    assert settlement.usage_quality == "actual"
+    assert budget.snapshot().charged_tokens == 500
+    assert budget.reserve(key, 2, TokenUsage(700, 300, 1000)).attempt == 2
+
+
+@pytest.mark.parametrize(
+    "usage",
+    (None, object(), TokenUsage(800, 300, 1100)),
+)
+def test_absent_invalid_timeout_and_unknown_usage_charge_reserved_maximum(
+    tmp_path: Path, usage: object
+) -> None:
+    budget, key, _ = _frozen_budget(tmp_path)
+    reservation = budget.reserve(key, 1, TokenUsage(700, 300, 1000))
+
+    settlement = budget.settle(reservation, usage)
+
+    assert settlement.usage_quality == "reserved"
+    assert settlement.charged_usage == reservation.maximum_usage
+
+
+def test_retry_attempts_have_distinct_charges(tmp_path: Path) -> None:
+    budget, key, _ = _frozen_budget(tmp_path)
+
+    first = budget.reserve(key, 1, TokenUsage(700, 300, 1000))
+    second = budget.reserve(key, 2, TokenUsage(700, 300, 1000))
+
+    assert first.reservation_id != second.reservation_id
+    assert budget.snapshot().charged_tokens == 2_000
+
+
+def test_crash_after_reservation_survives_restart(tmp_path: Path) -> None:
+    budget, key, census_id = _frozen_budget(tmp_path)
+    reservation = budget.reserve(key, 1, TokenUsage(700, 300, 1000))
+    restarted = CaptureTokenBudget(
+        budget.paths,
+        pool="backfill",
+        census_id=census_id,
+        ceiling=100_000,
+        clock=lambda: "2026-08-20T00:02:00Z",
+    )
+
+    replay = restarted.reserve(key, 1, TokenUsage(700, 300, 1000))
+
+    assert replay == reservation
+    assert restarted.snapshot().charged_tokens == 1_000
+
+
+def test_exact_double_settlement_is_idempotent_and_conflict_is_rejected(
+    tmp_path: Path,
+) -> None:
+    budget, key, _ = _frozen_budget(tmp_path)
+    reservation = budget.reserve(key, 1, TokenUsage(700, 300, 1000))
+    first = budget.settle(reservation, TokenUsage(400, 100, 500))
+
+    assert budget.settle(reservation, TokenUsage(400, 100, 500)) == first
+    with pytest.raises(ValueError, match="capture_budget_conflict"):
+        budget.settle(reservation, TokenUsage(300, 100, 400))
+
+
+def test_incremental_pool_is_unavailable_when_configured_total_is_null(
+    tmp_path: Path,
+) -> None:
+    paths = MemoryPaths.from_root(tmp_path / "memory")
+    budget = CaptureTokenBudget(
+        paths,
+        pool="incremental",
+        census_id=None,
+        ceiling=None,
+    )
+
+    with pytest.raises(BudgetUnavailable, match="capture_budget_unavailable"):
+        budget.reserve(_key(), 1, TokenUsage(1, 0, 1))
+
+
+def test_foreign_key_cannot_charge_a_frozen_backfill_pool(tmp_path: Path) -> None:
+    budget, _, _ = _frozen_budget(tmp_path)
+    foreign = CaptureKey("codex", "a" * 64, "other-task", "turn-1")
+
+    with pytest.raises(ValueError, match="capture_budget_foreign_key"):
+        budget.reserve(foreign, 1, TokenUsage(1, 0, 1))
