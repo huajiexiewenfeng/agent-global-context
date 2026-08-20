@@ -14,6 +14,7 @@ from agc_runtime.capture_backfill import (
 from agc_runtime.capture_budget import BudgetUnavailable, CaptureTokenBudget
 from agc_runtime.capture_contracts import (
     CAPTURE_SCHEMA_VERSION,
+    CaptureKey,
     CaptureReceipt,
     CollectedObservation,
     SanitizedError,
@@ -24,6 +25,45 @@ from agc_runtime.capture_contracts import (
 from agc_runtime.capture_store import CaptureStore, ReceiptTransitionPatch, root_fingerprint
 from agc_runtime.paths import MemoryPaths
 from agc_runtime.runtime_config import load_runtime_config
+
+
+def retry_capture_receipt(
+    paths: MemoryPaths, receipt_id: str, *, now: str
+) -> CaptureReceipt:
+    """Explicitly requeue one parked receipt without invoking semantic work."""
+
+    if not isinstance(receipt_id, str):
+        raise ValueError("capture_retry_target_invalid")
+    store = CaptureStore(paths, clock=lambda: now)
+    current = next(
+        (item for item in store.read_snapshot().receipts if item.receipt_id == receipt_id),
+        None,
+    )
+    if current is None or current.status not in {"failed", "quarantined"}:
+        raise ValueError("capture_retry_target_not_parked")
+    lease = store.acquire_lease(
+        current.key,
+        owner_id="explicit-retry",
+        now=now,
+        ttl_seconds=60,
+    )
+    if lease is None:
+        raise RuntimeError("capture_retry_busy")
+    try:
+        return store.transition(
+            lease,
+            expected=frozenset({current.status}),
+            target="queued",
+            patch=ReceiptTransitionPatch(
+                updated_at=now,
+                reopen_reason="explicit_retry",
+            ),
+        )
+    finally:
+        try:
+            store.release_lease(lease)
+        except (FileNotFoundError, OSError, ValueError):
+            pass
 
 
 @dataclass(frozen=True)
@@ -38,6 +78,7 @@ class RunnerReport:
     observation_count: int
     charged_tokens: int
     silent_loss_count: int
+    backlog_count: int
 
     def to_mapping(self) -> dict[str, int]:
         return {
@@ -100,10 +141,43 @@ class CaptureRunner:
             raise RuntimeError("capture_backfill_authorization_stale")
         return config.capture, descriptor
 
+    def retry_revision(self, key: CaptureKey, *, now: str) -> CaptureReceipt:
+        """Explicitly requeue one parked revision without invoking the Extractor."""
+
+        key = CaptureKey.from_mapping(key.to_mapping())
+        current = next(
+            (
+                item
+                for item in CaptureStore(self.paths).read_snapshot().receipts
+                if item.key == key
+            ),
+            None,
+        )
+        if current is None:
+            raise ValueError("capture_retry_target_not_parked")
+        return retry_capture_receipt(self.paths, current.receipt_id, now=now)
+
     @staticmethod
-    def _retry_at(now: str) -> str:
+    def _retry_at(now: str, seconds: int) -> str:
         parsed = datetime.fromisoformat(now.replace("Z", "+00:00"))
-        return (parsed + timedelta(seconds=60)).isoformat().replace("+00:00", "Z")
+        return (parsed + timedelta(seconds=seconds)).isoformat().replace("+00:00", "Z")
+
+    @staticmethod
+    def _is_due(receipt: CaptureReceipt, now: str) -> bool:
+        if receipt.status != "retryable":
+            return receipt.status in {"discovered", "queued"}
+        if receipt.next_retry_at is None:
+            return False
+        return datetime.fromisoformat(
+            receipt.next_retry_at.replace("Z", "+00:00")
+        ) <= datetime.fromisoformat(now.replace("Z", "+00:00"))
+
+    @staticmethod
+    def _backlog_count(
+        receipts: Sequence[CaptureReceipt], keys: frozenset[object]
+    ) -> int:
+        terminal = {"complete", "excluded", "coalesced"}
+        return sum(item.key in keys and item.status not in terminal for item in receipts)
 
     @staticmethod
     def _observations(
@@ -166,6 +240,23 @@ class CaptureRunner:
             or not 1 <= max_items <= 100
         ):
             raise ValueError("capture_runner_contract_invalid")
+        current_config = load_runtime_config(self.paths).capture
+        store = CaptureStore(self.paths, clock=lambda: now)
+        snapshot = store.read_snapshot()
+        run = next(
+            (
+                item
+                for item in snapshot.census_runs
+                if item.census_id == self.preparation.census_id
+            ),
+            None,
+        )
+        run_keys = frozenset(run.revision_keys) if run is not None else frozenset()
+        if current_config.paused:
+            return RunnerReport(
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                self._backlog_count(snapshot.receipts, run_keys),
+            )
         capture, extractor_descriptor = self._validate_authorization(
             authorization_digest
         )
@@ -176,7 +267,7 @@ class CaptureRunner:
             target_token_limit=capture.capsule.target_tokens,
             hard_token_limit=capture.capsule.max_tokens,
         )
-        store = CaptureStore(self.paths, clock=lambda: now)
+        store.recover_transactions(now=now)
         snapshot = store.read_snapshot()
         run = next(
             item
@@ -193,7 +284,7 @@ class CaptureRunner:
                 (
                     item
                     for item in store.ready_revisions()
-                    if item.key in revisions
+                    if item.key in revisions and self._is_due(item, now)
                 ),
                 key=lambda item: (item.discovered_at, item.receipt_id),
             )[:max_items]
@@ -260,14 +351,32 @@ class CaptureRunner:
                 )
                 settlement = budget.prepare_settlement(reservation, result.usage)
                 if not result.succeeded:
+                    final_attempt = extracting.attempt_count >= capture.runner.max_attempts
+                    target = "failed" if final_attempt else "retryable"
+                    error = result.error
+                    if error is None:
+                        error = SanitizedError("extractor", "failed", not final_attempt)
+                    elif final_attempt:
+                        error = SanitizedError(error.stage, error.code, False)
+                    backoff_index = min(
+                        max(extracting.attempt_count - 1, 0),
+                        len(capture.runner.backoff_seconds) - 1,
+                    )
                     store.transition_with_settlement(
                         lease,
                         expected=frozenset({"extracting"}),
-                        target="retryable",
+                        target=target,
                         patch=ReceiptTransitionPatch(
                             updated_at=now,
-                            next_retry_at=self._retry_at(now),
-                            sanitized_error=result.error,
+                            next_retry_at=(
+                                None
+                                if final_attempt
+                                else self._retry_at(
+                                    now,
+                                    capture.runner.backoff_seconds[backoff_index],
+                                )
+                            ),
+                            sanitized_error=error,
                         ),
                         reservation=reservation,
                         settlement=settlement,
@@ -329,6 +438,7 @@ class CaptureRunner:
                 except (FileNotFoundError, OSError, ValueError):
                     pass
         charged = budget.snapshot().charged_tokens - before_charge
+        final_snapshot = store.read_snapshot()
         return RunnerReport(
             attempted,
             completed,
@@ -340,7 +450,8 @@ class CaptureRunner:
             observation_count,
             charged,
             0,
+            self._backlog_count(final_snapshot.receipts, frozenset(run.revision_keys)),
         )
 
 
-__all__ = ["CaptureRunner", "RunnerReport"]
+__all__ = ["CaptureRunner", "RunnerReport", "retry_capture_receipt"]

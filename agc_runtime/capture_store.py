@@ -1194,9 +1194,7 @@ class CaptureStore:
             if current.status == "discovered":
                 validate_capture_transition("discovered", "queued")
             elif current.status == "retryable":
-                validate_capture_transition(
-                    "retryable", "queued", reopen_reason="explicit_retry"
-                )
+                validate_capture_transition("retryable", "queued")
             validate_capture_transition("queued", "extracting")
             updated = replace(
                 current,

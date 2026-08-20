@@ -41,6 +41,17 @@ def _failed(action: str, code: str, message: str, *, exit_code: int = 2) -> int:
 
 def _parse(arguments: list[str]) -> tuple[str, Path, str | None] | None:
     if (
+        len(arguments) == 5
+        and arguments[0] == "retry"
+        and arguments[1] == "--root"
+        and arguments[2]
+        and arguments[3] == "--revision-key"
+        and len(arguments[4]) == 67
+        and arguments[4].startswith("cr_")
+        and all(item in "0123456789abcdef" for item in arguments[4][3:])
+    ):
+        return "retry", Path(arguments[2]), arguments[4]
+    if (
         len(arguments) == 8
         and arguments[0] == "backfill"
         and arguments[1] == "--root"
@@ -429,6 +440,41 @@ def _run_backfill(paths: MemoryPaths, encoded: str) -> int:
     )
 
 
+def _run_retry(paths: MemoryPaths, receipt_id: str) -> int:
+    action = "retry"
+    try:
+        from agc_runtime.capture_runner import retry_capture_receipt
+
+        receipt = retry_capture_receipt(paths, receipt_id, now=_utc_now())
+    except RuntimeError:
+        return _failed(
+            action,
+            "capture_retry_busy",
+            "Capture retry is temporarily unavailable",
+            exit_code=1,
+        )
+    except (KeyError, OSError, TypeError, UnicodeError, ValueError) as error:
+        code = (
+            str(error)
+            if str(error).startswith("capture_retry_")
+            else "capture_integrity_failed"
+        )
+        return _failed(action, code, "Capture retry was not queued", exit_code=1)
+    return _emit(
+        ToolResponse(
+            tool=_TOOL,
+            action=action,
+            status="accepted",
+            data={
+                "receipt_id": receipt.receipt_id,
+                "status": receipt.status,
+                "attempt_count": receipt.attempt_count,
+            },
+        ),
+        exit_code=0,
+    )
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
     parsed = _parse(arguments)
@@ -454,6 +500,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     if action == "backfill":
         assert mode is not None
         return _run_backfill(paths, mode)
+    if action == "retry":
+        assert mode is not None
+        return _run_retry(paths, mode)
     assert mode is not None
     return _run_scan(paths, action=action, mode=mode)
 

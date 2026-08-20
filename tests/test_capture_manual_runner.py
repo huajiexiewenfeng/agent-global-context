@@ -36,7 +36,14 @@ def _runner_api():
             sys.modules.pop(name, None)
 
 
-def _write_config(memory_root: Path, source_root: Path, *, total: int) -> None:
+def _write_config(
+    memory_root: Path,
+    source_root: Path,
+    *,
+    total: int,
+    paused: bool = False,
+    max_attempts: int = 5,
+) -> None:
     memory_root.mkdir(parents=True, exist_ok=True)
     text = (REPOSITORY_ROOT / "agc_runtime" / "default_config.yaml").read_text(
         encoding="utf-8"
@@ -46,6 +53,8 @@ def _write_config(memory_root: Path, source_root: Path, *, total: int) -> None:
         .replace("mode: off", "mode: scanner_only", 1)
         .replace("sources: []", f"sources:\n    - {source_root.as_posix()}", 1)
         .replace("backfill_total_tokens: 100000", f"backfill_total_tokens: {total}", 1)
+        .replace("paused: false", f"paused: {str(paused).lower()}", 1)
+        .replace("max_attempts: 5", f"max_attempts: {max_attempts}", 1)
     )
     (memory_root / "config.yaml").write_text(text, encoding="utf-8")
 
@@ -126,6 +135,7 @@ class FakeAdapter:
 class FakeExtractor:
     extract_calls: int = 0
     fail_first: bool = False
+    always_fail: bool = False
 
     def describe(self):
         from agc_runtime.capture_extractor import (
@@ -147,7 +157,7 @@ class FakeExtractor:
 
         del capsule, reservation
         self.extract_calls += 1
-        if self.fail_first and self.extract_calls == 1:
+        if self.always_fail or (self.fail_first and self.extract_calls == 1):
             return ExtractionResult.from_mapping(
                 {
                     "succeeded": False,
@@ -291,3 +301,203 @@ def test_one_failed_item_is_settled_and_does_not_block_the_next(tmp_path: Path) 
     assert report.completed_count == 1
     assert report.extractor_call_count == report.reserved_attempt_count == 2
     assert report.charged_tokens == 6_150
+
+
+def test_paused_backfill_preserves_backlog_without_model_call(tmp_path: Path) -> None:
+    paths, adapter, extractor, preparation = _prepared(tmp_path)
+    config_path = paths.root / "config.yaml"
+    config = config_path.read_text(encoding="utf-8")
+    config_path.write_text(
+        config.replace("paused: false", "paused: true", 1), encoding="utf-8"
+    )
+
+    report = CaptureRunner(paths, (adapter,), extractor, preparation).run_manual_backfill(
+        authorization_digest=preparation.authorization_digest,
+        max_items=20,
+        now=RUN_AT,
+    )
+
+    assert report.attempted_count == 0
+    assert report.backlog_count == 1
+    assert extractor.extract_calls == 0
+
+
+def test_retryable_receipt_waits_until_configured_backoff(tmp_path: Path) -> None:
+    paths, adapter, extractor, preparation = _prepared(tmp_path)
+    extractor.always_fail = True
+    runner = CaptureRunner(paths, (adapter,), extractor, preparation)
+
+    first = runner.run_manual_backfill(
+        authorization_digest=preparation.authorization_digest,
+        max_items=20,
+        now=RUN_AT,
+    )
+    immediate = runner.run_manual_backfill(
+        authorization_digest=preparation.authorization_digest,
+        max_items=20,
+        now=RUN_AT,
+    )
+
+    assert first.failed_count == 1
+    assert immediate.attempted_count == 0
+    assert immediate.backlog_count == 1
+    assert extractor.extract_calls == 1
+
+
+def test_fifth_automatic_failure_parks_receipt_as_failed(tmp_path: Path) -> None:
+    paths, adapter, extractor, preparation = _prepared(tmp_path)
+    extractor.always_fail = True
+    runner = CaptureRunner(paths, (adapter,), extractor, preparation)
+    run_times = (
+        "2026-08-13T12:01:00Z",
+        "2026-08-13T12:02:01Z",
+        "2026-08-13T12:07:02Z",
+        "2026-08-13T12:37:03Z",
+        "2026-08-13T14:37:04Z",
+    )
+
+    for run_at in run_times:
+        runner.run_manual_backfill(
+            authorization_digest=preparation.authorization_digest,
+            max_items=20,
+            now=run_at,
+        )
+
+    receipt_path = next(paths.capture.receipts.glob("*.json"))
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    assert extractor.extract_calls == 5
+    assert receipt["attempt_count"] == 5
+    assert receipt["status"] == "failed"
+    assert receipt["next_retry_at"] is None
+
+
+def test_explicit_retry_requeues_parked_receipt_without_model_call(tmp_path: Path) -> None:
+    memory = tmp_path / "memory"
+    source = tmp_path / "source"
+    source.mkdir()
+    _write_config(memory, source, total=100_000, max_attempts=1)
+    paths = MemoryPaths.from_root(memory)
+    adapter = FakeAdapter()
+    extractor = FakeExtractor(always_fail=True)
+    preparation = prepare_backfill(
+        paths=paths, adapters=(adapter,), extractor=extractor, now=NOW
+    )
+    runner = CaptureRunner(paths, (adapter,), extractor, preparation)
+    runner.run_manual_backfill(
+        authorization_digest=preparation.authorization_digest,
+        max_items=20,
+        now=RUN_AT,
+    )
+    calls_before_retry = extractor.extract_calls
+
+    reopened = runner.retry_revision(_revision().key, now="2026-08-13T12:02:00Z")
+
+    assert reopened.status == "queued"
+    assert reopened.attempt_count == 1
+    assert reopened.sanitized_error is None
+    assert extractor.extract_calls == calls_before_retry
+
+
+def test_max_items_reports_remaining_queue_backlog(tmp_path: Path) -> None:
+    memory = tmp_path / "memory"
+    source = tmp_path / "source"
+    source.mkdir()
+    _write_config(memory, source, total=100_000)
+    paths = MemoryPaths.from_root(memory)
+    adapter = FakeAdapter((_revision("turn-1"), _revision("turn-2")))
+    extractor = FakeExtractor()
+    preparation = prepare_backfill(
+        paths=paths, adapters=(adapter,), extractor=extractor, now=NOW
+    )
+
+    report = CaptureRunner(paths, (adapter,), extractor, preparation).run_manual_backfill(
+        authorization_digest=preparation.authorization_digest,
+        max_items=1,
+        now=RUN_AT,
+    )
+
+    assert report.attempted_count == 1
+    assert report.completed_count == 1
+    assert report.backlog_count == 1
+
+
+def test_retry_cli_uses_opaque_receipt_key_and_requeues_without_extractor(
+    tmp_path: Path, capsys
+) -> None:
+    from agc_runtime.capture_cli import _parse, _run_retry
+
+    memory = tmp_path / "memory"
+    source = tmp_path / "source"
+    source.mkdir()
+    _write_config(memory, source, total=100_000, max_attempts=1)
+    paths = MemoryPaths.from_root(memory)
+    adapter = FakeAdapter()
+    extractor = FakeExtractor(always_fail=True)
+    preparation = prepare_backfill(
+        paths=paths, adapters=(adapter,), extractor=extractor, now=NOW
+    )
+    CaptureRunner(paths, (adapter,), extractor, preparation).run_manual_backfill(
+        authorization_digest=preparation.authorization_digest,
+        max_items=20,
+        now=RUN_AT,
+    )
+    receipt = next(paths.capture.receipts.glob("*.json"))
+    receipt_id = json.loads(receipt.read_text(encoding="utf-8"))["receipt_id"]
+    arguments = ["retry", "--root", str(paths.root), "--revision-key", receipt_id]
+    calls_before = extractor.extract_calls
+
+    assert _parse(arguments) == ("retry", paths.root, receipt_id)
+    assert _run_retry(paths, receipt_id) == 0
+    response = json.loads(capsys.readouterr().out)
+
+    assert response["status"] == "accepted"
+    assert response["data"] == {
+        "receipt_id": receipt_id,
+        "status": "queued",
+        "attempt_count": 1,
+    }
+    assert extractor.extract_calls == calls_before
+
+
+def test_restart_recovers_unknown_reserved_call_and_retries_without_refund(
+    tmp_path: Path,
+) -> None:
+    from agc_runtime.capture_budget import CaptureTokenBudget
+    from agc_runtime.capture_capsule import CapsulePolicy
+    from agc_runtime.capture_store import CaptureStore
+
+    paths, adapter, extractor, preparation = _prepared(tmp_path)
+    store = CaptureStore(paths, clock=lambda: RUN_AT)
+    current = store.ready_revisions()[0]
+    lease = store.acquire_lease(
+        current.key, owner_id="crashed-runner", now=RUN_AT, ttl_seconds=300
+    )
+    assert lease is not None
+    revision = store.frozen_revisions()[0]
+    capsule = adapter.load_capsule(revision, CapsulePolicy())
+    budget = CaptureTokenBudget(
+        paths,
+        pool="backfill",
+        census_id=preparation.census_id,
+        ceiling=100_000,
+        clock=lambda: RUN_AT,
+    )
+    reservation = budget.reserve(
+        current.key, 1, TokenUsage(3000, 3000, 6000)
+    )
+    store.begin_extraction(lease, capsule, extractor.describe(), now=RUN_AT)
+    store.release_lease(lease)
+
+    report = CaptureRunner(paths, (adapter,), extractor, preparation).run_manual_backfill(
+        authorization_digest=preparation.authorization_digest,
+        max_items=20,
+        now="2026-08-13T12:10:00Z",
+    )
+
+    receipt = json.loads(next(paths.capture.receipts.glob("*.json")).read_text(encoding="utf-8"))
+    assert report.completed_count == 1
+    assert extractor.extract_calls == 1
+    assert receipt["status"] == "complete"
+    assert receipt["attempt_count"] == 2
+    assert budget.snapshot().charged_tokens == 6150
+    assert budget.snapshot().active_reservations == 1
