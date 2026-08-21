@@ -103,6 +103,38 @@ def test_static_schema_is_closed_and_bounds_drafts_zero_to_eight():
     assert schema["$defs"]["observation_draft"]["additionalProperties"] is False
 
 
+def test_static_schema_declares_types_for_all_const_and_enum_nodes():
+    schema = json.loads(SCHEMA.read_text(encoding="utf-8"))
+
+    def visit(node: object, path: str = "$") -> None:
+        if isinstance(node, dict):
+            if "const" in node or "enum" in node:
+                assert "type" in node, path
+            for key, value in node.items():
+                visit(value, f"{path}.{key}")
+        elif isinstance(node, list):
+            for index, value in enumerate(node):
+                visit(value, f"{path}[{index}]")
+
+    visit(schema)
+
+
+def test_static_schema_uses_only_supported_structured_output_keywords():
+    schema = json.loads(SCHEMA.read_text(encoding="utf-8"))
+    unsupported = {"uniqueItems", "oneOf", "minLength", "maxLength"}
+
+    def visit(node: object, path: str = "$") -> None:
+        if isinstance(node, dict):
+            assert not (set(node) & unsupported), path
+            for key, value in node.items():
+                visit(value, f"{path}.{key}")
+        elif isinstance(node, list):
+            for index, value in enumerate(node):
+                visit(value, f"{path}[{index}]")
+
+    visit(schema)
+
+
 def test_pyproject_packages_the_static_extractor_schema():
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
@@ -202,6 +234,46 @@ def test_process_failures_are_bounded_and_content_safe(
     assert RAW_SENTINEL not in caplog.text
 
 
+def test_successful_process_is_not_masked_by_windows_temp_cleanup_race(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    import agc_runtime.codex_extractor as extractor_module
+
+    *_unused, CodexExtractor = _extractor_api()
+    cwd = tmp_path / "extractor-cwd"
+    cwd.mkdir()
+
+    class CleanupRacingDirectory:
+        def __init__(self, *, ignore_cleanup_errors: bool):
+            self.ignore_cleanup_errors = ignore_cleanup_errors
+
+        def __enter__(self) -> str:
+            return str(cwd)
+
+        def __exit__(self, *_args: object) -> None:
+            if not self.ignore_cleanup_errors:
+                raise PermissionError("simulated Windows cwd cleanup race")
+
+    def temporary_directory(
+        *, prefix: str, ignore_cleanup_errors: bool = False
+    ) -> CleanupRacingDirectory:
+        assert prefix == "agc-capture-extractor-"
+        return CleanupRacingDirectory(
+            ignore_cleanup_errors=ignore_cleanup_errors
+        )
+
+    monkeypatch.setattr(
+        extractor_module.tempfile, "TemporaryDirectory", temporary_directory
+    )
+    extractor = CodexExtractor(executable=_command())
+
+    outcome = extractor._run((*_command(), "--version"), b"")
+
+    assert outcome.returncode == 0
+    assert not outcome.spawn_failed
+
+
 def test_timeout_covers_a_child_that_never_reads_stdin():
     *_unused, CodexExtractor = _extractor_api()
     extractor = CodexExtractor(
@@ -275,6 +347,19 @@ def test_real_child_validates_exact_argv_empty_cwd_sanitized_env_and_stdin(
     assert len(result.drafts) == 1
 
 
+def test_real_child_preserves_existing_absolute_codex_home_for_cli_auth(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    *_unused, CodexExtractor = _extractor_api()
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir()
+    monkeypatch.setenv("CODEX_HOME", str(codex_home.resolve()))
+
+    environment = CodexExtractor._environment()
+
+    assert environment["CODEX_HOME"] == str(codex_home.resolve())
+
+
 def test_argv_is_a_list_boundary_and_optional_model_is_explicitly_appended():
     *_unused, CodexExtractor = _extractor_api()
     without_model = CodexExtractor(executable=_command())
@@ -286,6 +371,7 @@ def test_argv_is_a_list_boundary_and_optional_model_is_explicitly_appended():
         "--ephemeral",
         "--ignore-user-config",
         "--ignore-rules",
+        "--skip-git-repo-check",
         "--sandbox",
         "read-only",
         "--output-schema",
@@ -303,6 +389,14 @@ def test_argv_is_a_list_boundary_and_optional_model_is_explicitly_appended():
     assert isinstance(with_model._build_argv(SCHEMA.resolve()), tuple)
 
 
+def test_extractor_skips_git_repo_check_inside_its_isolated_temp_directory():
+    *_unused, CodexExtractor = _extractor_api()
+
+    argv = CodexExtractor(executable=_command())._build_argv(SCHEMA.resolve())
+
+    assert "--skip-git-repo-check" in argv
+
+
 def test_capability_probe_requires_version_help_flags_and_content_free_smoke():
     *_unused, CodexExtractor = _extractor_api()
     probe = CodexExtractor(executable=_command()).probe_capabilities()
@@ -318,6 +412,35 @@ def test_capability_probe_requires_version_help_flags_and_content_free_smoke():
     assert probe.error is None
 
 
+def test_capability_probe_accepts_current_official_jsonl_with_explicit_model(
+    tmp_path: Path,
+):
+    *_unused, CodexExtractor = _extractor_api()
+    executable = tmp_path / "fake_codex_current_cli.py"
+    shutil.copyfile(FAKE_CODEX, executable)
+
+    probe = CodexExtractor(
+        executable=_command(executable), explicit_model="gpt-5.6-luna"
+    ).probe_capabilities()
+
+    assert probe.available
+    assert probe.model_boundary == "gpt-5.6-luna"
+    assert probe.provider_boundary == "openai"
+    assert probe.auth_available
+    assert probe.sandbox_read_only
+    assert probe.usage_available
+
+
+def test_current_official_jsonl_requires_explicit_model_boundary(tmp_path: Path):
+    *_unused, CodexExtractor = _extractor_api()
+    executable = tmp_path / "fake_codex_current_cli.py"
+    shutil.copyfile(FAKE_CODEX, executable)
+
+    probe = CodexExtractor(executable=_command(executable)).probe_capabilities()
+
+    assert not probe.available
+
+
 def test_help_capability_requires_standalone_stdin_dash_token():
     *_unused, CodexExtractor = _extractor_api()
     help_without_stdin = (
@@ -326,6 +449,28 @@ def test_help_capability_requires_standalone_stdin_dash_token():
     )
 
     assert not CodexExtractor._help_has_required_flags(help_without_stdin)
+
+
+def test_help_capability_requires_skip_git_repo_check_flag():
+    *_unused, CodexExtractor = _extractor_api()
+    help_without_skip_git = (
+        "--ephemeral --ignore-user-config --ignore-rules --sandbox read-only "
+        "--output-schema --json -"
+    )
+
+    assert not CodexExtractor._help_has_required_flags(help_without_skip_git)
+
+
+def test_help_capability_accepts_punctuated_documented_sandbox_value():
+    *_unused, CodexExtractor = _extractor_api()
+    current_cli_help = (
+        "--ephemeral --ignore-user-config --ignore-rules "
+        "--skip-git-repo-check --sandbox "
+        "[possible values: read-only, workspace-write, danger-full-access] "
+        "--output-schema --json -"
+    )
+
+    assert CodexExtractor._help_has_required_flags(current_cli_help)
 
 
 @pytest.mark.parametrize(

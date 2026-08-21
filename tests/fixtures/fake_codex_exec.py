@@ -13,6 +13,7 @@ REQUIRED_FLAGS = (
     "--ephemeral",
     "--ignore-user-config",
     "--ignore-rules",
+    "--skip-git-repo-check",
     "--sandbox",
     "--output-schema",
     "--json",
@@ -97,6 +98,7 @@ def _validate_exec(arguments: list[str]) -> tuple[str, dict[str, object]]:
         "--ephemeral",
         "--ignore-user-config",
         "--ignore-rules",
+        "--skip-git-repo-check",
         "--sandbox",
         "read-only",
         "--output-schema",
@@ -122,7 +124,6 @@ def _validate_exec(arguments: list[str]) -> tuple[str, dict[str, object]]:
     if os.listdir("."):
         _fail()
     forbidden = {
-        "CODEX_HOME",
         "PYTHONPATH",
         "PYTHONHOME",
         "CLAUDECODE",
@@ -130,13 +131,23 @@ def _validate_exec(arguments: list[str]) -> tuple[str, dict[str, object]]:
     }
     if any(key in forbidden or key.startswith("AGC_") for key in os.environ):
         _fail()
+    codex_home = os.environ.get("CODEX_HOME")
+    if codex_home and not (
+        Path(codex_home).is_absolute() and Path(codex_home).is_dir()
+    ):
+        _fail()
     try:
         capsule = json.loads(sys.stdin.buffer.read().decode("utf-8"))
     except (UnicodeError, json.JSONDecodeError):
         _fail()
     if not isinstance(capsule, dict):
         _fail()
-    if capsule != {"schema_version": "capture-probe-v1"} and "CAPSULE_ONLY_SENTINEL" not in json.dumps(
+    if not (
+        capsule.get("schema_version") == "capture-probe-v1"
+        and capsule.get("instruction")
+        == "Capability probe only. Return an empty drafts array."
+        and set(capsule) == {"instruction", "schema_version"}
+    ) and "CAPSULE_ONLY_SENTINEL" not in json.dumps(
         capsule, ensure_ascii=True
     ):
         _fail()
@@ -167,7 +178,52 @@ def main() -> int:
         return 0
 
     scenario, capsule = _validate_exec(arguments)
-    is_probe = capsule == {"schema_version": "capture-probe-v1"}
+    is_probe = capsule == {
+        "instruction": "Capability probe only. Return an empty drafts array.",
+        "schema_version": "capture-probe-v1",
+    }
+    if "current_cli" in executable_name and is_probe:
+        payload = json.dumps(
+            {"schema_version": "capture-extractor-v1", "drafts": []},
+            ensure_ascii=True,
+            separators=(",", ":"),
+        )
+        _emit({"type": "thread.started", "thread_id": "thread-current"})
+        _emit({"type": "turn.started"})
+        _emit(
+            {
+                "type": "item.completed",
+                "item": {
+                    "id": "warning-1",
+                    "type": "error",
+                    "message": "non-fatal warning",
+                },
+            }
+        )
+        _emit(
+            {
+                "type": "item.completed",
+                "item": {"id": "final-1", "type": "agent_message", "text": payload},
+            }
+        )
+        _emit(
+            {
+                "type": "item.completed",
+                "item": {"id": "final-2", "type": "agent_message", "text": payload},
+            }
+        )
+        _emit(
+            {
+                "type": "turn.completed",
+                "usage": {
+                    "input_tokens": 12,
+                    "cached_input_tokens": 3,
+                    "output_tokens": 4,
+                    "reasoning_output_tokens": 2,
+                },
+            }
+        )
+        return 0
     if "smoke_fail" in executable_name and is_probe:
         _fail(8)
     if scenario == "timeout":
@@ -228,7 +284,18 @@ def main() -> int:
     }
     _emit(final_event)
     if scenario == "multiple-final":
-        _emit(final_event)
+        conflicting_final = {
+            "type": "item.completed",
+            "item": {
+                "id": "item-final-conflict",
+                "type": "agent_message",
+                "text": json.dumps(
+                    {"schema_version": "capture-extractor-v1", "drafts": []},
+                    ensure_ascii=True,
+                ),
+            },
+        }
+        _emit(conflicting_final)
     if scenario != "usage-absent":
         usage: dict[str, object] = {
             "input_tokens": 11,

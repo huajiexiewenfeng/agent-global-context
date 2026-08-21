@@ -35,6 +35,7 @@ _REQUIRED_HELP = (
     "--ephemeral",
     "--ignore-user-config",
     "--ignore-rules",
+    "--skip-git-repo-check",
     "--sandbox",
     "read-only",
     "--output-schema",
@@ -65,6 +66,11 @@ _ENVIRONMENT_ALLOWLIST = frozenset(
 )
 _SUPPORTED_EVENTS = frozenset(
     {"thread.started", "turn.started", "item.completed", "turn.completed"}
+)
+_DEFAULT_PROVIDER_BOUNDARY = "openai"
+_CAPABILITY_PROBE_STDIN = (
+    b'{"instruction":"Capability probe only. Return an empty drafts array.",'
+    b'"schema_version":"capture-probe-v1"}'
 )
 
 
@@ -221,6 +227,7 @@ class CodexExtractor:
             "--ephemeral",
             "--ignore-user-config",
             "--ignore-rules",
+            "--skip-git-repo-check",
             "--sandbox",
             "read-only",
             "--output-schema",
@@ -235,7 +242,9 @@ class CodexExtractor:
     def _help_has_required_flags(help_text: str) -> bool:
         if not isinstance(help_text, str):
             return False
-        tokens = frozenset(help_text.split())
+        tokens = frozenset(
+            item.strip("[](),;:") for item in help_text.split()
+        )
         return all(flag in tokens for flag in _REQUIRED_HELP)
 
     @contextmanager
@@ -250,11 +259,17 @@ class CodexExtractor:
 
     @staticmethod
     def _environment() -> dict[str, str]:
-        return {
+        environment = {
             key: value
             for key, value in os.environ.items()
             if key.upper() in _ENVIRONMENT_ALLOWLIST
         }
+        codex_home = os.environ.get("CODEX_HOME")
+        if codex_home:
+            path = Path(codex_home)
+            if path.is_absolute() and path.is_dir():
+                environment["CODEX_HOME"] = str(path.resolve())
+        return environment
 
     @staticmethod
     def _executable_identity(command: tuple[str, ...]) -> str:
@@ -295,7 +310,9 @@ class CodexExtractor:
                     pass
 
         try:
-            with tempfile.TemporaryDirectory(prefix="agc-capture-extractor-") as cwd:
+            with tempfile.TemporaryDirectory(
+                prefix="agc-capture-extractor-", ignore_cleanup_errors=True
+            ) as cwd:
                 process = subprocess.Popen(
                     list(argv),
                     cwd=cwd,
@@ -387,15 +404,32 @@ class CodexExtractor:
         fields = set(value)
         if fields == {"input_tokens", "output_tokens", "total_tokens"}:
             return TokenUsage.from_mapping(value)
-        if fields == {"input_tokens", "cached_input_tokens", "output_tokens"}:
+        current_fields = {
+            "input_tokens",
+            "cached_input_tokens",
+            "output_tokens",
+            "reasoning_output_tokens",
+        }
+        if frozenset(fields) in {
+            frozenset({"input_tokens", "cached_input_tokens", "output_tokens"}),
+            frozenset(current_fields),
+        }:
             input_tokens = value["input_tokens"]
             cached_tokens = value["cached_input_tokens"]
             output_tokens = value["output_tokens"]
+            reasoning_tokens = value.get("reasoning_output_tokens", 0)
             if (
                 type(input_tokens) is not int
                 or type(cached_tokens) is not int
                 or type(output_tokens) is not int
-                or min(input_tokens, cached_tokens, output_tokens) < 0
+                or type(reasoning_tokens) is not int
+                or min(
+                    input_tokens,
+                    cached_tokens,
+                    output_tokens,
+                    reasoning_tokens,
+                )
+                < 0
                 or cached_tokens > input_tokens
             ):
                 raise ValueError("invalid usage")
@@ -476,27 +510,41 @@ class CodexExtractor:
                 item = event["item"]
                 if (
                     not isinstance(item, Mapping)
-                    or set(item) != {"id", "type", "text"}
                     or not isinstance(item.get("id"), str)
-                    or not isinstance(item.get("text"), str)
+                    or not isinstance(item.get("type"), str)
                 ):
                     raise ValueError("invalid final item")
                 if item.get("type") == "agent_message":
+                    if set(item) != {"id", "type", "text"} or not isinstance(
+                        item.get("text"), str
+                    ):
+                        raise ValueError("invalid final item")
                     finals.append(item["text"])
-                elif item.get("type") != "reasoning":
+                elif item.get("type") == "reasoning":
+                    if set(item) != {"id", "type", "text"} or not isinstance(
+                        item.get("text"), str
+                    ):
+                        raise ValueError("invalid reasoning item")
+                elif item.get("type") == "error":
+                    if set(item) != {"id", "type", "message"} or not isinstance(
+                        item.get("message"), str
+                    ):
+                        raise ValueError("invalid error item")
+                else:
                     raise ValueError("unsupported item")
             elif event_type == "turn.completed":
                 if set(event) != {"type", "usage"}:
                     raise ValueError("invalid usage event")
                 usage_events.append(event["usage"])
+        unique_finals = tuple(dict.fromkeys(finals))
         if (
             thread_count != 1
             or turn_started_count > 1
-            or len(finals) != 1
+            or len(unique_finals) != 1
             or len(usage_events) > 1
         ):
             raise ValueError("ambiguous events")
-        payload = _strict_json(finals[0])
+        payload = _strict_json(unique_finals[0])
         if (
             not isinstance(payload, Mapping)
             or set(payload) != {"schema_version", "drafts"}
@@ -594,7 +642,7 @@ class CodexExtractor:
             with self._schema_path() as schema_path:
                 smoke = self._run(
                     self._build_argv(schema_path),
-                    b'{"schema_version":"capture-probe-v1"}',
+                    _CAPABILITY_PROBE_STDIN,
                 )
         except (TypeError, ValueError, UnicodeError):
             return _probe_failure(identity, version)
@@ -610,6 +658,13 @@ class CodexExtractor:
                 drafts, usage, metadata = self._parse_events(smoke.stdout)
             except (KeyError, TypeError, ValueError, UnicodeError):
                 return _probe_failure(identity, version)
+            if not metadata:
+                metadata = {
+                    "model": self._explicit_model,
+                    "provider": _DEFAULT_PROVIDER_BOUNDARY,
+                    "auth_available": True,
+                    "sandbox_read_only": True,
+                }
             if (
                 drafts
                 or not isinstance(metadata.get("model"), str)
