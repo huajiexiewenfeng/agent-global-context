@@ -134,7 +134,22 @@ class CodexSourceAdapter(SourceAdapter):
         for locator, path in self._source_files(diagnostics):
             scan = self._scan_file(path)
             if scan.diagnostic_code is not None:
-                diagnostics.add(scan.diagnostic_code)
+                try:
+                    modified_at = datetime.fromtimestamp(
+                        path.stat().st_mtime, tz=start.tzinfo
+                    )
+                except OSError:
+                    diagnostics.add("source_unreadable")
+                else:
+                    latest_record_at = (
+                        self._latest_record_timestamp(path)
+                        if modified_at >= start
+                        else None
+                    )
+                    if modified_at >= start and (
+                        latest_record_at is None or latest_record_at >= start
+                    ):
+                        diagnostics.add(scan.diagnostic_code)
                 continue
             if scan.identity is None or scan.identity[3] != "main":
                 continue
@@ -278,8 +293,24 @@ class CodexSourceAdapter(SourceAdapter):
                             return _FileScan(None, (), "unknown_source_shape")
                         if identity is None:
                             identity = current
+                            if identity[3] == "subagent":
+                                return _FileScan(identity, (), None)
                         elif current != identity:
-                            return _FileScan(None, (), "conflicting_source_identity")
+                            same_anchor = (
+                                current[0] == identity[0]
+                                and current[1] == identity[1]
+                                and current[3] == identity[3]
+                            )
+                            quality_upgrade = {
+                                current[2],
+                                identity[2],
+                            } == {"legacy_rollout_id", "session_id"}
+                            if not same_anchor or not quality_upgrade:
+                                return _FileScan(
+                                    None, (), "conflicting_source_identity"
+                                )
+                            if current[2] == "session_id":
+                                identity = current
                     elif record_type == "event_msg":
                         completion, diagnostic = self._critical_completion(record)
                         if diagnostic is not None:
@@ -299,6 +330,24 @@ class CodexSourceAdapter(SourceAdapter):
         if identity is None:
             return _FileScan(None, (), "unknown_source_shape")
         return _FileScan(identity, tuple(completions.items()), None)
+
+    def _latest_record_timestamp(self, path: Path) -> datetime | None:
+        latest: datetime | None = None
+        try:
+            with path.open("r", encoding="utf-8", newline="") as handle:
+                for line, final in self._source_lines(handle):
+                    record, _diagnostic = self._decode_source_line(line, final=final)
+                    if record is None:
+                        continue
+                    observed_at = _utc(record.get("timestamp"))
+                    if observed_at is not None and (
+                        latest is None or observed_at > latest
+                    ):
+                        latest = observed_at
+                    del record
+        except (OSError, UnicodeError):
+            return None
+        return latest
 
     @staticmethod
     def _source_lines(handle: Any) -> Iterator[tuple[str, bool]]:
@@ -373,6 +422,8 @@ class CodexSourceAdapter(SourceAdapter):
             "turn_aborted",
             "patch_apply_end",
             "item_completed",
+            "exec_command_end",
+            "dynamic_tool_call_response",
         } and has_turn_identity:
             return None, "unknown_completion_shape"
         return None, None

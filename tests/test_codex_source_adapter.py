@@ -69,6 +69,8 @@ def test_codex_app_turn_scoped_non_completion_events_do_not_quarantine_session(
                 '{"timestamp":"2026-08-16T10:00:00Z","type":"session_meta","payload":{"id":"rollout-app","session_id":"task-app","source":"vscode"}}',
                 '{"timestamp":"2026-08-16T10:00:10Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-app"}}',
                 '{"timestamp":"2026-08-16T10:00:20Z","type":"event_msg","payload":{"type":"patch_apply_end","turn_id":"turn-app","success":true}}',
+                '{"timestamp":"2026-08-16T10:00:21Z","type":"event_msg","payload":{"type":"exec_command_end","turn_id":"turn-app","call_id":"call-1","status":"completed"}}',
+                '{"timestamp":"2026-08-16T10:00:22Z","type":"event_msg","payload":{"type":"dynamic_tool_call_response","turn_id":"turn-app","call_id":"call-2","success":true}}',
                 '{"timestamp":"2026-08-16T10:00:25Z","type":"event_msg","payload":{"type":"item_completed","turn_id":"turn-app","item":{"type":"agent_message"}}}',
                 '{"timestamp":"2026-08-16T10:00:30Z","type":"event_msg","payload":{"type":"turn_aborted","turn_id":"turn-aborted","reason":"interrupted"}}',
                 '{"timestamp":"2026-08-16T10:01:00Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-app"}}',
@@ -84,6 +86,119 @@ def test_codex_app_turn_scoped_non_completion_events_do_not_quarantine_session(
         (ref.key.task_id, ref.key.revision_id) for ref in batch.revisions
     }
     assert "unknown_completion_shape" not in batch.diagnostic_codes
+
+
+def test_stale_malformed_file_does_not_degrade_current_window(tmp_path: Path):
+    from agc_runtime.codex_source_adapter import CodexSourceAdapter
+
+    root = tmp_path / "codex-profile"
+    sessions = root / "sessions"
+    sessions.mkdir(parents=True)
+    stale = sessions / "stale-unknown.jsonl"
+    stale.write_text('{}\n', encoding="utf-8")
+    os.utime(stale, (0, 0))
+    current = sessions / "current-main.jsonl"
+    current.write_text(
+        "\n".join(
+            (
+                '{"timestamp":"2026-08-16T10:00:00Z","type":"session_meta","payload":{"id":"rollout-current","session_id":"task-current","source":"vscode"}}',
+                '{"timestamp":"2026-08-16T10:01:00Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-current"}}',
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    batch = CodexSourceAdapter(root).discover(None, _window())
+
+    assert {(item.key.task_id, item.key.revision_id) for item in batch.revisions} == {
+        ("task-current", "turn-current")
+    }
+    assert "unknown_source_shape" not in batch.diagnostic_codes
+
+
+def test_recently_touched_old_diagnostic_uses_record_time_for_window(
+    tmp_path: Path,
+):
+    from agc_runtime.codex_source_adapter import CodexSourceAdapter
+
+    root = tmp_path / "codex-profile"
+    sessions = root / "sessions"
+    sessions.mkdir(parents=True)
+    stale = sessions / "old-format-touched-recently.jsonl"
+    stale.write_text(
+        "\n".join(
+            (
+                '{"timestamp":"2026-07-01T10:00:00Z","type":"session_meta","payload":{"id":"rollout-old","session_id":"task-old","source":"vscode"}}',
+                '{"timestamp":"2026-07-01T10:01:00Z","type":"event_msg","payload":{"type":"future_turn_state","turn_id":"turn-old"}}',
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    os.utime(stale, None)
+
+    batch = CodexSourceAdapter(root).discover(None, _window())
+
+    assert batch.revisions == ()
+    assert "unknown_completion_shape" not in batch.diagnostic_codes
+
+
+def test_subagent_rollout_with_embedded_parent_metadata_is_safely_excluded(
+    tmp_path: Path,
+):
+    from agc_runtime.codex_source_adapter import CodexSourceAdapter
+
+    root = tmp_path / "codex-profile"
+    sessions = root / "sessions"
+    sessions.mkdir(parents=True)
+    source = sessions / "subagent-with-parent-metadata.jsonl"
+    source.write_text(
+        "\n".join(
+            (
+                '{"timestamp":"2026-08-16T10:00:00Z","type":"session_meta","payload":{"id":"rollout-subagent","session_id":"task-parent","source":{"subagent":{"thread_spawn":{"parent_thread_id":"task-parent"}}}}}',
+                '{"timestamp":"2026-08-16T10:00:01Z","type":"session_meta","payload":{"id":"task-parent","session_id":"task-parent","source":"vscode"}}',
+                '{"timestamp":"2026-08-16T10:01:00Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-parent"}}',
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    batch = CodexSourceAdapter(root).discover(None, _window())
+
+    assert batch.revisions == ()
+    assert "conflicting_source_identity" not in batch.diagnostic_codes
+
+
+def test_repeated_metadata_allows_legacy_to_session_id_quality_upgrade(
+    tmp_path: Path,
+):
+    from agc_runtime.codex_source_adapter import CodexSourceAdapter
+
+    root = tmp_path / "codex-profile"
+    sessions = root / "sessions"
+    sessions.mkdir(parents=True)
+    source = sessions / "identity-quality-upgrade.jsonl"
+    source.write_text(
+        "\n".join(
+            (
+                '{"timestamp":"2026-08-16T10:00:00Z","type":"session_meta","payload":{"id":"task-upgrade","source":"vscode"}}',
+                '{"timestamp":"2026-08-16T10:00:01Z","type":"session_meta","payload":{"id":"task-upgrade","session_id":"task-upgrade","source":"vscode"}}',
+                '{"timestamp":"2026-08-16T10:01:00Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-upgrade"}}',
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    batch = CodexSourceAdapter(root).discover(None, _window())
+
+    assert [
+        (item.key.task_id, item.key.revision_id, item.identity_quality)
+        for item in batch.revisions
+    ] == [("task-upgrade", "turn-upgrade", "session_id")]
+    assert "conflicting_source_identity" not in batch.diagnostic_codes
 
 
 def test_ac_19_unknown_formats_fail_closed_without_false_conflicts(
