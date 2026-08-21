@@ -213,6 +213,10 @@ def _activation(
 
 
 def _extractor_command(value: str) -> tuple[str, ...]:
+    if value == "codex-app":
+        from agc_runtime.codex_app_runtime import resolve_codex_app_command
+
+        return resolve_codex_app_command()
     try:
         command = tuple(shlex.split(value, posix=True))
     except ValueError as error:

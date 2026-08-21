@@ -334,6 +334,22 @@ def test_app_runtime_usage_accepts_cache_write_input_tokens():
     }
 
 
+@pytest.mark.parametrize("value", (-1, True, "0"))
+def test_app_runtime_usage_rejects_invalid_cache_write_tokens(value: object):
+    *_unused, CodexExtractor = _extractor_api()
+
+    with pytest.raises(ValueError, match="invalid usage"):
+        CodexExtractor._parse_usage(
+            {
+                "input_tokens": 10,
+                "cached_input_tokens": 0,
+                "cache_write_input_tokens": value,
+                "output_tokens": 2,
+                "reasoning_output_tokens": 0,
+            }
+        )
+
+
 def test_representative_codex_events_ignore_reasoning_and_normalize_usage():
     result = _extract(scenario="realistic-events")
 

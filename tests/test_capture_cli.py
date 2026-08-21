@@ -13,12 +13,31 @@ import sys
 import pytest
 
 from agc_runtime.capture_contracts import CaptureReceipt
+from agc_runtime.capture_cli import _extractor_command
 from agc_runtime.capture_transaction import read_json
 from agc_runtime.paths import MemoryPaths
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 SENTINEL = "private-source-text-must-not-cross-census-boundary"
+
+
+def test_extractor_command_delegates_exact_codex_app_selector(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(
+        "agc_runtime.codex_app_runtime.resolve_codex_app_command",
+        lambda: (r"C:\app\codex.exe",),
+    )
+
+    assert _extractor_command("codex-app") == (r"C:\app\codex.exe",)
+
+
+def test_extractor_command_does_not_treat_arguments_as_app_selector():
+    assert _extractor_command("codex-app --version") == (
+        "codex-app",
+        "--version",
+    )
 
 
 def _invoke(*arguments: str) -> subprocess.CompletedProcess[str]:
