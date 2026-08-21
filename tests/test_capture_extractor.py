@@ -142,6 +142,18 @@ def test_pyproject_packages_the_static_extractor_schema():
     assert "schemas/capture-extractor-v1.schema.json" in package_data["*"]
 
 
+def test_capsule_prompt_requires_exact_bilingual_atomic_transformations():
+    *_unused, CodexExtractor = _extractor_api()
+
+    payload = json.loads(CodexExtractor._capsule_stdin(_capsule()).decode("utf-8"))
+
+    assert set(payload) == {"instruction", "task_capsule"}
+    assert payload["task_capsule"] == _capsule().to_mapping()
+    assert '"我需要的是X，不是Y" -> "用户需要X"' in payload["instruction"]
+    assert '"I prefer X" -> "The user prefers X"' in payload["instruction"]
+    assert "copy evidence verbatim" in payload["instruction"]
+
+
 def test_descriptor_and_draft_dtos_are_strict_and_content_hidden():
     _, CollectedObservationDraft, _, ExtractorDescriptor, _ = _extractor_api()
     descriptor = ExtractorDescriptor.from_mapping(

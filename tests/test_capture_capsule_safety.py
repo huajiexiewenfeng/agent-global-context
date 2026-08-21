@@ -167,6 +167,57 @@ def test_capsule_allowlist_isolates_target_turn_and_redacts_repr():
         capsule.task_title = "changed"  # type: ignore[misc]
 
 
+def test_chinese_atomic_constraint_passes_pre_and_persistence_gates():
+    from agc_runtime.capture_capsule import CapsulePolicy, build_capsule
+    from agc_runtime.capture_safety import persistence_gate
+
+    evidence = "我需要的是技术架构图，不是好看的封面图。"
+    result = build_capsule(
+        (_record("user", evidence),),
+        _ref(),
+        CapsulePolicy(project_scope="project:stable"),
+    )
+
+    assert result.capsule.user_signals == (evidence,)
+
+    gated = persistence_gate(
+        (
+            _draft(
+                "用户需要技术架构图。",
+                evidence,
+                kind="context",
+                category="work",
+                signal_type="decision_or_constraint",
+            ),
+        ),
+        result.capsule,
+    )
+
+    assert len(gated.accepted) == 1
+    assert gated.filtered_safety_count == 0
+    assert gated.filtered_policy_count == 0
+
+
+@pytest.mark.parametrize(
+    "evidence",
+    (
+        "如果我需要技术架构图，就使用这个方案。",
+        "他说我需要技术架构图。",
+        "也许我需要技术架构图。",
+    ),
+)
+def test_chinese_non_direct_or_hypothetical_constraints_remain_rejected(evidence: str):
+    from agc_runtime.capture_capsule import CapsulePolicy, build_capsule
+
+    result = build_capsule(
+        (_record("user", evidence),),
+        _ref(),
+        CapsulePolicy(project_scope="project:stable"),
+    )
+
+    assert result.capsule.user_signals == ()
+
+
 def test_pre_capsule_gate_scrubs_known_secret_corpus_before_hashing():
     from agc_runtime.capture_capsule import CapsulePolicy, build_capsule
 

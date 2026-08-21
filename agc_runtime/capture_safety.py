@@ -562,6 +562,35 @@ _YOU_PROPOSITION_PATTERNS: tuple[_PatternSpec, ...] = (
     ("identity", "positive", re.compile(r"(?i)^you\s+identify\s+as\s+(?P<object>.+)$")),
 )
 
+_CHINESE_USER_PROPOSITION_PATTERNS: tuple[_PatternSpec, ...] = (
+    (
+        "constraint",
+        "positive",
+        re.compile(r"^我需要的是(?P<object>[^,，。！？?]+)[,，]不是[^。！？?]+[。.]?$"),
+    ),
+    ("constraint", "positive", re.compile(r"^我需要(?P<object>[^。！？?]+)[。.]?$")),
+    ("constraint", "positive", re.compile(r"^我必须(?P<object>[^。！？?]+)[。.]?$")),
+    ("goal", "positive", re.compile(r"^我希望(?P<object>[^。！？?]+)[。.]?$")),
+    ("goal", "positive", re.compile(r"^我的(?:长期)?目标是(?P<object>[^。！？?]+)[。.]?$")),
+    ("preference", "positive", re.compile(r"^我(?:偏好|喜欢)(?P<object>[^。！？?]+)[。.]?$")),
+    ("preference", "negative", re.compile(r"^我不喜欢(?P<object>[^。！？?]+)[。.]?$")),
+    ("avoidance", "positive", re.compile(r"^我避免(?P<object>[^。！？?]+)[。.]?$")),
+    ("method", "positive", re.compile(r"^我(?:使用|采用|遵循)(?P<object>[^。！？?]+)[。.]?$")),
+    ("principle", "positive", re.compile(r"^我的原则是(?P<object>[^。！？?]+)[。.]?$")),
+)
+
+_CHINESE_STATEMENT_PROPOSITION_PATTERNS: tuple[_PatternSpec, ...] = (
+    ("constraint", "positive", re.compile(r"^用户需要(?P<object>[^。！？?]+)[。.]?$")),
+    ("constraint", "positive", re.compile(r"^用户必须(?P<object>[^。！？?]+)[。.]?$")),
+    ("goal", "positive", re.compile(r"^用户希望(?P<object>[^。！？?]+)[。.]?$")),
+    ("goal", "positive", re.compile(r"^用户的(?:长期)?目标是(?P<object>[^。！？?]+)[。.]?$")),
+    ("preference", "positive", re.compile(r"^用户(?:偏好|喜欢)(?P<object>[^。！？?]+)[。.]?$")),
+    ("preference", "negative", re.compile(r"^用户不喜欢(?P<object>[^。！？?]+)[。.]?$")),
+    ("avoidance", "positive", re.compile(r"^用户避免(?P<object>[^。！？?]+)[。.]?$")),
+    ("method", "positive", re.compile(r"^用户(?:使用|采用|遵循)(?P<object>[^。！？?]+)[。.]?$")),
+    ("principle", "positive", re.compile(r"^用户的原则是(?P<object>[^。！？?]+)[。.]?$")),
+)
+
 _ACTION_OBJECT_CLASSES = frozenset({"goal", "constraint", "ability"})
 _ACTION_VERBS = frozenset(
     {
@@ -767,20 +796,71 @@ def _class_from_patterns(
     return matches[0] if len(matches) == 1 else None
 
 
+def _simple_chinese_object(value: str) -> str | None:
+    surface = unicodedata.normalize("NFKC", value)
+    surface = re.sub(r"\s+", " ", surface).strip().casefold()
+    if (
+        not 1 <= len(surface) <= 80
+        or _HYPOTHETICAL.search(surface)
+        or _QUOTED_ASSERTION.search(surface)
+        or _MULTI_CLAIM.search(surface)
+        or any(
+            not (
+                character.isspace()
+                or unicodedata.category(character)[0] in {"L", "M", "N"}
+                or character in "-_"
+            )
+            for character in surface
+        )
+    ):
+        return None
+    return surface
+
+
+def _class_from_chinese_patterns(
+    text: str,
+    patterns: tuple[_PatternSpec, ...],
+) -> _Proposition | None:
+    clause = _normalize_text(text)
+    if (
+        not clause
+        or clause.endswith(("?", "？"))
+        or _HYPOTHETICAL.search(clause)
+        or _QUOTED_ASSERTION.search(clause)
+    ):
+        return None
+    matches: list[_Proposition] = []
+    for predicate_class, polarity, pattern in patterns:
+        match = pattern.fullmatch(clause)
+        if match is None:
+            continue
+        normalized_object = _simple_chinese_object(match.group("object"))
+        if normalized_object is not None:
+            matches.append((predicate_class, polarity, normalized_object))
+    return matches[0] if len(matches) == 1 else None
+
+
 def _user_proposition(text: str) -> _Proposition | None:
-    return _class_from_patterns(
+    english = _class_from_patterns(
         text,
         _USER_PROPOSITION_PATTERNS,
         subject_pattern=_USER_EVIDENCE_SUBJECT,
     )
+    chinese = _class_from_chinese_patterns(text, _CHINESE_USER_PROPOSITION_PATTERNS)
+    return english if chinese is None else chinese if english is None else None
 
 
 def _statement_proposition(text: str) -> _Proposition | None:
-    return _class_from_patterns(
+    english = _class_from_patterns(
         text,
         _STATEMENT_PROPOSITION_PATTERNS,
         subject_pattern=_PERSISTED_USER_SUBJECT,
     )
+    chinese = _class_from_chinese_patterns(
+        text,
+        _CHINESE_STATEMENT_PROPOSITION_PATTERNS,
+    )
+    return english if chinese is None else chinese if english is None else None
 
 
 def _assistant_user_proposition(text: str) -> _Proposition | None:
