@@ -183,7 +183,7 @@ def test_chinese_atomic_constraint_passes_pre_and_persistence_gates():
     gated = persistence_gate(
         (
             _draft(
-                "用户需要技术架构图。",
+                "用户需要技术架构图，能反映文章核心观点。",
                 evidence,
                 kind="context",
                 category="work",
@@ -194,6 +194,7 @@ def test_chinese_atomic_constraint_passes_pre_and_persistence_gates():
     )
 
     assert len(gated.accepted) == 1
+    assert gated.accepted[0].statement == "用户需要技术架构图"
     assert gated.filtered_safety_count == 0
     assert gated.filtered_policy_count == 0
 
@@ -216,6 +217,34 @@ def test_chinese_non_direct_or_hypothetical_constraints_remain_rejected(evidence
     )
 
     assert result.capsule.user_signals == ()
+
+
+def test_chinese_statement_canonicalization_never_crosses_predicate_class():
+    from agc_runtime.capture_capsule import CapsulePolicy, build_capsule
+    from agc_runtime.capture_safety import persistence_gate
+
+    evidence = "我需要的是技术架构图，能反映文章核心观点，不是好看的封面图。"
+    result = build_capsule(
+        (_record("user", evidence),),
+        _ref(),
+        CapsulePolicy(project_scope="project:stable"),
+    )
+
+    gated = persistence_gate(
+        (
+            _draft(
+                "用户希望技术架构图。",
+                evidence,
+                kind="goal",
+                category="work",
+                signal_type="explicit_user_state",
+            ),
+        ),
+        result.capsule,
+    )
+
+    assert gated.accepted == ()
+    assert gated.filtered_policy_count == 1
 
 
 def test_pre_capsule_gate_scrubs_known_secret_corpus_before_hashing():

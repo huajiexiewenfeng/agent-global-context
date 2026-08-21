@@ -75,7 +75,9 @@ _EXTRACTION_INSTRUCTION = (
     "For a direct user signal, copy evidence verbatim, preserve project_scope, and use "
     "a stable locator such as user:0001. Keep the statement atomic and use these exact "
     "transformations when applicable: \"I prefer X\" -> \"The user prefers X\"; "
-    "\"我需要的是X，不是Y\" -> \"用户需要X\"; \"我需要X\" -> \"用户需要X\"; "
+    "\"我需要的是X，不是Y\" -> \"用户需要X\"; "
+    "\"我需要的是X，Z，不是Y\" -> \"用户需要X\"; "
+    "\"我需要X\" -> \"用户需要X\"; "
     "\"我必须X\" -> \"用户必须X\"; \"我希望X\" -> \"用户希望X\"; "
     "\"我的目标是X\" -> \"用户的目标是X\"; \"我偏好X\" -> \"用户偏好X\"."
 )

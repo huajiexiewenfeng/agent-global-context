@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Iterable, Mapping, TYPE_CHECKING
 
 from agc_runtime.capture_capsule import (
@@ -1362,6 +1362,59 @@ def _draft_is_policy_valid(
     return True
 
 
+def _canonicalize_direct_chinese_statement(
+    draft: ObservationDraft,
+    capsule: "TaskCapsule",
+) -> ObservationDraft:
+    if draft.assertion_mode != "direct" or len(draft.evidence) != 1:
+        return draft
+    evidence = draft.evidence[0]
+    if evidence not in capsule.user_signals:
+        return draft
+    source = _class_from_chinese_patterns(
+        evidence,
+        _CHINESE_USER_PROPOSITION_PATTERNS,
+    )
+    if source is None:
+        return draft
+    statement = _class_from_chinese_patterns(
+        draft.statement,
+        _CHINESE_STATEMENT_PROPOSITION_PATTERNS,
+    )
+    predicate_prefixes = {
+        ("constraint", "positive"): ("用户需要", "用户必须"),
+        ("goal", "positive"): ("用户希望", "用户的目标是", "用户的长期目标是"),
+        ("preference", "positive"): ("用户偏好", "用户喜欢"),
+        ("preference", "negative"): ("用户不喜欢",),
+        ("avoidance", "positive"): ("用户避免",),
+        ("method", "positive"): ("用户使用", "用户采用", "用户遵循"),
+        ("principle", "positive"): ("用户的原则是",),
+    }
+    normalized_statement = _normalize_text(draft.statement)
+    prefix_match = (
+        not normalized_statement.endswith(("?", "？"))
+        and _HYPOTHETICAL.search(normalized_statement) is None
+        and _QUOTED_ASSERTION.search(normalized_statement) is None
+        and normalized_statement.startswith(predicate_prefixes.get(source[:2], ()))
+    )
+    if not prefix_match and (statement is None or source[:2] != statement[:2]):
+        return draft
+    predicate_class, polarity, object_value = source
+    prefixes = {
+        ("constraint", "positive"): "用户需要",
+        ("goal", "positive"): "用户希望",
+        ("preference", "positive"): "用户偏好",
+        ("preference", "negative"): "用户不喜欢",
+        ("avoidance", "positive"): "用户避免",
+        ("method", "positive"): "用户使用",
+        ("principle", "positive"): "用户的原则是",
+    }
+    prefix = prefixes.get((predicate_class, polarity))
+    if prefix is None:
+        return draft
+    return replace(draft, statement=f"{prefix}{object_value}")
+
+
 def _canonical_proposition(statement: str) -> str:
     normalized = _normalize_text(statement).casefold().strip()
     normalized = re.sub(r"\s+", " ", normalized)
@@ -1413,6 +1466,7 @@ def persistence_gate(
         if _draft_is_unsafe(draft, capsule):
             safety_count += 1
             continue
+        draft = _canonicalize_direct_chinese_statement(draft, capsule)
         if not _draft_is_policy_valid(draft, capsule, evidence_provenance):
             policy_count += 1
             continue

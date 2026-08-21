@@ -150,6 +150,7 @@ def test_capsule_prompt_requires_exact_bilingual_atomic_transformations():
     assert set(payload) == {"instruction", "task_capsule"}
     assert payload["task_capsule"] == _capsule().to_mapping()
     assert '"我需要的是X，不是Y" -> "用户需要X"' in payload["instruction"]
+    assert '"我需要的是X，Z，不是Y" -> "用户需要X"' in payload["instruction"]
     assert '"I prefer X" -> "The user prefers X"' in payload["instruction"]
     assert "copy evidence verbatim" in payload["instruction"]
 
