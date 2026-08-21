@@ -171,7 +171,7 @@ def test_chinese_atomic_constraint_passes_pre_and_persistence_gates():
     from agc_runtime.capture_capsule import CapsulePolicy, build_capsule
     from agc_runtime.capture_safety import persistence_gate
 
-    evidence = "我需要的是技术架构图，不是好看的封面图。"
+    evidence = "我需要的是技术架构图，能反映文章核心观点，不是好看的封面图。"
     result = build_capsule(
         (_record("user", evidence),),
         _ref(),

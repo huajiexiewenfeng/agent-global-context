@@ -566,6 +566,13 @@ _CHINESE_USER_PROPOSITION_PATTERNS: tuple[_PatternSpec, ...] = (
     (
         "constraint",
         "positive",
+        re.compile(
+            r"^我需要的是(?P<object>[^,，。！？?]+)[,，][^。！？?]+[,，]不是[^。！？?]+[。.]?$"
+        ),
+    ),
+    (
+        "constraint",
+        "positive",
         re.compile(r"^我需要的是(?P<object>[^,，。！？?]+)[,，]不是[^。！？?]+[。.]?$"),
     ),
     ("constraint", "positive", re.compile(r"^我需要(?P<object>[^。！？?]+)[。.]?$")),
