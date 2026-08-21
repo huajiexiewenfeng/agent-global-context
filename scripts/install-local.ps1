@@ -790,7 +790,7 @@ function Invoke-NativeCommand {
 }
 
 function Get-RuntimeDeploymentKey {
-    param([string]$Repository)
+    param([string]$Repository, [string]$PythonExecutable)
 
     $runtimeRoot = Join-Path $Repository "agc_runtime"
     $manifestFiles = @(
@@ -823,6 +823,14 @@ function Get-RuntimeDeploymentKey {
         $fileHash = (Get-FileHash -LiteralPath $item.FullName -Algorithm SHA256).Hash
         $records.Add("$relative`0$($fileHash.ToLowerInvariant())")
     }
+
+    $pythonHash = (
+        Get-FileHash -LiteralPath $PythonExecutable -Algorithm SHA256
+    ).Hash.ToLowerInvariant()
+    $pythonPath = [System.IO.Path]::GetFullPath(
+        $PythonExecutable
+    ).ToLowerInvariant()
+    $records.Add("__python__`0$pythonPath`0$pythonHash")
 
     $payload = $WriteUtf8.GetBytes(($records -join "`n"))
     $sha256 = [System.Security.Cryptography.SHA256]::Create()
@@ -980,7 +988,25 @@ try {
         )
     }
     else {
-        $deploymentKey = Get-RuntimeDeploymentKey -Repository $resolvedRepository
+        if (-not [string]::IsNullOrWhiteSpace($PythonExecutable)) {
+            $selectedPythonExecutable = Get-ExistingFilePath -Path $PythonExecutable -Label "Python executable"
+        }
+        elseif (
+            -not [string]::IsNullOrEmpty(
+                $env:AGC_INSTALL_TEST_PYTHON
+            )
+        ) {
+            $selectedPythonExecutable = Get-ExistingFilePath `
+                -Path $env:AGC_INSTALL_TEST_PYTHON `
+                -Label "Test Python executable"
+        }
+        else {
+            $pythonCommand = Get-Command python -ErrorAction Stop
+            $selectedPythonExecutable = $pythonCommand.Source
+        }
+        $deploymentKey = Get-RuntimeDeploymentKey `
+            -Repository $resolvedRepository `
+            -PythonExecutable $selectedPythonExecutable
         $venvsRoot = Join-Path $resolvedInstall "venvs"
         $publishedVenv = Join-Path $venvsRoot $deploymentKey
         $venvPython = Join-Path $publishedVenv "Scripts\python.exe"
@@ -1010,23 +1036,6 @@ try {
         else {
             [System.IO.Directory]::CreateDirectory($venvsRoot) | Out-Null
             $pendingRuntimePath = $publishedVenv
-
-            if (-not [string]::IsNullOrWhiteSpace($PythonExecutable)) {
-                $selectedPythonExecutable = Get-ExistingFilePath -Path $PythonExecutable -Label "Python executable"
-            }
-            elseif (
-                -not [string]::IsNullOrEmpty(
-                    $env:AGC_INSTALL_TEST_PYTHON
-                )
-            ) {
-                $selectedPythonExecutable = Get-ExistingFilePath `
-                    -Path $env:AGC_INSTALL_TEST_PYTHON `
-                    -Label "Test Python executable"
-            }
-            else {
-                $pythonCommand = Get-Command python -ErrorAction Stop
-                $selectedPythonExecutable = $pythonCommand.Source
-            }
             $venvExitCode = Invoke-NativeCommand `
                 -Executable $selectedPythonExecutable `
                 -Arguments @(

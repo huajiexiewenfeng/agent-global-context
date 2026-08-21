@@ -173,6 +173,13 @@ def test_installer_accepts_explicit_python_executable_without_test_environment()
     assert text.index("$PythonExecutable") < text.index("$env:AGC_INSTALL_TEST_PYTHON")
 
 
+def test_runtime_deployment_key_binds_the_selected_python_executable():
+    text = SCRIPT.read_text(encoding="utf-8")
+    assert "param([string]$Repository, [string]$PythonExecutable)" in text
+    assert 'Get-FileHash -LiteralPath $PythonExecutable -Algorithm SHA256' in text
+    assert 'Get-RuntimeDeploymentKey `\n            -Repository $resolvedRepository `\n            -PythonExecutable $selectedPythonExecutable' in text
+
+
 def test_runtime_upgrade_is_inactive_and_failed_upgrade_preserves_active_venv(
     tmp_path: Path,
 ):
