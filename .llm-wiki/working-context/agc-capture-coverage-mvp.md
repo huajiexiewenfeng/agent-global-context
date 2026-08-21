@@ -460,3 +460,19 @@ was read or activated, and the overall Capture Coverage MVP is not complete.
 - Development/release work is closed at `release-ready-human-gates-pending`.
   Scanner-only live rollout, Hook trust, Shadow Backfill review, and continuous
   Runner remain operational Task 7 approvals, not missing implementation.
+
+### Scanner-only live rollout — 2026-08-21
+
+- Active Codex Home now routes to the latest immutable Runtime. Legacy config
+  migration preserved 23 formal Memory Items and `admin validate` reports 0
+  issues.
+- Scanner-only is enabled for one opaque Source Root binding, no exclusions or
+  subagents, seven-day Census, and 15-minute scheduling. Hook/Runner/model stay
+  disabled.
+- Census and exact replay converge at `38/38`, `pending=0`, `silent_loss=0`.
+  The real Windows task completed with result 0.
+- Live verification found and fixed the Scanner-vs-Runner scheduled-command
+  bug in commit `47f5325`; focused Host/CLI tests are 28 passed.
+- Source health is degraded by one `unknown_source_shape` diagnostic across
+  legacy/unsupported JSONL shapes. This is now the next investigation gate;
+  do not advance to Shadow Backfill or Runner while coverage is incomplete.

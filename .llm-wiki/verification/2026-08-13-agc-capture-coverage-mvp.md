@@ -72,3 +72,27 @@ Shadow Backfill quality, and continuous incremental authorization remain the
 separate human-gated Task 7. These do not change the inert release default.
 The local installation may be upgraded while inert, but no claim is made about
 the active profile's Census or model behavior until that separate authorization.
+
+## Authorized Scanner-only rollout — 2026-08-21
+
+- The active Codex Home was confirmed from `CODEX_HOME` and upgraded to the
+  verified Runtime deployment. Standard `admin init` migrated the legacy
+  schema-2 config and rebuilt derived catalogs after a byte-exact config backup;
+  `admin validate` then passed with `23` Memory Items and `0` issues.
+- The approved route binds Source Root ID
+  `13ca6bce39681ef47368d13f8689699101a8719dff226d936774e995e9cb1089`,
+  no exclusions, no subagents, a seven-day window, 15-minute `IgnoreNew`
+  scheduling, Hook disabled, Runner disabled, and no configured model.
+- The first Census accepted `38/38` known/accounted Revision keys, created 38
+  Receipts, and reported `pending=0` and `silent_loss=0`. Exact incremental
+  replay created 0 new Receipts and replayed all 38.
+- Live Task Scheduler execution completed with `LastTaskResult=0`. A production
+  integration bug was caught before acceptance: Scanner scheduling had emitted
+  the Runner-only `--max-items 10` form. RED was reproduced live and in tests;
+  commit `47f5325` separates Scanner and Runner arguments. Host/CLI focused
+  verification passed `28` tests and PowerShell 5.1/7 parsing.
+- Current source health is intentionally reported as `degraded`: one content-free
+  `unknown_source_shape` quarantine represents legacy/unsupported JSONL shapes.
+  Current-window accounting integrity is healthy and complete for the 38 known
+  keys, but `source_coverage_complete=false`; this blocks claims of complete
+  source coverage and blocks progression to Shadow Backfill/Runner until reviewed.

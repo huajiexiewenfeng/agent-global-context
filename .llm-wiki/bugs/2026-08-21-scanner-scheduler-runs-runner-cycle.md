@@ -1,7 +1,7 @@
 # Bug Brief: Scanner scheduler invokes Runner cycle
 
 - bug_id: `2026-08-21-scanner-scheduler-runs-runner-cycle`
-- status: implemented-live-verification-pending
+- status: fixed-verified-live
 - symptom: Scanner-only Host activation registers `cycle --root ... --once --max-items 10`; the CLI parses that exact shape as `runner-cycle` and rejects it while mode is `scanner_only`.
 - expected: Scanner-only scheduling uses `cycle --root ... --once`; Runner scheduling retains the bounded `--max-items 10` form.
 - evidence: live Scanner activation succeeded, but the registered argument shape maps to `runner-cycle` in `capture_cli._parse`; the same command returns a mode error before any model work.
@@ -20,3 +20,11 @@
   Scanner emits `cycle --root ... --once`, Runner alone appends
   `--max-items 10`. Host plus CLI focused verification passed `28` tests;
   PowerShell 5.1/7 parsing and diff-check passed.
+
+## Live verification
+
+- Re-registered task `AgentGlobalContext-Capture-25e9201ae2f5` uses exactly
+  `cycle --root <Memory Root> --once`, remains `IgnoreNew`, and is enabled.
+- A manual start through Windows Task Scheduler completed with
+  `LastTaskResult=0`. The post-run overview remained `38/38` accounted with
+  `silent_loss=0`; no Runner, Hook, Extractor, or model was enabled.

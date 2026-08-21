@@ -5,6 +5,8 @@
 - Runtime release: 0.3.0
 - Code/repository release gate: passed agent-local
 - Default Capture state: `enabled=false`, `mode=off`
+- Active profile Capture state: `enabled=true`, `mode=scanner_only`; Hook,
+  Extractor/Runner, and model calls remain disabled.
 - Public MCP surface: exactly `agc.read`, `agc.write`, `agc.admin`
 - Local executables: `agc`, `agc-mcp`, `agc-capture`, `agc-capture-hook`
 - Latest inert local install: commit `8a8f75a`, immutable Runtime deployment
@@ -31,15 +33,22 @@ The authorized final local install additionally verified committed-source
 hashes, all four entry points, the exact three-tool MCP surface, Codex Runtime
 binding, and default `enabled=false` / `mode=off` without reading live data.
 
+## Scanner-only rollout
+
+The user-authorized active-profile rollout is live. Census and incremental
+replay account for `38/38` known Revision keys with `silent_loss=0`; the
+15-minute Windows task completed a real invocation with `LastTaskResult=0`.
+Source health remains degraded by one content-free `unknown_source_shape`
+quarantine from legacy/unsupported JSONL shapes, so complete source coverage is
+not claimed.
+
 ## Next human gate
 
 Do not infer permission to inspect or mutate the live Codex profile. The next
-step requires a new explicit authorization for Scanner-only deployment against
-the displayed Source Root IDs, exclusions, seven-day window, schedule, zero
-model-call boundary, and exact activation digest. Hook measurement/trust,
-Shadow Backfill, sample review, and continuous Runner each remain separate
-later approvals. If no approval is given, leave Capture off; the release remains
-usable for existing formal-memory Recall and explicit Capture read/status/forget.
+step is review of the degraded source quarantine and then a separately approved
+Shadow Backfill/sample review. Hook measurement/trust and continuous Runner each
+remain separate later approvals. Keep Scanner-only running; do not enable model
+work while `source_coverage_complete=false`.
 
 ## Rollback
 

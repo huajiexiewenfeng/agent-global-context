@@ -35,6 +35,13 @@
   committed-source hashes, exact three-tool MCP surface, Codex binding, and
   default-off Capture state passed. A stable-Python selector and Python-bound
   deployment key prevent reuse of venvs built by a different interpreter.
+- The user then authorized Scanner-only activation for the active Codex Home.
+  Config migration retained 23 formal memories; Census and replay converged at
+  38/38 known/accounted keys with zero silent loss. The 15-minute Windows task
+  completed with result 0, Hook/Runner/model remained off, and a live-found
+  Scanner/Runner argument bug was fixed in `47f5325` with 28 focused tests.
+  Source health remains explicitly degraded by one `unknown_source_shape`
+  quarantine, so Shadow Backfill and Runner are not authorized.
 
 ## 2026-08-11 — agc-recall-consistency-filter-validation
 

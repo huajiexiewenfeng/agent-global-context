@@ -3,7 +3,7 @@
 ## Summary
 
 - title: AGC Codex Task Revision Capture Coverage MVP
-- status: release-ready-human-gates-pending
+- status: scanner-only-active-degraded-later-gates-pending
 - flow_id: agc-capture-coverage-mvp
 - why: AGC can govern and recall formal memories, but it cannot prove that completed Codex task revisions were checked for durable signals. The system currently cannot distinguish no useful signal from capture not running or failing.
 - changes: Add a failure-open side-channel capture plane that discovers every in-scope main-task revision, records a truthful Capture Receipt, stores zero to eight safe classified Collected Observations, and exposes read-only capture coverage views. Capture data never enters ordinary Recall; pre-existing Recall lifecycle and budget defects are corrected as an activation gate.
