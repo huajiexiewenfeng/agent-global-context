@@ -69,6 +69,7 @@ def test_codex_app_turn_scoped_non_completion_events_do_not_quarantine_session(
                 '{"timestamp":"2026-08-16T10:00:00Z","type":"session_meta","payload":{"id":"rollout-app","session_id":"task-app","source":"vscode"}}',
                 '{"timestamp":"2026-08-16T10:00:10Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-app"}}',
                 '{"timestamp":"2026-08-16T10:00:20Z","type":"event_msg","payload":{"type":"patch_apply_end","turn_id":"turn-app","success":true}}',
+                '{"timestamp":"2026-08-16T10:00:25Z","type":"event_msg","payload":{"type":"item_completed","turn_id":"turn-app","item":{"type":"agent_message"}}}',
                 '{"timestamp":"2026-08-16T10:00:30Z","type":"event_msg","payload":{"type":"turn_aborted","turn_id":"turn-aborted","reason":"interrupted"}}',
                 '{"timestamp":"2026-08-16T10:01:00Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-app"}}',
             )

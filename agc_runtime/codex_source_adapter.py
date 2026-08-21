@@ -372,6 +372,7 @@ class CodexSourceAdapter(SourceAdapter):
             "task_aborted",
             "turn_aborted",
             "patch_apply_end",
+            "item_completed",
         } and has_turn_identity:
             return None, "unknown_completion_shape"
         return None, None
