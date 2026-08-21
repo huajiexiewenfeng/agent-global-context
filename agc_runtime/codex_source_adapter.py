@@ -367,7 +367,12 @@ class CodexSourceAdapter(SourceAdapter):
             ):
                 return None, "unknown_completion_shape"
             return (revision_id, completed_at), None
-        if event_type not in {"task_started", "task_aborted"} and has_turn_identity:
+        if event_type not in {
+            "task_started",
+            "task_aborted",
+            "turn_aborted",
+            "patch_apply_end",
+        } and has_turn_identity:
             return None, "unknown_completion_shape"
         return None, None
 

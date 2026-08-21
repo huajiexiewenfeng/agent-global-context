@@ -56,6 +56,35 @@ def test_ac_04_only_completed_main_turns_are_revisions(tmp_path: Path):
     assert adapter.describe().capabilities == ("discover", "probe")
 
 
+def test_codex_app_turn_scoped_non_completion_events_do_not_quarantine_session(
+    tmp_path: Path,
+):
+    from agc_runtime.codex_source_adapter import CodexSourceAdapter
+
+    root = _profile(tmp_path)
+    source = root / "sessions" / "codex-app-events.jsonl"
+    source.write_text(
+        "\n".join(
+            (
+                '{"timestamp":"2026-08-16T10:00:00Z","type":"session_meta","payload":{"id":"rollout-app","session_id":"task-app","source":"vscode"}}',
+                '{"timestamp":"2026-08-16T10:00:10Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-app"}}',
+                '{"timestamp":"2026-08-16T10:00:20Z","type":"event_msg","payload":{"type":"patch_apply_end","turn_id":"turn-app","success":true}}',
+                '{"timestamp":"2026-08-16T10:00:30Z","type":"event_msg","payload":{"type":"turn_aborted","turn_id":"turn-aborted","reason":"interrupted"}}',
+                '{"timestamp":"2026-08-16T10:01:00Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-app"}}',
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    batch = CodexSourceAdapter(root).discover(None, _window())
+
+    assert ("task-app", "turn-app") in {
+        (ref.key.task_id, ref.key.revision_id) for ref in batch.revisions
+    }
+    assert "unknown_completion_shape" not in batch.diagnostic_codes
+
+
 def test_ac_19_unknown_formats_fail_closed_without_false_conflicts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
