@@ -71,6 +71,31 @@ Relevant configuration controls include `capture.sources`,
 Provider selection, and Runner budget. Exclusions are applied before new
 observations are accepted; they are not a provider-side deletion mechanism.
 
+### Codex App Runtime on Windows
+
+When Codex App is the primary Session host, bind Capture to the App-managed
+Runtime and an explicit model boundary:
+
+```yaml
+capture:
+  extractor:
+    kind: codex_exec
+    executable: codex-app
+    model: gpt-5.6-sol
+```
+
+The exact `codex-app` selector searches only the bounded App Runtime location
+under `%LOCALAPPDATA%\OpenAI\Codex\bin`. It never falls back to PATH, an npm
+CLI, another model, the registry, or a network lookup. Missing, invalid, or
+ambiguous App Runtime candidates fail closed as Extractor unavailable. This
+selector is Windows-only in Runtime 0.3.0; other platforms must keep an
+explicit literal executable command.
+
+The resolved executable identity is included in backfill authorization. After
+Codex App updates its Runtime, run `prepare-backfill` again and use the new
+authorization digest. Existing literal executable commands remain supported
+as explicit operator overrides.
+
 The strict activation-evidence schema is:
 
 ```json
