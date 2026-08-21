@@ -166,6 +166,13 @@ def _invoke(
     return completed, result
 
 
+def test_installer_accepts_explicit_python_executable_without_test_environment():
+    text = SCRIPT.read_text(encoding="utf-8")
+    assert "[string]$PythonExecutable" in text
+    assert "Get-ExistingFilePath -Path $PythonExecutable" in text
+    assert text.index("$PythonExecutable") < text.index("$env:AGC_INSTALL_TEST_PYTHON")
+
+
 def test_runtime_upgrade_is_inactive_and_failed_upgrade_preserves_active_venv(
     tmp_path: Path,
 ):

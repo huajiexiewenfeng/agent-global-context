@@ -5,6 +5,7 @@ param(
     [Parameter(Mandatory=$true)][string]$CodexConfig,
     [Parameter(Mandatory=$true)][string]$MemoryRoot,
     [string]$InstallRoot = "$env:USERPROFILE\.agent-global-context-runtime",
+    [string]$PythonExecutable,
     [switch]$SkipRuntimeInstall
 )
 
@@ -1010,21 +1011,24 @@ try {
             [System.IO.Directory]::CreateDirectory($venvsRoot) | Out-Null
             $pendingRuntimePath = $publishedVenv
 
-            if (
+            if (-not [string]::IsNullOrWhiteSpace($PythonExecutable)) {
+                $selectedPythonExecutable = Get-ExistingFilePath -Path $PythonExecutable -Label "Python executable"
+            }
+            elseif (
                 -not [string]::IsNullOrEmpty(
                     $env:AGC_INSTALL_TEST_PYTHON
                 )
             ) {
-                $pythonExecutable = Get-ExistingFilePath `
+                $selectedPythonExecutable = Get-ExistingFilePath `
                     -Path $env:AGC_INSTALL_TEST_PYTHON `
                     -Label "Test Python executable"
             }
             else {
                 $pythonCommand = Get-Command python -ErrorAction Stop
-                $pythonExecutable = $pythonCommand.Source
+                $selectedPythonExecutable = $pythonCommand.Source
             }
             $venvExitCode = Invoke-NativeCommand `
-                -Executable $pythonExecutable `
+                -Executable $selectedPythonExecutable `
                 -Arguments @(
                     "-m",
                     "venv",
