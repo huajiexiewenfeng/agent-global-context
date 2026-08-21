@@ -7,6 +7,9 @@
 - Default Capture state: `enabled=false`, `mode=off`
 - Public MCP surface: exactly `agc.read`, `agc.write`, `agc.admin`
 - Local executables: `agc`, `agc-mcp`, `agc-capture`, `agc-capture-hook`
+- Latest inert local install: commit `8a8f75a`, immutable Runtime deployment
+  `97cda42d...a622e9`, version `0.3.0`; Codex restart is required to reload the
+  updated MCP process.
 - Ordinary Recall isolation: Capture observations remain explicit evidence and
   are never automatically injected or promoted to formal memory.
 
@@ -24,6 +27,9 @@ See
 `.llm-wiki/verification/2026-08-13-agc-capture-coverage-mvp.md`.
 The authoritative full suite is 1255 passed with one expected adversarial ZIP
 warning; package/install/entrypoint/pip/diff/text gates pass.
+The authorized final local install additionally verified committed-source
+hashes, all four entry points, the exact three-tool MCP surface, Codex Runtime
+binding, and default `enabled=false` / `mode=off` without reading live data.
 
 ## Next human gate
 

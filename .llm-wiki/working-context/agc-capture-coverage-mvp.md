@@ -449,3 +449,14 @@ was read or activated, and the overall Capture Coverage MVP is not complete.
 - GREEN: exact integration regressions `2 passed`; complete Host/CLI/Activation
   focused suite `40 passed in 58.61s`. Synthetic roots and a fake scheduler
   only; no live profile, transcript, Hook, scheduler, or model was accessed.
+
+### Verified finish sync — 2026-08-21
+
+- Repository release verification is complete and the user-authorized inert
+  local upgrade is installed from commit `8a8f75a` into immutable deployment
+  `97cda42d...a622e9`.
+- Installed version, four entry points, committed-source hashes, exact
+  three-tool MCP surface, Codex binding, and inert defaults were verified.
+- Development/release work is closed at `release-ready-human-gates-pending`.
+  Scanner-only live rollout, Hook trust, Shadow Backfill review, and continuous
+  Runner remain operational Task 7 approvals, not missing implementation.

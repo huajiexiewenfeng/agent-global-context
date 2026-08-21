@@ -30,6 +30,11 @@
   four-entrypoint provenance, pip check, diff, and strict UTF-8/no-BOM.
 - Capture remains off. Live Scanner, Hook trust, Shadow Backfill, sample review,
   and continuous Runner are still separate explicit human gates.
+- On 2026-08-21 the user-authorized inert upgrade installed commit `8a8f75a`
+  as immutable Runtime `97cda42d...a622e9`; version, four entry points,
+  committed-source hashes, exact three-tool MCP surface, Codex binding, and
+  default-off Capture state passed. A stable-Python selector and Python-bound
+  deployment key prevent reuse of venvs built by a different interpreter.
 
 ## 2026-08-11 — agc-recall-consistency-filter-validation
 
