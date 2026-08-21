@@ -314,6 +314,26 @@ def test_complete_usage_is_strict_token_usage():
     }
 
 
+def test_app_runtime_usage_accepts_cache_write_input_tokens():
+    *_unused, CodexExtractor = _extractor_api()
+
+    usage = CodexExtractor._parse_usage(
+        {
+            "input_tokens": 19741,
+            "cached_input_tokens": 0,
+            "cache_write_input_tokens": 0,
+            "output_tokens": 24,
+            "reasoning_output_tokens": 0,
+        }
+    )
+
+    assert usage.to_mapping() == {
+        "input_tokens": 19741,
+        "output_tokens": 24,
+        "total_tokens": 19765,
+    }
+
+
 def test_representative_codex_events_ignore_reasoning_and_normalize_usage():
     result = _extract(scenario="realistic-events")
 

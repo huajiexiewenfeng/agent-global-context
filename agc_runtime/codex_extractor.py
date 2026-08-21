@@ -410,24 +410,29 @@ class CodexExtractor:
             "output_tokens",
             "reasoning_output_tokens",
         }
+        app_runtime_fields = current_fields | {"cache_write_input_tokens"}
         if frozenset(fields) in {
             frozenset({"input_tokens", "cached_input_tokens", "output_tokens"}),
             frozenset(current_fields),
+            frozenset(app_runtime_fields),
         }:
             input_tokens = value["input_tokens"]
             cached_tokens = value["cached_input_tokens"]
             output_tokens = value["output_tokens"]
             reasoning_tokens = value.get("reasoning_output_tokens", 0)
+            cache_write_tokens = value.get("cache_write_input_tokens", 0)
             if (
                 type(input_tokens) is not int
                 or type(cached_tokens) is not int
                 or type(output_tokens) is not int
                 or type(reasoning_tokens) is not int
+                or type(cache_write_tokens) is not int
                 or min(
                     input_tokens,
                     cached_tokens,
                     output_tokens,
                     reasoning_tokens,
+                    cache_write_tokens,
                 )
                 < 0
                 or cached_tokens > input_tokens
