@@ -3,7 +3,7 @@
 ## Summary
 
 - title: Production Census is degraded by stale formats and embedded parent metadata
-- status: executing
+- status: verified
 - flow_id: 2026-08-21-census-window-subagent-health
 - severity: high
 - owner: Codex
@@ -16,7 +16,7 @@
 - secondary_bridges: systematic-debugging, test-driven-development
 - confidence: confirmed
 - reason: reproduced against the installed Codex App Session corpus and current adapter
-- next_gate: production install and verification
+- next_gate: operator-authorized stale quarantine resolution
 - routed_at: 2026-08-21
 
 ## Source
@@ -70,10 +70,10 @@ Malformed or obsolete files outside the configured seven-day window must not deg
 
 ## Verification
 
-- status: partial
-- commands_or_checks: TDD RED/GREEN; full 597-test Capture regression; content-free discovery against the real Codex App Session root
-- result_summary: 597 tests passed; real seven-day discovery returned 689 revisions and no diagnostic codes
-- limitation:
+- status: passed
+- commands_or_checks: TDD RED/GREEN; full 597-test Capture regression; content-free discovery against the real Codex App Session root; immutable venv install; production Census
+- result_summary: 597 tests passed; real discovery returned no diagnostic codes; installed adapter matches source; production Census accounted 691/691 revisions with zero silent loss, six new receipts, 685 replays, and an advanced scan hint
+- limitation: the prior durable source quarantine remains by design and keeps aggregate source health degraded until an explicitly authorized resolution/rebuild
 - residual_risk: the adapter still performs a full historical read; safe incremental indexing remains candidate scope
 
 ## Flow Record
@@ -84,7 +84,7 @@ Malformed or obsolete files outside the configured seven-day window must not deg
 | design | done | root cause confirmed in current adapter and real App Session structure | 2026-08-21 |
 | plan | done | narrow adapter/test fix plan above | 2026-08-21 |
 | development | done | adapter window diagnostics, subagent exclusion, legacy identity upgrade, and benign event compatibility | 2026-08-21 |
-| testing | active | 597 tests passed; production installation and Census pending | 2026-08-21 |
+| testing | done | 597 tests passed; installed runtime and production Census verified | 2026-08-21 |
 | archive | pending |  |  |
 
 ## Artifacts
