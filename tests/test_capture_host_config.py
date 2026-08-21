@@ -301,7 +301,7 @@ def test_enable_scanner_is_digest_gated_transactional_and_idempotent(tmp_path):
     scheduler = json.loads((install_root / "scheduler-state.json").read_text(encoding="utf-8"))
     assert scheduler["task_name"].startswith("AgentGlobalContext-Capture-")
     assert scheduler["command"].endswith("agc-capture.cmd")
-    assert scheduler["arguments"] == f'cycle --root "{memory_root.resolve()}" --once --max-items 10'
+    assert scheduler["arguments"] == f'cycle --root "{memory_root.resolve()}" --once'
     assert scheduler["multiple_instances"] == "IgnoreNew"
     assert scheduler["start_when_available"] is True
     assert scheduler["triggers"] == ["logon", "repetition:15m"]
@@ -392,6 +392,8 @@ def test_runner_pause_disable_preserve_capture_data_and_unrelated_host_values(tm
     config = config_path.read_text(encoding="utf-8")
     assert "mode: runner" in config
     assert "incremental_total_tokens: 25000" in config
+    scheduler = json.loads((install_root / "scheduler-state.json").read_text(encoding="utf-8"))
+    assert scheduler["arguments"] == f'cycle --root "{memory_root.resolve()}" --once --max-items 10'
 
     capture_data = memory_root / ".runtime" / "capture" / "observations" / "keep.json"
     capture_data.parent.mkdir(parents=True)

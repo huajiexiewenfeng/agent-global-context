@@ -386,7 +386,11 @@ function Set-ConfigState {
 }
 
 function Set-SchedulerState {
-    $arguments = 'cycle --root "' + $memoryPath + '" --once --max-items 10'
+    param([ValidateSet('scanner', 'runner')][string]$Mode)
+    $arguments = 'cycle --root "' + $memoryPath + '" --once'
+    if ($Mode -eq 'runner') {
+        $arguments += ' --max-items 10'
+    }
     $state = [ordered]@{
         schema_version = 1
         task_name = $taskName
@@ -593,7 +597,7 @@ try {
 if ($Action -eq 'EnableScanner') {
     Enable-ScannerConfig $configPath
     Invoke-Injection 'after_config'
-    Set-SchedulerState
+    Set-SchedulerState -Mode 'scanner'
     Invoke-Injection 'after_scheduler'
     Complete-HostAction 'scanner_enabled' @{ task_name = $taskName }
 }
@@ -615,7 +619,7 @@ if ($Action -eq 'EnableRunner') {
     }
     Set-ConfigState $configPath $true 'runner' $false $IncrementalTokenBudget $null
     Invoke-Injection 'after_config'
-    Set-SchedulerState
+    Set-SchedulerState -Mode 'runner'
     Invoke-Injection 'after_scheduler'
     Complete-HostAction 'runner_enabled' @{}
 }
