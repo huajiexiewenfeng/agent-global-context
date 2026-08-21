@@ -6,6 +6,7 @@ codex-windows-newbie-guide.md
 skills-lock.json
 .agents/
 .superpowers/
+.worktrees/
 
 # OS/editor noise
 .DS_Store
