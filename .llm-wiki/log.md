@@ -22,6 +22,14 @@
   future Capture schema, so post-data rollback disables processing while retaining
   a Capture-capable Runtime for read/status/forget instead of binary downgrade.
 - Production code, tests, installation, and real-profile Capture remain unchanged.
+- Implemented and independently hardened Capture Core, Source Census, safe
+  Capsule/Extractor/Runner, inert Host installation, transactional supervision,
+  Hook latency gate, explicit operations, and Runtime-bound activation digest.
+- Agent-local AC-01..20 release verification passed: 1255 full-suite tests, one
+  expected adversarial ZIP warning, wheel/sdist build, isolated installed
+  four-entrypoint provenance, pip check, diff, and strict UTF-8/no-BOM.
+- Capture remains off. Live Scanner, Hook trust, Shadow Backfill, sample review,
+  and continuous Runner are still separate explicit human gates.
 
 ## 2026-08-11 — agc-recall-consistency-filter-validation
 

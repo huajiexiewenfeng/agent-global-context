@@ -35,7 +35,7 @@
 - excluded_scope:
   - production and test edits before plan confirmation
   - Observation aggregation, Candidate/Formal Memory mutation, semantic Recall changes, Trace/Eval/Loop, external memory engines, and full-history replay
-- current_gate: Codex Source Census Task 6 verified; Extractor/Runner remains the next inactive implementation gate
+- current_gate: AC-01..20 repository release verified; live Scanner-only deployment remains explicitly human-gated
 - requested_stage_or_bridge: Subagent-Driven Development directly on `main`, with per-task TDD and independent review
 - constraints:
   - current task behavior remains failure-open

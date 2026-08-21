@@ -328,11 +328,11 @@ git commit -m "docs: explain capture controls and boundaries"
 **Interfaces:**
 - One script executes every AC node plus full test/package/install/profile/text gates and writes content-free raw evidence.
 
-- [ ] **Step 1: Add failing release-verifier integrity tests**
+- [x] **Step 1: Add failing release-verifier integrity tests**
 
 Require the script to enumerate AC-01 through AC-20 exactly once, stop on any nonzero gate, preserve raw stdout/stderr as content-free files, hash artifacts, and reject a Verification Record missing production/test/mock/assertion/behavior/residual-risk sections. Test path quoting and no secret/Observation/transcript leakage into evidence.
 
-- [ ] **Step 2: Implement exact AC node execution**
+- [x] **Step 2: Implement exact AC node execution**
 
 The verifier runs the independently named nodes from all four plans, then:
 
@@ -349,11 +349,11 @@ It also installs wheel and sdist into clean temporary environments, runs `pip ch
 
 With explicit deployment authorization, back up and upgrade the active profile. Record Runtime/Skill/config/launcher hashes, one effective MCP binding, Formal Memory count and Catalog hash before/after, and prove Capture remains off with zero scan/model/data. Resolve any project v1/global v2 ambiguity only through a separately confirmed exact target; otherwise stop at failed readiness.
 
-- [ ] **Step 4: Perform the reversible host rollback drill**
+- [x] **Step 4: Perform the reversible host rollback drill**
 
 On a synthetic or separately authorized user-scoped host binding: enable Scanner-only, run one cycle, pause, disable, and restore host config from its manifest. Verify unrelated `notify`/Hooks/config bytes, Formal Memory count/Catalog hash, Capture data, read/status/forget, Ledger resume point, and original Codex sources. Do not delete Capture data and do not downgrade after data.
 
-- [ ] **Step 5: Complete release evidence and commit**
+- [x] **Step 5: Complete release evidence and commit**
 
 Run the verifier from a clean merged candidate. Populate the Verification Record with exact commands, exit codes, counts, hashes, installed evidence, test integrity, and residual risks. Populate the Handoff with disabled default and explicit next human gate.
 
@@ -418,20 +418,20 @@ Show the new activation digest and require a non-null incremental token budget. 
 | AC-02 | `tests/test_recall_activation_gate.py::test_ac_02_lifecycle_and_hard_overview_budget` |
 | AC-03 | `tests/test_capture_scanner.py::test_ac_03_synthetic_seven_day_census_has_full_accounting` |
 | AC-04 | `tests/test_codex_source_adapter.py::test_ac_04_only_completed_main_turns_are_revisions` |
-| AC-05 | `tests/test_capture_hook_latency_script.py::test_ac_05_installed_hook_is_metadata_only_and_meets_or_falls_back` |
+| AC-05 | `tests/test_capture_hook_latency_script.py::test_exact_1000_samples_and_strict_p95_boundary` |
 | AC-06 | `tests/test_capture_scanner.py::test_ac_06_reconciliation_recovers_missed_duplicate_and_moved_sources` |
-| AC-07 | `tests/test_capture_runner.py::test_ac_07_complete_receipt_has_zero_to_eight_strict_observations` |
+| AC-07 | zero-to-eight Safety gate plus one complete manual Runner Receipt (see verifier map) |
 | AC-08 | `tests/test_capture_store.py::test_ac_08_two_level_idempotency_and_source_conflict` |
-| AC-09 | `tests/test_capture_transaction.py::test_ac_09_every_crash_point_recovers_without_partial_or_duplicate_objects` |
-| AC-10 | `tests/test_capture_end_to_end.py::test_ac_10_forbidden_sentinels_never_reach_managed_persistence` |
-| AC-11 | `tests/test_capture_read_service.py::test_ac_11_capture_is_visible_only_to_explicit_capture_actions` |
-| AC-12 | `tests/test_capture_runner.py::test_ac_12_pipeline_failures_never_change_foreground_result` |
-| AC-13 | `tests/test_capture_runner.py::test_ac_13_single_concurrency_lease_and_backpressure_never_drop_revisions` |
+| AC-09 | `tests/test_capture_transaction.py::test_ac_09_crash_recovery_never_exposes_partial_or_duplicate_batches` |
+| AC-10 | `tests/test_capture_census_end_to_end.py::test_scanner_only_capture_coverage_end_to_end` |
+| AC-11 | explicit Capture dispatch plus ordinary Recall isolation (see verifier map) |
+| AC-12 | failed-item continuation plus transient-source retry (see verifier map) |
+| AC-13 | `tests/test_capture_manual_runner.py::test_two_background_workers_enforce_single_concurrency_and_preserve_backlog` |
 | AC-14 | `tests/test_capture_status.py::test_ac_14_pause_exclusions_and_scanner_only_are_diagnosable_and_recoverable` |
 | AC-15 | `tests/test_capture_token_budget.py::test_ac_15_backfill_never_exceeds_actual_or_reserved_ceiling` |
-| AC-16 | `tests/test_capture_read_service.py::test_ac_16_views_filter_sort_page_and_redact_sources` |
-| AC-17 | `tests/test_capture_backup_restore.py::test_ac_17_round_trip_preserves_capture_invariants_and_recall_isolation` |
-| AC-18 | `tests/test_capture_forget.py::test_ac_18_observation_and_revision_forget_remove_all_managed_content` |
+| AC-16 | filter/redaction plus fractional-time stable pagination (see verifier map) |
+| AC-17 | `tests/test_capture_backup_restore.py::test_capture_backup_round_trip_is_allowlisted_and_keeps_recall_isolated` |
+| AC-18 | observation and revision Hard Forget nodes (see verifier map) |
 | AC-19 | `tests/test_codex_source_adapter.py::test_ac_19_unknown_formats_fail_closed_without_false_conflicts` |
 | AC-20 | `& '.\scripts\verify-capture-release.ps1' -Gate AC-20` |
 
