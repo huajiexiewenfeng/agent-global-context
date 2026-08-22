@@ -8,7 +8,7 @@
 - Agent-local verification passed 761 relevant tests; the full suite passed 1293 tests with only two pre-existing Windows CRLF byte-idempotence failures and no new regression.
 - Built and isolated-tested wheel `1B9405A...7249B8`, then installed immutable Runtime `af38109d...a5bc0`; installed core hashes match source.
 - The exact-digest authorized `gpt-5.6-sol` Pilot processed one revision, produced two collected tentative inferred observations, reported zero failure and zero silent loss, and left production formal memory at 24 with no automatic promotion.
-- Final handoff and artifact registrations were created; fast-forward integration into `main` remains the next gate.
+- Final handoff and artifact registrations were created. The verified branch was fast-forward merged into `main`; the merged relevant suite passed 761 tests and installed core files exactly matched authoritative main Git blobs.
 
 ## 2026-08-13 — agc-capture-coverage-mvp
 

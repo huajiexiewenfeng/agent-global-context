@@ -5,7 +5,7 @@
 - source_head_before_verification_docs: `9c6a32e`
 - design: `docs/superpowers/specs/2026-08-21-agc-semantic-capture-candidates-design.md`
 - plan: `docs/superpowers/plans/2026-08-22-agc-semantic-capture-candidates.md`
-- status: source-package-installed-pilot-verified; final branch audit and merge pending.
+- status: complete on authoritative `main`.
 
 ## TDD Evidence
 
@@ -76,7 +76,10 @@
 - Two pre-existing Windows CRLF byte-idempotence tests remain red and are unrelated to this Capture behavior.
 - Provider token usage was unavailable for the Pilot, so accounting conservatively charged the full 6,000-token reservation.
 
-## Remaining Acceptance
+## Authoritative Integration
 
-- Re-run the relevant Capture suite and branch completion checks.
-- Fast-forward merge into `main`, verify authoritative main, and confirm installed Runtime hashes match merged source.
+- Pre-merge branch gate: 761 passed, `git diff --check main...HEAD` clean, branch clean, and all eight expected commits present.
+- Integration: `git merge --ff-only codex/fix-semantic-capture-empty` succeeded; `main` advanced from `1fe859a` to `da27dd6` without a merge commit.
+- Post-merge `main` gate: 761 passed in 68.32 seconds.
+- The main checkout expands tracked Python files to CRLF, while the installed wheel preserves repository LF bytes. Content comparison ignoring EOL was equal, and the installed file Git object IDs exactly matched the authoritative `main` blobs for all four core files.
+- Production Runtime, Capture mode, Hook state, formal-memory count, and Pilot isolation invariants remain as recorded above.

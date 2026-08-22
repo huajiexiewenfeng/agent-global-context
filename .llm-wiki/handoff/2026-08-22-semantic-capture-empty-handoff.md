@@ -2,7 +2,7 @@
 
 ## Result
 
-The fix is implemented, package-verified, installed in an immutable Runtime, and validated by one explicitly authorized isolated `gpt-5.6-sol` Pilot. The integration target is a fast-forward merge from `codex/fix-semantic-capture-empty` into `main` after the final branch test gate.
+The fix is implemented, package-verified, installed in an immutable Runtime, validated by one explicitly authorized isolated `gpt-5.6-sol` Pilot, and fast-forward merged into authoritative `main`.
 
 ## Implementation
 
@@ -47,4 +47,4 @@ The fix is implemented, package-verified, installed in an immutable Runtime, and
 
 ## Next Action
 
-Run the final relevant suite and Git completion audit, fast-forward merge into `main`, verify the merged suite and installed hashes, then record authoritative merge completion.
+Use the installed scanner-only Runtime normally and review collected observations before any future promotion. The two unrelated CRLF byte-idempotence tests remain a separate maintenance item.
