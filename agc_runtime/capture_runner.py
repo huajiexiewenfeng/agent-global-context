@@ -415,7 +415,10 @@ class CaptureRunner:
             assert self.preparation is not None
             budget_census_id = self.preparation.census_id
             ceiling = capture.budgets.backfill_total_tokens
-        from agc_runtime.capture_capsule import CapsulePolicy
+        from agc_runtime.capture_capsule import (
+            CapsulePolicy,
+            capsule_has_durable_signal,
+        )
         from agc_runtime.capture_safety import persistence_gate
 
         policy = CapsulePolicy(
@@ -479,6 +482,28 @@ class CaptureRunner:
                     (current.key.adapter_id, current.key.source_root_id)
                 ]
                 capsule_result = adapter.load_capsule(revision, policy)
+                if not capsule_has_durable_signal(capsule_result.capsule):
+                    extracting = store.begin_extraction(
+                        lease, capsule_result, extractor_descriptor, now=now
+                    )
+                    terminal = CaptureReceipt.from_mapping(
+                        {
+                            **extracting.to_mapping(),
+                            "status": "complete",
+                            "updated_at": now,
+                            "observation_count": 0,
+                            "filtered_counts": {
+                                "safety": 0,
+                                "policy": 0,
+                                "over_limit": 0,
+                            },
+                            "duplicate_suppression_count": 0,
+                            "zero_reason": "no_durable_signal",
+                        }
+                    )
+                    store.commit_extraction(lease, (), terminal)
+                    completed += 1
+                    continue
                 try:
                     reservation = budget.reserve(
                         current.key,

@@ -83,6 +83,7 @@ def _revision(revision_id: str = "turn-1") -> RevisionRef:
 @dataclass
 class FakeAdapter:
     revisions: tuple[RevisionRef, ...] = (_revision(),)
+    user_signals: tuple[str, ...] = ("I prefer Rust.",)
     discover_calls: int = 0
     load_calls: int = 0
     load_error: bool = False
@@ -124,7 +125,7 @@ class FakeAdapter:
             identity_quality=ref.identity_quality,
             completed_at=ref.completed_at,
             project_scope="project:stable",
-            user_signals=("I prefer Rust.",),
+            user_signals=self.user_signals,
         )
         return CapsuleResult(
             capsule,
@@ -229,6 +230,36 @@ def test_manual_runner_collects_one_observation_and_settles_actual_usage(tmp_pat
     assert report.charged_tokens == 150
     assert report.silent_loss_count == 0
     assert extractor.extract_calls == 1
+
+
+def test_empty_capsule_completes_without_reservation_or_extractor_call(tmp_path: Path):
+    paths, adapter, extractor, preparation = _prepared(tmp_path)
+    adapter.user_signals = ()
+
+    report = CaptureRunner(
+        paths, (adapter,), extractor, preparation
+    ).run_manual_backfill(
+        authorization_digest=preparation.authorization_digest,
+        max_items=20,
+        now=RUN_AT,
+    )
+
+    receipt = json.loads(
+        next(paths.capture.receipts.glob("*.json")).read_text(encoding="utf-8")
+    )
+    assert report.attempted_count == report.completed_count == 1
+    assert report.observation_count == 0
+    assert report.reserved_attempt_count == 0
+    assert report.extractor_call_count == 0
+    assert report.charged_tokens == 0
+    assert extractor.extract_calls == 0
+    assert receipt["status"] == "complete"
+    assert receipt["zero_reason"] == "no_durable_signal"
+    assert receipt["token_usage"] == {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+    }
 
 
 def test_stale_authorization_stops_before_model_call(tmp_path: Path) -> None:

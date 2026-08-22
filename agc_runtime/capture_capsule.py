@@ -294,6 +294,19 @@ def estimate_capsule_tokens(capsule: TaskCapsule) -> int:
     return max(1, (byte_count + 2) // 3)
 
 
+def capsule_has_durable_signal(capsule: TaskCapsule) -> bool:
+    if not isinstance(capsule, TaskCapsule):
+        raise _contract_error()
+    return any(
+        (
+            capsule.user_signals,
+            capsule.decisions_results,
+            capsule.reusable_methods,
+            capsule.next_steps,
+        )
+    )
+
+
 def _empty_capsule(ref: RevisionRef, policy: CapsulePolicy) -> TaskCapsule:
     return TaskCapsule(
         schema_version=CAPTURE_SCHEMA_VERSION,
@@ -461,5 +474,6 @@ __all__ = [
     "CapsuleResult",
     "TaskCapsule",
     "build_capsule",
+    "capsule_has_durable_signal",
     "estimate_capsule_tokens",
 ]
