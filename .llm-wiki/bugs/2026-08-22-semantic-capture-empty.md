@@ -1,7 +1,7 @@
 # Bug Brief: semantic Capture candidates are dropped before extraction
 
 - bug_id: `2026-08-22-semantic-capture-empty`
-- status: in-progress
+- status: verified-installed
 - symptom: three authorized historical Codex App backfill items completed with `zero_reason=extractor_empty`, three Extractor calls, and zero observations even though at least one source contained durable compound Chinese project decisions.
 - expected: keep the existing deterministic direct lane strict, admit bounded scrubbed assertive plain-language user context to a separate semantic lane, allow that broader evidence to persist only as atomic `agent_inferred` plus `tentative` observations, and complete genuinely empty Capsules locally without budget reservation or a model call.
 - reproduction_status: reproduced by `test_compound_chinese_project_decision_reaches_tentative_semantic_lane`, which failed with an empty `user_signals` tuple before implementation and passed after the bounded semantic lane was added.
@@ -33,5 +33,5 @@
 - implementation: completed in `63ee802`, `82bc361`, and `9c6a32e`; the final semantic predicate admits assertive Chinese context and context-prefixed first-person English while preserving all prior negative safety cases.
 - testing: completed through source/package verification; focused Capture/App Runtime regression passed 761 tests, the full repository suite passed 1293 tests with only the two known CRLF byte-idempotence failures, and the prior long-path baseline failure passed under the required short basetemp.
 - installed_verification: completed; immutable Runtime `af38109dbbbca0608ed42d2206cc4ed0ac2e5e3f3b0080109153581e8cda5bc0` is active, four core installed file hashes match branch source, production remains `scanner_only`, Hook is absent, and formal memory remains 24.
-- pilot: pending fresh authorization.
+- pilot: completed under exact authorization digest `35835b95fb0356e2ea9ee617ec41cd1f4aa374be55cad6f851233e5733b93e89`; one installed Runtime call to `gpt-5.6-sol` completed with two collected tentative inferred observations, zero failures, zero silent loss, and no promotion. Production formal memory remained 24 and no Pilot path leaked into production state.
 - merge: pending.

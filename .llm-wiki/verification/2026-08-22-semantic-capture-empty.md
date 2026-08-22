@@ -5,7 +5,7 @@
 - source_head_before_verification_docs: `9c6a32e`
 - design: `docs/superpowers/specs/2026-08-21-agc-semantic-capture-candidates-design.md`
 - plan: `docs/superpowers/plans/2026-08-22-agc-semantic-capture-candidates.md`
-- status: source-package-installed-verified; isolated live Pilot pending fresh authorization.
+- status: source-package-installed-pilot-verified; final branch audit and merge pending.
 
 ## TDD Evidence
 
@@ -51,9 +51,32 @@
 - Capture Hook: disabled; no `hooks.json` exists and Codex config contains only the AGC MCP registration.
 - Formal catalog: `memory_count=24`, `cards_count=24`.
 
-## Pending Acceptance
+## Isolated Pilot Evidence
 
-- Prepare one hash-verified isolated historical Session copy under `D:\tmp_test` without a model call.
-- Obtain fresh authorization bound to its exact digest, `gpt-5.6-sol`, `max-items 1`, and maximum 6,000 tokens.
-- Verify at least one collected `agent_inferred`/`tentative` observation, zero silent loss, no automatic promotion, and unchanged production formal memory.
-- Re-run branch completion checks and relevant tests, then fast-forward merge into `main` and verify authoritative main.
+- Pilot root: `D:\tmp_test\agc-semantic-capture-pilot-20260822`.
+- Historical source and isolated copy SHA-256: `0005246AA78F6988D908CCF41237DFAAE084A3EF8D76A133A8EC9D8F1B2E4349`.
+- Census: healthy, two accounted revisions, zero quarantine, zero silent loss, and zero charged tokens before authorization.
+- Local preflight: the first ready revision contained two semantic user signals; the second contained no durable signal. No Session text was written to tracked verification records.
+- Exact authorization digest: `35835b95fb0356e2ea9ee617ec41cd1f4aa374be55cad6f851233e5733b93e89`.
+- Authorized boundary: OpenAI `gpt-5.6-sol`, `max-items 1`, maximum 6,000 tokens, no automatic promotion.
+- Installed backfill result: exit 0; attempted 1, completed 1, Extractor calls 1, observations 2, failures 0, silent loss 0, charged tokens 6,000.
+- Usage quality is `reserved`: the provider response did not report complete usage, so the safety budget charged the full authorized reservation rather than claiming a lower measured value.
+- Collected observations:
+  - `co_74699b46873bd5286b9b9dcba9d417bbb3ffdc75c758d83572d615d8313cb303`
+  - `co_a106f5129f62cd64b4cff77d7714c22ab4c518448ee4dc3f1a28a38b672897f0`
+- Both observations are atomic, `assertion.mode=agent_inferred`, `confidence=tentative`, `processing_state=collected`, normal sensitivity, and preserve the Capsule project scope (`null` for this source).
+- The persistence gate accepted each draft only after validating verbatim Capsule evidence. The durable Observation schema stores the source Session locator rather than duplicating evidence text.
+- Pilot formal memory count remained 0; no observation was promoted.
+- Production invariants after Pilot: formal `memory_count=24`, `cards_count=24`, Capture enabled in `scanner_only`, paused false, Hook disabled, `codex-app` plus `gpt-5.6-sol`, and zero Pilot-path matches in production config/Capture state.
+- The four installed core file hashes still match branch source after Pilot.
+
+## Residual Risks
+
+- The semantic input predicate intentionally remains bounded rather than acting as a general natural-language classifier; new languages or discourse forms may need additional reviewed cases.
+- Two pre-existing Windows CRLF byte-idempotence tests remain red and are unrelated to this Capture behavior.
+- Provider token usage was unavailable for the Pilot, so accounting conservatively charged the full 6,000-token reservation.
+
+## Remaining Acceptance
+
+- Re-run the relevant Capture suite and branch completion checks.
+- Fast-forward merge into `main`, verify authoritative main, and confirm installed Runtime hashes match merged source.
