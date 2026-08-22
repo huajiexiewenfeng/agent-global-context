@@ -4,7 +4,7 @@
 - status: in-progress
 - symptom: three authorized historical Codex App backfill items completed with `zero_reason=extractor_empty`, three Extractor calls, and zero observations even though at least one source contained durable compound Chinese project decisions.
 - expected: keep the existing deterministic direct lane strict, admit bounded scrubbed assertive plain-language user context to a separate semantic lane, allow that broader evidence to persist only as atomic `agent_inferred` plus `tentative` observations, and complete genuinely empty Capsules locally without budget reservation or a model call.
-- reproduction_status: production receipts and current source inspection confirm the pre-Capsule user gate accepts only fixed-grammar atomic propositions; an automated regression reproduction is pending.
+- reproduction_status: reproduced by `test_compound_chinese_project_decision_reaches_tentative_semantic_lane`, which failed with an empty `user_signals` tuple before implementation and passed after the bounded semantic lane was added.
 - likely_scope: `agc_runtime/capture_safety.py`, `agc_runtime/codex_extractor.py`, `agc_runtime/capture_capsule.py`, `agc_runtime/capture_runner.py`, their focused tests, and isolated Pilot evidence under `D:\tmp_test`.
 - active_scope: bounded semantic user-input admission, mode-aware provenance validation, semantic Extractor instruction, empty-Capsule short-circuit, source/package/installed-runtime verification, and one separately authorized isolated Pilot.
 - read_only_scope: production Capture configuration, receipts, formal memory count, prior installed Runtime, and the single historical Session selected for the isolated Pilot.
@@ -30,8 +30,8 @@
 - intake: completed; three authorized historical items produced three `extractor_empty` receipts and zero observations, with no safety, policy, or over-limit filtering recorded.
 - design: completed; two-lane design A was confirmed, preserving deterministic direct claims and confining broader semantic evidence to tentative agent inferences.
 - plan: completed; implementation plan committed as `08c5200`.
-- implementation: pending.
-- testing: pending.
-- installed_verification: pending.
+- implementation: completed in `63ee802`, `82bc361`, and `9c6a32e`; the final semantic predicate admits assertive Chinese context and context-prefixed first-person English while preserving all prior negative safety cases.
+- testing: completed through source/package verification; focused Capture/App Runtime regression passed 761 tests, the full repository suite passed 1293 tests with only the two known CRLF byte-idempotence failures, and the prior long-path baseline failure passed under the required short basetemp.
+- installed_verification: completed; immutable Runtime `af38109dbbbca0608ed42d2206cc4ed0ac2e5e3f3b0080109153581e8cda5bc0` is active, four core installed file hashes match branch source, production remains `scanner_only`, Hook is absent, and formal memory remains 24.
 - pilot: pending fresh authorization.
 - merge: pending.
