@@ -911,6 +911,46 @@ def _user_has_high_signal(text: str) -> bool:
     )
 
 
+_MIN_SEMANTIC_SIGNAL_CODEPOINTS = 12
+_UNCERTAIN_USER_CONTEXT = re.compile(
+    r"(?i)\b(?:undecided|considering|trying\s+to\s+determine|wonder(?:ing)?|"
+    r"unsure|not\s+sure|curious\s+whether|want\s+to\s+ask|maybe|possibly)\b|"
+    r"(?:尚未决定|正在考虑|不确定)"
+)
+_CJK_CONTEXT = re.compile(r"[\u3400-\u9fff]")
+_CONTEXTUAL_FIRST_PERSON = re.compile(
+    r"(?i)^(?:(?:after|before|during|since)\b.{1,120}\b|"
+    r"(?:yesterday|today|recently)\b.{1,120}\b)(?:i|my|we|our)\b"
+)
+_CHINESE_NON_ASSERTIVE = re.compile(
+    r"^(?:请问|为什么|怎么|如何|是否|能否|可否|谁|什么|哪里|哪|"
+    r"请|帮我|麻烦|继续|开始|停止|安装|运行|执行|调用)|"
+    r"(?:吗|呢|么|嘛)\s*[。.!]?$"
+)
+_CHINESE_LOW_SIGNAL = re.compile(r"^(?:你好|您好|谢谢|多谢|可以|好的|明白)[。.!]?$")
+
+
+def _user_is_semantic_candidate(text: str) -> bool:
+    normalized = _normalize_text(text)
+    has_assertive_shape = (
+        (
+            _CJK_CONTEXT.search(normalized) is not None
+            and _CHINESE_NON_ASSERTIVE.search(normalized) is None
+            and _CHINESE_LOW_SIGNAL.fullmatch(normalized) is None
+        )
+        or _CONTEXTUAL_FIRST_PERSON.search(normalized) is not None
+    )
+    return (
+        len(normalized) >= _MIN_SEMANTIC_SIGNAL_CODEPOINTS
+        and has_assertive_shape
+        and not normalized.endswith(("?", "？"))
+        and _HYPOTHETICAL.search(normalized) is None
+        and _QUOTED_ASSERTION.search(normalized) is None
+        and _UNCERTAIN_USER_CONTEXT.search(normalized) is None
+        and _COMMAND.search(normalized) is None
+    )
+
+
 def _units(text: str, maximum: int) -> tuple[str, ...]:
     raw_units = re.split(r"\n+|(?<=[.!?。！？])\s+", text)
     units: list[str] = []
@@ -1070,7 +1110,10 @@ def pre_capsule_gate(
         for offset, unit in enumerate(units):
             source_index = index * 1000 + offset
             if role == "user":
-                if not _user_has_high_signal(unit):
+                if not (
+                    _user_has_high_signal(unit)
+                    or _user_is_semantic_candidate(unit)
+                ):
                     dropped_class += 1
                     continue
                 safe_records.append(

@@ -1823,8 +1823,9 @@ def test_positive_user_grammar_rejects_arbitrary_uncertainty_prefixes(uncertain:
         "After the workshop I prefer Rust.",
     ),
 )
-def test_user_signal_requires_a_declarative_subject_predicate_start(arbitrary: str):
+def test_plain_language_user_context_reaches_only_the_semantic_input_lane(arbitrary: str):
     from agc_runtime.capture_capsule import CapsulePolicy, build_capsule
+    from agc_runtime.capture_safety import persistence_gate
 
     result = build_capsule(
         (_record("user", arbitrary),),
@@ -1832,7 +1833,30 @@ def test_user_signal_requires_a_declarative_subject_predicate_start(arbitrary: s
         CapsulePolicy(project_scope="project:stable"),
     )
 
-    assert result.capsule.user_signals == ()
+    assert result.capsule.user_signals == (arbitrary,)
+    gated = persistence_gate(
+        (_draft("The user prefers Rust.", arbitrary),),
+        result.capsule,
+    )
+    assert gated.accepted == ()
+    assert gated.filtered_policy_count == 1
+
+
+def test_compound_chinese_project_decision_reaches_tentative_semantic_lane():
+    from agc_runtime.capture_capsule import CapsulePolicy, build_capsule
+
+    evidence = (
+        "我觉得这个可以分成两个任务，首先继续设计架构，"
+        "第二个做一个最小的企业微信机器人接入。"
+    )
+    result = build_capsule(
+        (_record("user", evidence),),
+        _ref(),
+        CapsulePolicy(project_scope="project:stable"),
+    )
+
+    assert result.capsule.user_signals == (evidence,)
+    assert result.counts.dropped_safety_count == 0
 
 
 def test_positive_user_grammar_preserves_supported_declarative_classes():
