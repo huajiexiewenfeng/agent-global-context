@@ -1,5 +1,15 @@
 # LLM Wiki Log
 
+## 2026-08-22 — semantic Capture candidates
+
+- Fixed historical `extractor_empty` results by adding a bounded semantic input lane while preserving exact deterministic direct-memory validation.
+- Broader user evidence can persist only as atomic `agent_inferred` plus `tentative` observations; direct evidence cannot be semantically rewritten.
+- Empty Capsules now complete as `no_durable_signal` before token reservation or Extractor invocation.
+- Agent-local verification passed 761 relevant tests; the full suite passed 1293 tests with only two pre-existing Windows CRLF byte-idempotence failures and no new regression.
+- Built and isolated-tested wheel `1B9405A...7249B8`, then installed immutable Runtime `af38109d...a5bc0`; installed core hashes match source.
+- The exact-digest authorized `gpt-5.6-sol` Pilot processed one revision, produced two collected tentative inferred observations, reported zero failure and zero silent loss, and left production formal memory at 24 with no automatic promotion.
+- Final handoff and artifact registrations were created; fast-forward integration into `main` remains the next gate.
+
 ## 2026-08-13 — agc-capture-coverage-mvp
 
 - Locked the next milestone to provable Codex main-task Revision coverage rather

@@ -34,4 +34,5 @@
 - testing: completed through source/package verification; focused Capture/App Runtime regression passed 761 tests, the full repository suite passed 1293 tests with only the two known CRLF byte-idempotence failures, and the prior long-path baseline failure passed under the required short basetemp.
 - installed_verification: completed; immutable Runtime `af38109dbbbca0608ed42d2206cc4ed0ac2e5e3f3b0080109153581e8cda5bc0` is active, four core installed file hashes match branch source, production remains `scanner_only`, Hook is absent, and formal memory remains 24.
 - pilot: completed under exact authorization digest `35835b95fb0356e2ea9ee617ec41cd1f4aa374be55cad6f851233e5733b93e89`; one installed Runtime call to `gpt-5.6-sol` completed with two collected tentative inferred observations, zero failures, zero silent loss, and no promotion. Production formal memory remained 24 and no Pilot path leaked into production state.
+- archive: completed through `.llm-wiki/handoff/2026-08-22-semantic-capture-empty-handoff.md` with evidence-backed implementation, test-integrity, installed Runtime, Pilot, and residual-risk state.
 - merge: pending.
