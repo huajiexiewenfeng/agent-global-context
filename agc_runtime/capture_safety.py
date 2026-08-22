@@ -1339,10 +1339,19 @@ def _provenance_supports_mode(
         allowed = frozenset({"user_signal", "decision_result", "reusable_method"})
     for evidence in draft.evidence:
         provenance = evidence_provenance[evidence]
+        semantic_user_support = (
+            draft.assertion_mode == "agent_inferred"
+            and draft.confidence == "tentative"
+            and _user_proposition(evidence) is None
+            and _user_is_semantic_candidate(evidence)
+        )
         user_supported = (
             "user_signal" in provenance
             and "user_signal" in allowed
-            and _user_proposition(evidence) == proposition
+            and (
+                _user_proposition(evidence) == proposition
+                or semantic_user_support
+            )
         )
         assistant_provenance = provenance.intersection(
             {"decision_result", "reusable_method", "next_step"}

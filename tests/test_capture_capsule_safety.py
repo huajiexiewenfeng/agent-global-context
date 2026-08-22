@@ -1859,6 +1859,46 @@ def test_compound_chinese_project_decision_reaches_tentative_semantic_lane():
     assert result.counts.dropped_safety_count == 0
 
 
+def test_compound_user_evidence_accepts_only_tentative_agent_inference():
+    from agc_runtime.capture_capsule import CapsulePolicy, build_capsule
+    from agc_runtime.capture_safety import persistence_gate
+
+    evidence = (
+        "我觉得这个可以分成两个任务，首先继续设计架构，"
+        "第二个做一个最小的企业微信机器人接入。"
+    )
+    capsule = build_capsule(
+        (_record("user", evidence),),
+        _ref(),
+        CapsulePolicy(project_scope="project:stable"),
+    ).capsule
+    inferred = _draft(
+        "用户希望继续设计架构。",
+        evidence,
+        mode="agent_inferred",
+        signal_type="decision_or_constraint",
+        kind="goal",
+        category="project",
+    )
+    direct = _draft(
+        "用户希望继续设计架构。",
+        evidence,
+        mode="direct",
+        signal_type="decision_or_constraint",
+        kind="goal",
+        category="project",
+    )
+
+    accepted = persistence_gate((inferred,), capsule)
+    rejected = persistence_gate((direct,), capsule)
+
+    assert len(accepted.accepted) == 1
+    assert accepted.accepted[0].assertion_mode == "agent_inferred"
+    assert accepted.accepted[0].confidence == "tentative"
+    assert rejected.accepted == ()
+    assert rejected.filtered_policy_count == 1
+
+
 def test_positive_user_grammar_preserves_supported_declarative_classes():
     from agc_runtime.capture_capsule import CapsulePolicy, build_capsule
 

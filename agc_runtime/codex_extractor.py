@@ -79,7 +79,11 @@ _EXTRACTION_INSTRUCTION = (
     "\"我需要的是X，Z，不是Y\" -> \"用户需要X\"; "
     "\"我需要X\" -> \"用户需要X\"; "
     "\"我必须X\" -> \"用户必须X\"; \"我希望X\" -> \"用户希望X\"; "
-    "\"我的目标是X\" -> \"用户的目标是X\"; \"我偏好X\" -> \"用户偏好X\"."
+    "\"我的目标是X\" -> \"用户的目标是X\"; \"我偏好X\" -> \"用户偏好X\". "
+    "For a colloquial or compound user signal, split durable meaning into atomic "
+    "drafts, copy the full supporting signal as verbatim evidence, use "
+    "assertion_mode=agent_inferred and confidence=tentative, and preserve "
+    "project_scope. Never label a colloquial or compound signal as direct. "
 )
 _CAPABILITY_PROBE_STDIN = (
     b'{"instruction":"Capability probe only. Return an empty drafts array.",'
