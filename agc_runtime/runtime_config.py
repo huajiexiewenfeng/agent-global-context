@@ -133,9 +133,10 @@ class RuntimeConfig:
 
 
 def default_config_text() -> str:
-    return Path(__file__).with_name("default_config.yaml").read_text(
-        encoding="utf-8"
-    )
+    with Path(__file__).with_name("default_config.yaml").open(
+        "r", encoding="utf-8", newline=""
+    ) as stream:
+        return stream.read()
 
 
 def _mapping(value: Any, name: str, fields: set[str]) -> dict[str, Any]:

@@ -84,7 +84,7 @@ $repository = (Resolve-Path "D:\src\agent-global-context").Path
 The installer leaves one public `agent-global-context` Skill and registers
 exactly three MCP tools through one server: `agc.read`, `agc.write`, and
 `agc.admin`. It keeps unique backups of replaced active files and is safe to
-rerun. The quality-first formalization Runtime release is `0.4.0`; the installer also
+rerun. The quality-first formalization Runtime release is `0.4.1`; the installer also
 publishes stable local `agc-capture.cmd` and `agc-capture-hook.cmd` launchers
 beside `agc-mcp.cmd`.
 

@@ -38,7 +38,7 @@ The product priority is useful, correct candidate memory with low noise. This ch
 Capture adds a derived `census-catalog` namespace below the managed Capture runtime root. It contains:
 
 - an atomic `active.json` pointer to one immutable content-addressed generation under the deliberately short Windows-safe `g/<digest>` path;
-- one canonical `RevisionRef` JSON object per unique `CaptureKey` inside that generation's `r/` directory;
+- one packed `revisions.json` containing the canonical `RevisionRef` objects for all unique `CaptureKey` values;
 - one generation manifest containing its format version, ordered frozen-run identities, unique revision count, and a deterministic digest over canonical revision metadata; and
 - no transcript text, Capsule text, observation statement, path outside the already permitted opaque locator contract, or model content.
 
@@ -51,7 +51,7 @@ When no valid catalog exists, the store performs one full legacy read under the 
 1. Decode and validate every frozen run and member using the existing rules.
 2. Reject conflicting metadata for the same `CaptureKey` exactly as today.
 3. Deduplicate valid revisions by key.
-4. Write the complete catalog into a new immutable generation with the existing atomic directory installer.
+4. Decode frozen runs concurrently, then write the complete packed catalog into a new immutable generation with the existing atomic directory installer.
 5. Atomically publish `active.json` only after the generation is durable, then remove older inactive generations under the same lock.
 
 Normal reads validate the catalog manifest against the ordered `run.json` manifests and their revision-key membership. If the run set or any run membership changes, or if the catalog is malformed, the catalog is stale. The store must rebuild it from frozen evidence before using it. A failed rebuild does not publish partial state and reports the existing fixed `invalid_frozen_census` diagnostic.

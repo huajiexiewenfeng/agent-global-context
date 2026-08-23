@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
@@ -43,7 +44,7 @@ _RECEIPT_ID = re.compile(r"^cr_[0-9a-f]{64}$")
 _OBSERVATION_ID = re.compile(r"^co_[0-9a-f]{64}$")
 _CURSOR_VERSION = 1
 _CURSOR_KEY_BYTES = 32
-_CENSUS_CATALOG_SCHEMA_VERSION = "census-catalog-v1"
+_CENSUS_CATALOG_SCHEMA_VERSION = "census-catalog-v2"
 
 
 def _utc_now() -> str:
@@ -378,14 +379,25 @@ class CaptureStore:
         root = self.capture.root / "census-runs"
         if not root.exists():
             return tuple(runs), tuple(revisions)
-        for path in sorted(root.iterdir()):
-            if path.name.startswith("."):
-                continue
-            census, members = self._read_frozen_run(path)
-            if binding is not None and census.binding != binding:
-                continue
-            runs.append(census)
-            revisions.extend(members)
+        paths = tuple(
+            path for path in sorted(root.iterdir()) if not path.name.startswith(".")
+        )
+        workers = min(16, len(paths))
+        executor = None
+        try:
+            if workers <= 1:
+                decoded = map(self._read_frozen_run, paths)
+            else:
+                executor = ThreadPoolExecutor(max_workers=workers)
+                decoded = executor.map(self._read_frozen_run, paths)
+            for census, members in decoded:
+                if binding is not None and census.binding != binding:
+                    continue
+                runs.append(census)
+                revisions.extend(members)
+        finally:
+            if executor is not None:
+                executor.shutdown(wait=True, cancel_futures=True)
         return tuple(runs), tuple(revisions)
 
     def _read_legacy_census(
@@ -482,17 +494,18 @@ class CaptureStore:
         generation_root = self.capture.census_catalog / "g"
         generation = generation_root / catalog_id
         if not generation.exists():
-            files: dict[str, Mapping[str, object]] = {"manifest.json": manifest}
-            files.update(
-                {
-                    f"r/{receipt_id_for(item.key)}.json": item.to_mapping()
-                    for item in revisions
-                }
-            )
+            files: dict[str, Mapping[str, object]] = {
+                "manifest.json": manifest,
+                "revisions.json": {
+                    "schema_version": CAPTURE_SCHEMA_VERSION,
+                    "catalog_schema_version": _CENSUS_CATALOG_SCHEMA_VERSION,
+                    "catalog_id": catalog_id,
+                    "revisions": revision_values,
+                },
+            }
             atomic_install_json_directory(
                 generation,
                 files,
-                directories=("r",),
             )
         atomic_write_json(
             self.capture.census_catalog / "active.json",
@@ -543,10 +556,10 @@ class CaptureStore:
         generation = self.capture.census_catalog / "g" / catalog_id
         if generation.is_symlink() or not generation.is_dir():
             raise ValueError("invalid Census catalog generation")
-        if {item.name for item in generation.iterdir()} != {"manifest.json", "r"}:
-            raise ValueError("invalid Census catalog generation")
-        revisions_path = generation / "r"
-        if revisions_path.is_symlink() or not revisions_path.is_dir():
+        if {item.name for item in generation.iterdir()} != {
+            "manifest.json",
+            "revisions.json",
+        }:
             raise ValueError("invalid Census catalog generation")
         manifest = read_json(generation / "manifest.json")
         expected_fields = {
@@ -573,14 +586,26 @@ class CaptureStore:
             or manifest.get("run_digest") != run_digest
         ):
             raise ValueError("stale Census catalog")
+        packed = read_json(generation / "revisions.json")
+        if (
+            set(packed)
+            != {
+                "schema_version",
+                "catalog_schema_version",
+                "catalog_id",
+                "revisions",
+            }
+            or packed.get("schema_version") != CAPTURE_SCHEMA_VERSION
+            or packed.get("catalog_schema_version")
+            != _CENSUS_CATALOG_SCHEMA_VERSION
+            or packed.get("catalog_id") != catalog_id
+            or not isinstance(packed.get("revisions"), list)
+        ):
+            raise ValueError("invalid Census catalog revisions")
         revisions: list[RevisionRef] = []
         unique: dict[CaptureKey, RevisionRef] = {}
-        for path in sorted(revisions_path.iterdir()):
-            if not path.is_file() or path.suffix != ".json":
-                raise ValueError("invalid Census catalog revision")
-            revision = RevisionRef.from_mapping(read_json(path))
-            if path.name != f"{receipt_id_for(revision.key)}.json":
-                raise ValueError("Census catalog filename binding mismatch")
+        for value in packed["revisions"]:
+            revision = RevisionRef.from_mapping(value)
             if revision.key in unique:
                 raise ValueError("duplicate Census catalog revision")
             unique[revision.key] = revision

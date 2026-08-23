@@ -207,7 +207,7 @@ def test_main_version_probe_does_not_start_stdio(monkeypatch, capsys):
 
     captured = capsys.readouterr()
     assert exit_code == 0
-    assert captured.out == "0.4.0\n"
+    assert captured.out == "0.4.1\n"
     assert captured.err == ""
 
 

@@ -84,7 +84,7 @@ $repository = (Resolve-Path "D:\src\agent-global-context").Path
 安装器最终只保留一个公开 `agent-global-context` Skill，并通过一个 MCP Server
 注册且仅注册三个工具：`agc.read`、`agc.write` 和 `agc.admin`。被替换的当前
 文件会进入唯一备份；安装器可安全重复执行。质量优先记忆正式化 Runtime 版本为
-`0.4.0`；安装器还会在 `agc-mcp.cmd` 旁发布稳定的
+`0.4.1`；安装器还会在 `agc-mcp.cmd` 旁发布稳定的
 `agc-capture.cmd` 与 `agc-capture-hook.cmd` 本地入口。
 
 安装器不会迁移 Memory，不会启用 Codex 任务采集或 backfill，也不会自动晋升

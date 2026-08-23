@@ -422,11 +422,16 @@ def test_rebuild_census_catalog_deduplicates_overlapping_frozen_runs(
         store.capture.census_catalog / "g" / active["catalog_id"]
     )
     assert revisions == (revision,)
-    assert sorted(path.name for path in (generation / "r").iterdir()) == [
-        f"{receipt_id_for(revision.key)}.json"
+    assert sorted(path.name for path in generation.iterdir()) == [
+        "manifest.json",
+        "revisions.json",
     ]
+    packed = json.loads(
+        (generation / "revisions.json").read_text(encoding="utf-8")
+    )
+    assert packed["revisions"] == [revision.to_mapping()]
     manifest = json.loads((generation / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["catalog_schema_version"] == "census-catalog-v1"
+    assert manifest["catalog_schema_version"] == "census-catalog-v2"
     assert manifest["revision_count"] == 1
 
 

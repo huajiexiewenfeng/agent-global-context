@@ -49,7 +49,7 @@
 - Produces: `CapturePaths.census_catalog: Path`
 - Produces: `CaptureStore.rebuild_census_catalog() -> tuple[RevisionRef, ...]`
 - Produces: private `CaptureStore._read_census_catalog(runs: Sequence[CensusRun]) -> tuple[RevisionRef, ...]`
-- Produces: Windows-safe catalog layout `census-catalog/active.json` and `census-catalog/g/<catalog-id>/{manifest.json,r/<receipt-id>.json}`
+- Produces: Windows-safe packed catalog layout `census-catalog/active.json` and `census-catalog/g/<catalog-id>/{manifest.json,revisions.json}`
 
 - [ ] **Step 1: Write the failing deduplication and conflict tests**
 
@@ -60,11 +60,11 @@ revisions = store.rebuild_census_catalog()
 assert revisions == (revision,)
 active = read_json(paths.capture.census_catalog / "active.json")
 generation = paths.capture.census_catalog / "g" / active["catalog_id"]
-assert sorted(path.name for path in generation.joinpath("r").iterdir()) == [
-    f"{receipt_id_for(revision.key)}.json"
+assert sorted(path.name for path in generation.iterdir()) == [
+    "manifest.json", "revisions.json"
 ]
 manifest = read_json(generation / "manifest.json")
-assert manifest["catalog_schema_version"] == "census-catalog-v1"
+assert manifest["catalog_schema_version"] == "census-catalog-v2"
 assert manifest["revision_count"] == 1
 ```
 
@@ -82,7 +82,7 @@ Expected: fail because `CapturePaths.census_catalog` and `rebuild_census_catalog
 Add `census_catalog=root / "census-catalog"` to `CapturePaths.from_runtime()` and `directories()`. In `capture_store.py`, add constants and canonical digests:
 
 ```python
-_CENSUS_CATALOG_SCHEMA_VERSION = "census-catalog-v1"
+_CENSUS_CATALOG_SCHEMA_VERSION = "census-catalog-v2"
 
 def _catalog_digest(values: Sequence[Mapping[str, object]]) -> str:
     return hashlib.sha256(canonical_json_bytes({"values": list(values)})).hexdigest()

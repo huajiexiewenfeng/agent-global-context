@@ -17,7 +17,7 @@ def test_version_is_a_stable_json_envelope(run_cli):
         "tool": "agc.admin",
         "action": "version",
         "status": "accepted",
-        "data": {"runtime_version": "0.4.0"},
+        "data": {"runtime_version": "0.4.1"},
         "warnings": [],
         "error": None,
     }
@@ -32,7 +32,7 @@ def test_dash_dash_version_is_a_compatible_json_envelope(run_cli):
         "tool": "agc.admin",
         "action": "version",
         "status": "accepted",
-        "data": {"runtime_version": "0.4.0"},
+        "data": {"runtime_version": "0.4.1"},
         "warnings": [],
         "error": None,
     }
@@ -51,7 +51,7 @@ def test_package_exposes_the_pinned_mcp_stdio_entry_point():
     with (REPOSITORY_ROOT / "pyproject.toml").open("rb") as stream:
         project = tomllib.load(stream)["project"]
 
-    assert project["version"] == "0.4.0"
+    assert project["version"] == "0.4.1"
     assert project["dependencies"] == ["PyYAML>=6.0.2,<7"]
     assert project["optional-dependencies"]["mcp"] == ["mcp==2.0.0"]
     assert "mcp==2.0.0" in project["optional-dependencies"]["test"]
