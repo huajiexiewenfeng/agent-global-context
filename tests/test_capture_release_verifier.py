@@ -118,3 +118,15 @@ def test_ac_20_implements_isolated_install_and_all_entrypoint_provenance():
     assert "distribution located outside isolated target" in text
     assert '"agent-global-context-runtime"' in text
     assert "[switch]$Resume" in text
+
+
+def test_ac_20_runs_from_commit_bound_lf_export_with_short_test_root():
+    text = SCRIPT.read_text(encoding="utf-8")
+
+    assert "core.autocrlf=false" in text
+    assert "RepositoryUnderTest" in text
+    assert "VerificationTempRoot" in text
+    assert "LF export contains CR bytes" in text
+    assert "--basetemp',$fullTemp" in text
+    assert "Invoke-RecordedProcess 'AC-20' 'full-suite'" in text
+    assert "-WorkingDirectory $RepositoryUnderTest" in text

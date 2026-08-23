@@ -80,7 +80,8 @@ function Invoke-RecordedProcess {
         [string]$GateName,
         [string]$CommandId,
         [string]$FilePath,
-        [string[]]$Arguments
+        [string[]]$Arguments,
+        [string]$WorkingDirectory = $RepositoryRoot
     )
     $index = $Manifest.commands.Count + 1
     $prefix = '{0:D2}-{1}-{2}' -f $index, $GateName.ToLowerInvariant(), $CommandId
@@ -91,7 +92,7 @@ function Invoke-RecordedProcess {
     $startInfo = New-Object System.Diagnostics.ProcessStartInfo
     $startInfo.FileName = $FilePath
     $startInfo.Arguments = (($Arguments | ForEach-Object { Quote-ProcessArgument $_ }) -join ' ')
-    $startInfo.WorkingDirectory = $RepositoryRoot
+    $startInfo.WorkingDirectory = $WorkingDirectory
     $startInfo.UseShellExecute = $false
     $startInfo.CreateNoWindow = $true
     $startInfo.RedirectStandardOutput = $true
@@ -191,10 +192,29 @@ else {
 Write-Manifest
 
 $Requested = if ($Gate -eq 'All') { @($GateNodes.Keys) } else { @($Gate) }
+$VerificationTempRoot = Join-Path (
+    [System.IO.Path]::GetTempPath()
+) ('agr-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
+[System.IO.Directory]::CreateDirectory($VerificationTempRoot) | Out-Null
+$RepositoryUnderTest = $RepositoryRoot
+if ('AC-20' -in $Requested) {
+    $gitForExport = (Get-Command git -ErrorAction Stop).Source
+    $archivePath = Join-Path $VerificationTempRoot 's.zip'
+    $RepositoryUnderTest = Join-Path $VerificationTempRoot 's'
+    & $gitForExport -C $RepositoryRoot -c core.autocrlf=false archive --format=zip --output=$archivePath HEAD
+    if ($LASTEXITCODE -ne 0) { throw 'commit-bound LF export failed' }
+    Expand-Archive -LiteralPath $archivePath -DestinationPath $RepositoryUnderTest
+    $defaultConfigBytes = [System.IO.File]::ReadAllBytes(
+        (Join-Path $RepositoryUnderTest 'agc_runtime\default_config.yaml')
+    )
+    if (@($defaultConfigBytes | Where-Object { $_ -eq 13 }).Count -ne 0) {
+        throw 'LF export contains CR bytes'
+    }
+}
 foreach ($GateName in $Requested) {
     if ($GateName -ne 'AC-20') {
         if (Test-CommandPassed $GateName 'pytest') { continue }
-        $temporary = Join-Path $ResolvedEvidence ('tmp-' + $GateName.ToLowerInvariant())
+        $temporary = Join-Path $VerificationTempRoot $GateName.ToLowerInvariant()
         $arguments = @('-m','pytest') + @($GateNodes[$GateName]) + @('-q','-p','no:cacheprovider','--basetemp',$temporary)
         $exitCode = Invoke-RecordedProcess $GateName 'pytest' $ResolvedPython $arguments
         if ($exitCode -ne 0) {
@@ -205,15 +225,15 @@ foreach ($GateName in $Requested) {
         continue
     }
 
-    $fullTemp = Join-Path $ResolvedEvidence 'tmp-ac-20-full'
+    $fullTemp = Join-Path $VerificationTempRoot 't'
     if (-not (Test-CommandPassed 'AC-20' 'full-suite')) {
-        $exitCode = Invoke-RecordedProcess 'AC-20' 'full-suite' $ResolvedPython @('-m','pytest','-q','-p','no:cacheprovider','--basetemp',$fullTemp)
+        $exitCode = Invoke-RecordedProcess 'AC-20' 'full-suite' $ResolvedPython @('-m','pytest','-q','-p','no:cacheprovider','--basetemp',$fullTemp) -WorkingDirectory $RepositoryUnderTest
         if ($exitCode -ne 0) { $Manifest.status = 'failed'; Write-Manifest; exit $exitCode }
     }
     $packageRoot = Join-Path $ResolvedEvidence 'packages'
     [System.IO.Directory]::CreateDirectory($packageRoot) | Out-Null
     if (-not (Test-CommandPassed 'AC-20' 'package-build')) {
-        $exitCode = Invoke-RecordedProcess 'AC-20' 'package-build' $ResolvedPython @('-m','build','--outdir',$packageRoot)
+        $exitCode = Invoke-RecordedProcess 'AC-20' 'package-build' $ResolvedPython @('-m','build','--outdir',$packageRoot) -WorkingDirectory $RepositoryUnderTest
         if ($exitCode -ne 0) { $Manifest.status = 'failed'; Write-Manifest; exit $exitCode }
     }
     $wheel = @(Get-ChildItem -LiteralPath $packageRoot -Filter '*.whl' -File)
