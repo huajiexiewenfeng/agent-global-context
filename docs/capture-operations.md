@@ -23,7 +23,7 @@ The public MCP surface remains exactly `agc.read`, `agc.write`, and
 | --- | --- |
 | `agc.read` | `capture_overview`, `capture_search`, `capture_get` |
 | `agc.admin` | `capture_status` |
-| `agc.write` | `capture_forget` (explicit authorization only) |
+| `agc.write` | `capture_review`; `capture_forget` (explicit authorization only) |
 
 ## Activation sequence
 
@@ -127,6 +127,19 @@ Start with `{"action":"capture_overview"}`. Use a narrow
 one observation or receipt. A classification result remains Capture evidence
 until an explicit, policy-valid `agc.write` operation creates or updates a
 formal Memory Item.
+
+For quality-first formalization in Codex App, use `gpt-5.6-sol` at the current
+App model boundary; do not launch Codex CLI, an Extractor subprocess, or reopen
+a raw Codex Session. Search at most 10 unreviewed observations, fetch selected
+items exactly, and compare them with only relevant active Memory Items. Give
+each observation one outcome: `draft`, `needs_context`, or `discard`.
+
+Preview the complete self-contained Memory Item and all contributing IDs before
+any mutation. Only after explicit user confirmation may `confirm`, `update`, or
+`observe` with `reinforce` include `capture_observation_ids` (1–20 unique
+canonical IDs). Runtime publishes `draft` review receipts only after an
+accepted formal-memory mutation. After the user accepts a non-draft result,
+use `capture_review` for `needs_context` or `discard`.
 
 Do not claim that every task becomes memory. Capture may discover zero, one,
 or several observations, and policy can suppress or quarantine them.

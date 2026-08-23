@@ -42,7 +42,7 @@ Unknown filter names are rejected rather than ignored.
 | `history` | `{"action":"history","id":"memory-id"}` |
 | `evidence` | `{"action":"evidence","id":"memory-id"}` |
 | `capture_overview` | `{"action":"capture_overview"}` |
-| `capture_search` | `{"action":"capture_search","filters":{"project":["project-id"],"category":["preference"]},"limit":20}` |
+| `capture_search` | `{"action":"capture_search","filters":{"project":["project-id"]},"limit":10,"include_reviewed":false}` |
 | `capture_get` | `{"action":"capture_get","observation_id":"co_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}` |
 
 Recall progressively: `overview → search → get → history/evidence`. Stop when
@@ -52,8 +52,11 @@ The Capture read actions use the same `agc.read` tool. Capture does not add a fo
 Capture observations are reviewable evidence, not formal Memory
 Items. `capture_search` accepts strict filters (`task`, `project`, `category`,
 `kind`, `scope`, `state`, `sensitivity`, and a `time` range), a limit from 1
-to 100, and an opaque cursor. `capture_get` accepts exactly one
-`observation_id` or `receipt_id`.
+to 100, an opaque cursor, and exact boolean `include_reviewed`. Reviewed
+observations are hidden by default; set `include_reviewed: true` only for an
+explicit audit search. `capture_get` accepts exactly one `observation_id` or
+`receipt_id`; exact observation reads also return content-free review metadata
+when present.
 
 ## Reusable `agc.write` Schemas
 
@@ -309,6 +312,7 @@ schemas above.
 | `reject` | `{"action":"reject","candidate_id":"candidate-id"}` |
 | `forget` | `{"action":"forget","memory_id":"memory-id","authorization":"explicit_user_request","suppression_scope":"precise_scope","verification_terms":["exact managed-content term"]}` |
 | `capture_forget` | `{"action":"capture_forget","authorization":"explicit_user_request","target":{"type":"observation","observation_id":"co_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}` |
+| `capture_review` | `{"action":"capture_review","observation_ids":["co_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],"outcome":"needs_context"}` |
 
 Action-specific rules:
 
@@ -342,6 +346,13 @@ Action-specific rules:
   target: an observation id, or a complete adapter/source/task/revision key.
   It removes matching managed Capture copies and rewrites managed backups; it
   never means provider-side deletion.
+- `capture_review`: contains exactly `action`, `observation_ids`, and `outcome`.
+  It accepts only `needs_context` or `discard`; `draft` receipts cannot be
+  written through this action.
+- `capture_observation_ids` is optional on `confirm`, `update`, and `observe`
+  only when the observe disposition is `reinforce`. It contains 1–20 unique
+  canonical Capture observation IDs. Runtime creates `draft` receipts only
+  after the formal mutation is accepted; a failed formal write creates none.
 
 #### Complete supersede request
 

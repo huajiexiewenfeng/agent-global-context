@@ -246,7 +246,7 @@ def test_tool_contract_has_a_request_example_for_every_action():
         "history": {"action", "id"},
         "evidence": {"action", "id"},
         "capture_overview": {"action"},
-        "capture_search": {"action", "filters", "limit"},
+        "capture_search": {"action", "filters", "limit", "include_reviewed"},
         "capture_get": {"action", "observation_id"},
         "observe": {"action", "observation", "memory_markdown"},
         "observe_batch": {"action", "items"},
@@ -264,6 +264,7 @@ def test_tool_contract_has_a_request_example_for_every_action():
             "verification_terms",
         },
         "capture_forget": {"action", "authorization", "target"},
+        "capture_review": {"action", "observation_ids", "outcome"},
         "init": {"action"},
         "validate": {"action"},
         "rebuild_catalog": {"action"},
@@ -277,6 +278,31 @@ def test_tool_contract_has_a_request_example_for_every_action():
     for action, required_fields in expected_fields.items():
         assert examples[action]["action"] == action
         assert required_fields <= set(examples[action])
+
+
+def test_quality_first_formalization_workflow_is_bounded_and_user_confirmed():
+    guidance = _guidance_text()
+    text = guidance.casefold()
+    assert "formalization-workflow.md" in _skill_text()
+    assert "gpt-5.6-sol" in text
+    assert "include_reviewed" in text
+    assert "capture_observation_ids" in text
+    assert "needs_context" in text and "discard" in text and "draft" in text
+    assert "1–20" in guidance
+    assert "raw codex session" in text
+    assert "do not" in text
+    assert "explicit user confirmation" in text
+    assert "该 skill" in guidance
+
+
+def test_golden_six_observations_have_exact_expected_review_results():
+    text = _guidance_text()
+    assert "Codex 自动完成发布" in text and "人工只确认发布" in text
+    assert "使用 1Panel" in text
+    assert "最终目标保持不变" in text
+    assert "Docker Desktop 数据放在 D 盘" in text
+    assert "该 skill 调用当前本地 harness" in text
+    assert "24" in text
 
 
 def test_tool_contract_rejects_unknown_search_filter_names():

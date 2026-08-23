@@ -25,6 +25,8 @@ Apply memory only when it materially changes decision, expression, continuity, o
 
 Capture observations are evidence, not formal memory. They are not automatically injected into context or automatically promoted. Use `capture_overview`, then a narrow `capture_search`, and `capture_get` only when task history is materially relevant. See the [Capture operations guide](../../docs/capture-operations.md) for activation, status, exclusions, cost, rollback, and hard-forget procedures.
 
+When the user asks to review, consolidate, classify, or formalize Capture observations, read [the quality-first formalization workflow](references/formalization-workflow.md) and follow it before any write.
+
 ## Write, Admin, and Failure
 
 Explicit durable non-sensitive changes may call `agc.write`; sensitive persistence stays disabled. `agc.admin` is for maintenance and migration, not ordinary Recall. Read [the tool contract](references/tool-contract.md) only for write/admin or an exact schema. Read [the application policy](references/application-policy.md) only for `grow`, conflicts, or ambiguous boundaries.
