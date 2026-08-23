@@ -934,7 +934,7 @@ git commit -m "chore: release agc runtime 0.4.0"
 - Install from verified main checkout: `D:\tmp\github\agent-global-context`
 - Active skill root: `C:\Users\admin\.agents\skills`
 - Active Codex App config: `C:\Users\admin\.codex-clean-20260710\config.toml`
-- Production Memory Root: `C:\Users\admin\.agent-global-context-v2`
+- Production Memory Root: `<AGC_MEMORY_ROOT>`
 - Runtime install root: `C:\Users\admin\.agent-global-context-runtime`
 
 **Interfaces:**
@@ -993,7 +993,7 @@ Copy the production Memory Root through the managed backup/restore path into `D:
 
 ```powershell
 $python='D:\tmp\github\agent-global-context\.venv\Scripts\python.exe'
-$production='C:\Users\admin\.agent-global-context-v2'
+$production='<AGC_MEMORY_ROOT>'
 $pilot='D:\tmp_test\agc-formalization-pilot'
 if(Test-Path -LiteralPath $pilot){ throw 'Pilot Memory Root must be fresh' }
 $backupJson='{"action":"backup"}' | & $python -m agc_runtime.cli admin --root $production --input -
@@ -1035,7 +1035,7 @@ $repository='D:\tmp\github\agent-global-context'
   -RepositoryRoot $repository `
   -SkillsRoot 'C:\Users\admin\.agents\skills' `
   -CodexConfig 'C:\Users\admin\.codex-clean-20260710\config.toml' `
-  -MemoryRoot 'C:\Users\admin\.agent-global-context-v2' `
+  -MemoryRoot '<AGC_MEMORY_ROOT>' `
   -InstallRoot 'C:\Users\admin\.agent-global-context-runtime'
 ```
 
