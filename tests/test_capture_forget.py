@@ -360,10 +360,17 @@ def test_revision_forget_rewrites_authoritative_census_run_and_every_backup(
             for name, data in entries.items()
             if name != tombstone_name
         )
-        run_name = f".runtime/capture/census-runs/{census.census_id}/run.json"
-        assert json.loads(entries[run_name])["revision_keys"] == [
-            remaining.key.to_mapping()
-        ]
+        assert not any(
+            name.startswith(
+                f".runtime/capture/census-runs/{census.census_id}/"
+            )
+            for name in entries
+        )
+        remaining_name = (
+            ".runtime/capture/census/"
+            f"{receipt_id_for(remaining.key)}.json"
+        )
+        assert json.loads(entries[remaining_name]) == remaining.to_mapping()
 
 
 def test_revision_forget_removes_an_authoritative_census_run_when_it_becomes_empty(

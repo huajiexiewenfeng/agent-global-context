@@ -22,7 +22,7 @@ from agc_runtime.capture_contracts import (
     receipt_id_for,
 )
 from agc_runtime.capture_review import CaptureReviewReceipt
-from agc_runtime.capture_transaction import read_json
+from agc_runtime.capture_transaction import canonical_json_bytes, read_json
 from agc_runtime.paths import MemoryPaths
 
 ARCHIVE_SCHEMA_VERSION = 2
@@ -151,6 +151,13 @@ def backup_files(paths: MemoryPaths) -> list[tuple[str, bytes]]:
             continue
         if not _capture_name_allowed(relative):
             continue
+        if relative.startswith((
+            ".runtime/capture/census/",
+            ".runtime/capture/census-runs/",
+        )):
+            if resolved.stat().st_size > _MAX_FILE_SIZE:
+                raise ValueError("backup file size exceeds safe limit")
+            continue
         if len(files) >= _MAX_ARCHIVE_FILES:
             raise ValueError("backup file count exceeds safe limit")
         size = resolved.stat().st_size
@@ -159,6 +166,26 @@ def backup_files(paths: MemoryPaths) -> list[tuple[str, bytes]]:
         if total + size > _MAX_TOTAL_SIZE:
             raise ValueError("backup total size exceeds safe limit")
         data = resolved.read_bytes()
+        if len(data) > _MAX_FILE_SIZE:
+            raise ValueError("backup file size exceeds safe limit")
+        if total + len(data) > _MAX_TOTAL_SIZE:
+            raise ValueError("backup total size exceeds safe limit")
+        files.append((relative, data))
+        total += len(data)
+    # Frozen Census runs intentionally duplicate their complete member set on
+    # every immutable scan.  Backups preserve the same revision truth in the
+    # legacy canonical Census projection so archive size grows with unique
+    # revisions, not with scan count.  The live immutable runs remain intact.
+    from agc_runtime.capture_store import CaptureStore
+
+    for revision in CaptureStore(paths).frozen_revisions():
+        relative = (
+            ".runtime/capture/census/"
+            f"{receipt_id_for(revision.key)}.json"
+        )
+        data = canonical_json_bytes(revision.to_mapping())
+        if len(files) >= _MAX_ARCHIVE_FILES:
+            raise ValueError("backup file count exceeds safe limit")
         if len(data) > _MAX_FILE_SIZE:
             raise ValueError("backup file size exceeds safe limit")
         if total + len(data) > _MAX_TOTAL_SIZE:

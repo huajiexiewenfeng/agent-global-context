@@ -145,13 +145,12 @@ def test_capture_backup_round_trip_is_allowlisted_and_keeps_recall_isolated(tmp_
     with zipfile.ZipFile(backup.data["backup_path"]) as archive:
         names = set(archive.namelist())
     assert f".runtime/capture/observations/{observation.observation_id}.json" in names
-    assert backup.data["manifest"]["capabilities"] == [
-        "capture-backup-v1",
-        "capture-census-runs-v1",
-    ]
+    assert backup.data["manifest"]["capabilities"] == ["capture-backup-v1"]
     run_prefix = f".runtime/capture/census-runs/{census.census_id}"
-    assert f"{run_prefix}/run.json" in names
-    assert f"{run_prefix}/members/{receipt_id_for(revision.key)}.json" in names
+    assert not any(name.startswith(f"{run_prefix}/") for name in names)
+    assert (
+        f".runtime/capture/census/{receipt_id_for(revision.key)}.json" in names
+    )
     assert (
         f".runtime/capture/census/{receipt_id_for(legacy.key)}.json" in names
     )
@@ -172,6 +171,53 @@ def test_capture_backup_round_trip_is_allowlisted_and_keeps_recall_isolated(tmp_
     assert [item.observation_id for item in store.iter_visible_observations()] == [observation.observation_id]
     assert set(store.frozen_revisions()) == {revision, legacy}
     assert not list(paths.memories.rglob("*.md"))
+
+
+def test_backup_compacts_repeated_frozen_census_runs_before_file_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from datetime import datetime, timedelta
+
+    from agc_runtime.capture_source import SourceBindingKey, TimeWindow
+
+    paths, store, _observation_value = _populated(tmp_path)
+    revisions = []
+    first_end = datetime.fromisoformat("2026-08-02T12:00:00+00:00")
+    for index in range(12):
+        revision = replace(
+            _revision(),
+            key=CaptureKey(
+                "synthetic_adapter",
+                ROOT_ID,
+                f"task-{index}",
+                f"revision-{index}",
+            ),
+            rollout_anchor_id=f"rollout-{index}",
+            locator=f"sessions/{index}.jsonl",
+        )
+        revisions.append(revision)
+        end = first_end + timedelta(days=index)
+        started_at = end.isoformat().replace("+00:00", "Z")
+        start_at = (end - timedelta(days=7)).isoformat().replace("+00:00", "Z")
+        store.freeze_census(
+            binding=SourceBindingKey(1, "synthetic_adapter", ROOT_ID),
+            window=TimeWindow(1, start_at, started_at),
+            started_at=started_at,
+            revisions=tuple(revisions),
+        )
+    monkeypatch.setattr(managed_backup, "_MAX_ARCHIVE_FILES", 50)
+
+    backup = dispatch_admin(paths, {"action": "backup"})
+
+    assert backup.status == "accepted", backup
+    with zipfile.ZipFile(backup.data["backup_path"]) as archive:
+        names = archive.namelist()
+    assert not any(
+        name.startswith(".runtime/capture/census-runs/") for name in names
+    )
+    assert sum(
+        name.startswith(".runtime/capture/census/") for name in names
+    ) == len(revisions)
 
 
 def test_capture_review_receipt_round_trips_in_managed_backup(tmp_path: Path):
@@ -274,6 +320,9 @@ def test_restore_rejects_invalid_frozen_census_graph_before_mutation(
             for name in archive.namelist()
             if name != "manifest.json"
         ]
+    entries = _replace_projected_census_with_run(
+        paths, entries, census, revision
+    )
     prefix = f".runtime/capture/census-runs/{census.census_id}"
     member_name = f"{prefix}/members/{receipt_id_for(revision.key)}.json"
     if corruption == "missing_member":
@@ -355,7 +404,8 @@ def test_restore_rejects_invalid_frozen_census_graph_before_mutation(
 
 def test_restore_requires_frozen_census_capability_before_mutation(tmp_path: Path):
     paths, store, _observation_value = _populated(tmp_path)
-    _freeze_census(store, (_revision(),))
+    revision = _revision()
+    census = _freeze_census(store, (revision,))
     valid = Path(dispatch_admin(paths, {"action": "backup"}).data["backup_path"])
     with zipfile.ZipFile(valid) as archive:
         entries = [
@@ -363,6 +413,9 @@ def test_restore_requires_frozen_census_capability_before_mutation(tmp_path: Pat
             for name in archive.namelist()
             if name != "manifest.json"
         ]
+    entries = _replace_projected_census_with_run(
+        paths, entries, census, revision
+    )
     manifest_value = managed_backup.manifest(entries)
     manifest_value["capabilities"] = ["capture-backup-v1"]
     malicious = tmp_path / "missing-census-runs-capability.zip"
@@ -402,6 +455,24 @@ def _write_archive(path: Path, entries: list[tuple[str, bytes]], *, manifest_val
         for name, data in entries:
             archive.writestr(name, data)
         archive.writestr("manifest.json", json.dumps(value, sort_keys=True))
+
+
+def _replace_projected_census_with_run(
+    paths: MemoryPaths,
+    entries: list[tuple[str, bytes]],
+    census,
+    revision: RevisionRef,
+) -> list[tuple[str, bytes]]:
+    projected = (
+        f".runtime/capture/census/{receipt_id_for(revision.key)}.json"
+    )
+    result = [(name, data) for name, data in entries if name != projected]
+    run_root = paths.capture.root / "census-runs" / census.census_id
+    for path in sorted(run_root.rglob("*")):
+        if path.is_file():
+            name = str(path.relative_to(paths.root)).replace("\\", "/")
+            result.append((name, path.read_bytes()))
+    return result
 
 
 @pytest.mark.parametrize(

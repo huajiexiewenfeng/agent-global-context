@@ -559,6 +559,14 @@ def _clear_replaceable_files(paths: MemoryPaths) -> None:
     for path in sorted(paths.root.rglob("*"), reverse=True):
         if path.is_file() and not _preserve_during_restore(paths, path):
             safe_unlink(path)
+    run_root = paths.capture.root / "census-runs"
+    if run_root.exists():
+        for path in sorted(run_root.rglob("*"), reverse=True):
+            if path.is_dir():
+                try:
+                    path.rmdir()
+                except OSError:
+                    pass
 
 
 def _restore_file_snapshot(

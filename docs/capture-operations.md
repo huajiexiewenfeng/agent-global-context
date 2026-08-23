@@ -157,7 +157,12 @@ downgrade and not data deletion. A binary downgrade after Capture data exists
 is unsupported unless a separately verified compatibility path says otherwise.
 
 Formal backup/restore includes managed Capture data. Keep the current Runtime
-available until restored data has passed validation.
+available until restored data has passed validation. Immutable Census runs
+remain untouched in the live root, but backup creation validates and projects
+their members into one canonical Census record per unique Revision. This keeps
+restore truth complete while preventing repeated scans from growing every
+backup as run count multiplied by Revision count. Restore continues to accept
+and strictly validate older archives that contain full frozen Census runs.
 
 ## Hard forget
 
