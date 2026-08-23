@@ -350,3 +350,51 @@ def test_write_failure_is_reported_without_acceptance(
         "code": "write_failed",
         "message": "disk unavailable",
     }
+
+
+@pytest.mark.parametrize("outcome", ["needs_context", "discard"])
+def test_capture_review_records_only_terminal_non_draft_outcomes(
+    tmp_path, outcome, visible_capture_observations
+):
+    paths = MemoryPaths.from_root(tmp_path / "memory")
+    _store, (item,) = visible_capture_observations(paths, ["Reviewable preference."])
+    response = dispatch_write(
+        paths,
+        {
+            "action": "capture_review",
+            "observation_ids": [item.observation_id],
+            "outcome": outcome,
+        },
+    )
+    assert response.status == "accepted"
+    assert response.data == {
+        "code": "capture_review_recorded",
+        "outcome": outcome,
+        "reviewed_count": 1,
+    }
+
+
+@pytest.mark.parametrize(
+    "review_request",
+    [
+        {
+            "action": "capture_review",
+            "observation_ids": ["co_" + "a" * 64],
+            "outcome": "draft",
+        },
+        {
+            "action": "capture_review",
+            "observation_ids": ["co_" + "a" * 64],
+            "outcome": "discard",
+            "reason": "free text",
+        },
+    ],
+)
+def test_capture_review_rejects_draft_and_unknown_fields_before_write(
+    tmp_path, review_request
+):
+    paths = MemoryPaths.from_root(tmp_path / "memory")
+    response = dispatch_write(paths, review_request)
+    assert response.status == "failed"
+    assert response.error["code"] == "invalid_request"
+    assert not paths.capture.reviews.exists()

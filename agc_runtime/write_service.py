@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Any, Callable
 
 from agc_runtime.catalog import rebuild_catalog
+from agc_runtime.capture_review import parse_capture_observation_ids
+from agc_runtime.capture_store import CaptureStore
 from agc_runtime.contracts import (
     EvidenceSummary,
     ObservationEnvelope,
@@ -446,6 +448,28 @@ def _handle_capture_forget(paths: MemoryPaths, request: dict[str, Any]) -> ToolR
     return capture_forget(paths, request)
 
 
+def _handle_capture_review(
+    paths: MemoryPaths, request: dict[str, Any]
+) -> ToolResponse:
+    if set(request) != {"action", "observation_ids", "outcome"}:
+        raise ValueError("capture_review request must contain exact fields")
+    outcome = request["outcome"]
+    if outcome not in {"needs_context", "discard"}:
+        raise ValueError("capture_review supports only needs_context or discard")
+    observation_ids = parse_capture_observation_ids(request["observation_ids"])
+    created = CaptureStore(paths).record_reviews(
+        observation_ids,
+        outcome=outcome,
+        target_memory_id=None,
+    )
+    return _response(
+        "capture_review",
+        "accepted",
+        "capture_review_recorded",
+        data={"outcome": outcome, "reviewed_count": created},
+    )
+
+
 Handler = Callable[[MemoryPaths, dict[str, Any]], ToolResponse]
 _HANDLERS: dict[str, Handler] = {
     "observe": _handle_observe,
@@ -458,6 +482,7 @@ _HANDLERS: dict[str, Handler] = {
     "reject": _handle_reject,
     "forget": _handle_forget,
     "capture_forget": _handle_capture_forget,
+    "capture_review": _handle_capture_review,
 }
 
 
@@ -485,7 +510,7 @@ def dispatch_write(paths: MemoryPaths, request: Any) -> ToolResponse:
         )
     try:
         response = _HANDLERS[action](paths, request)
-        if action in {"forget", "capture_forget"}:
+        if action in {"forget", "capture_forget", "capture_review"}:
             return response
         return _refresh_catalog_after_formal_memory(paths, response)
     except (ValueError, KeyError, TypeError) as error:
