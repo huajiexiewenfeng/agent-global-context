@@ -3,7 +3,7 @@
 ## Summary
 
 - title: Repeated frozen Census reads amplify I/O and fragment-first scheduling wastes bounded backfill capacity
-- status: planned
+- status: verified-installed; Codex App process reload pending
 - flow_id: `2026-08-23-census-catalog-task-aware-backfill`
 - severity: high operational latency and low candidate yield; no formal-memory corruption observed
 - owner: Codex
@@ -27,7 +27,7 @@
 
 ## Symptom
 
-The production Capture root has 110 frozen runs and 74,175 member files for only 852 unique revisions across 70 tasks. `CaptureStore.read_snapshot()` decodes all repeated members and later decodes the same runs again for `census_runs`. The runner then sorts ready receipts by discovery time and receipt id, so a bounded batch can consume several slots on weak turns from one task.
+The production Capture root accumulated highly overlapping frozen runs. Before the fix, `CaptureStore.read_snapshot()` decoded repeated members on every read and the runner sorted ready receipts by discovery time and receipt id, so a bounded batch could consume several slots on weak turns from one task. The final production acceptance found 116 frozen runs and 915 unique revisions.
 
 ## Expected
 
@@ -80,9 +80,9 @@ Implement the approved `census-catalog` derived namespace with atomic rebuild an
 
 ## Verification
 
-- status: not-run
-- commands_or_checks: focused store/runner/forget/backup tests; full Capture regression; package build and isolated install; read-only production-scale cold/hot benchmark; formal-memory and egress counter comparison
-- result_summary: pending
+- status: passed-agent-local
+- commands_or_checks: full repository suite before the final packed-layout optimization; complete Capture regression after it; package build and inspection; immutable local install; installed/source hashes; read-only production cold/hot benchmark and zero-delta formal-memory/observation/budget checks
+- result_summary: 1334 full-suite tests passed before the final Capture-only packed-layout change; 1064 Capture tests then passed after it; wheel/sdist built; Runtime 0.4.1 installed; production cold rebuild took 26.172 seconds and hot reads took 8.370 and 6.122 seconds with zero hot member JSON reads
 - limitation: no external model call is authorized for this implementation acceptance
 - residual_risk: cold-member tampering after a valid catalog build is detected by explicit full audit/backup verification rather than every hot status read
 
@@ -92,15 +92,17 @@ Implement the approved `census-catalog` derived namespace with atomic rebuild an
 |---|---|---|---|
 | source | done | production metadata counts and current source call paths | 2026-08-23 |
 | design | done | `docs/superpowers/specs/2026-08-23-agc-task-aware-census-catalog-design.md` | 2026-08-23 |
-| plan | active | implementation plan in preparation | 2026-08-23 |
-| development | pending |  | 2026-08-23 |
-| testing | pending |  | 2026-08-23 |
-| archive | pending |  | 2026-08-23 |
+| plan | done | `docs/superpowers/plans/2026-08-23-agc-task-aware-census-catalog.md` | 2026-08-23 |
+| development | done | commits `5e9b61a` through `3ed1089` | 2026-08-23 |
+| testing | passed-agent-local | `.llm-wiki/verification/2026-08-23-census-catalog-task-aware-backfill.md` | 2026-08-23 |
+| archive | active | handoff created; current Codex App process must restart to load the new MCP route | 2026-08-23 |
 
 ## Artifacts
 
 - `docs/superpowers/specs/2026-08-23-agc-task-aware-census-catalog-design.md`
 - `docs/superpowers/plans/2026-08-23-agc-task-aware-census-catalog.md`
+- `.llm-wiki/verification/2026-08-23-census-catalog-task-aware-backfill.md`
+- `.llm-wiki/handoff/2026-08-23-census-catalog-task-aware-backfill-handoff.md`
 
 ## Open Questions
 
@@ -108,5 +110,4 @@ None. The user approved the recommended per-invocation cap of three locally high
 
 ## Residual Risk
 
-The first catalog construction remains a full cold validation and may be slow once. Existing frozen evidence remains unchanged, so disk file count is not reduced in this release even though normal read latency is.
-
+The first catalog construction remains a full cold validation. Existing frozen evidence remains unchanged, so disk file count is not reduced. The installed route is 0.4.1, but the Codex App process that was already running retained the previous MCP process and must be restarted before in-app verification can close the archive gate.

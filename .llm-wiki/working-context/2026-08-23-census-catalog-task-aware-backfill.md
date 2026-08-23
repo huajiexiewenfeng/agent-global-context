@@ -19,8 +19,8 @@
   - installer/release scripts only if package verification proves they require adjustment
 - excluded_scope:
   - model/prompt changes, safety-gate relaxation, automatic formal-memory promotion, raw Session persistence, live backfill, Hook/continuous Runner activation, unrelated refactoring
-- current_gate: Scope Lock Gate
-- requested_stage_or_bridge: writing-plans followed by inline TDD execution
+- current_gate: installed verification complete; Codex App reload gate pending
+- requested_stage_or_bridge: restart Codex App, then verify the live MCP reports Runtime 0.4.1
 - constraints:
   - all test temporary output is rooted under `D:\tmp_test`
   - zero new Extractor/model calls without a fresh exact authorization
@@ -48,3 +48,12 @@
 - Read-only cold/hot benchmark against production-scale Capture data with zero Extractor calls.
 - Compare formal-memory count/hashes and Capture token/egress receipts before and after installation.
 
+## Current State
+
+- branch: `codex/task-aware-census-catalog`
+- head: `3ed1089`
+- installed_runtime: `4f63831e70d0c6dea92dabf6096f477c15c6a7ace84719483cd4f3eb35c96bcf`
+- installed_version: `0.4.1`
+- production_acceptance: cold 26.172 seconds; hot 8.370 and 6.122 seconds; 915/915 unique revision match; zero hot member JSON reads
+- zero_mutation_check: formal-memory, observation count, and budget fingerprints unchanged
+- pending: restart Codex App because the current task still holds the previous MCP process

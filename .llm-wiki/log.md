@@ -99,3 +99,11 @@
   the previous Runtime and installer rollback backup remain available.
 - Verification and handoff artifacts were registered. No dashboard was updated
   because this repository has no enabled or registered progress dashboard.
+## 2026-08-23 — task-aware Census catalog 0.4.1
+
+- Replaced repeated frozen-member hot reads with an atomically published packed v2 Census catalog and concurrent one-time cold rebuild.
+- Added transactional catalog invalidation/recovery for scan and Hard Forget paths, while keeping the derived catalog out of backups.
+- Added deterministic local Capsule ranking, round-robin task selection, a three-per-task invocation cap, and selected-Capsule reuse without changing the model or persistence boundary.
+- Agent-local evidence: 1334 full-suite tests before the final Capture-only packed layout, then 1064 Capture tests after it; package and installed/source hash gates passed.
+- Production read-only acceptance found 915 unique revisions, cold rebuild 26.172 seconds, hot reads 8.370/6.122 seconds, zero hot member reads, and zero formal-memory/observation/token/Extractor deltas.
+- Installed immutable Runtime 0.4.1 at `4f63831e...96bcf`. Codex config is updated; the current App task still holds the previous MCP process and requires restart before live-route closure.

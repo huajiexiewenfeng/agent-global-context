@@ -8,6 +8,8 @@
 
 **Tech Stack:** Python 3.11+, dataclasses, pathlib, canonical JSON/atomic directory publication already in `capture_transaction.py`, pytest, existing immutable wheel/venv installer flow.
 
+**Execution status (2026-08-23):** Tasks 1–4 and Task 5 steps 1–6 and 8–9 are implemented and locally verified on `codex/task-aware-census-catalog`. Runtime 0.4.1 is installed and the configured route is updated. Task 5 step 7 and final integration remain open until Codex App restarts and the live MCP process reports 0.4.1.
+
 ## Global Constraints
 
 - Preserve all existing frozen Census files as cold audit evidence.
