@@ -345,9 +345,9 @@ function Enable-ScannerConfig {
         return
     }
     $text = [System.IO.File]::ReadAllText($ConfigPath, $Utf8NoBom)
-    $text = [regex]::Replace($text, '(?m)^  enabled: .+$', '  enabled: true')
-    $text = [regex]::Replace($text, '(?m)^  mode: .+$', '  mode: scanner_only')
-    $text = [regex]::Replace($text, '(?m)^  paused: .+$', '  paused: false')
+    $text = [regex]::Replace($text, '(?m)^  enabled: [^\r\n]+(?=\r?$)', '  enabled: true')
+    $text = [regex]::Replace($text, '(?m)^  mode: [^\r\n]+(?=\r?$)', '  mode: scanner_only')
+    $text = [regex]::Replace($text, '(?m)^  paused: [^\r\n]+(?=\r?$)', '  paused: false')
     if ($text -match '(?m)^  sources: \[\]$') {
         $sourceJson = $codexPath | ConvertTo-Json -Compress
         $text = [regex]::Replace($text, '(?m)^  sources: \[\]$', "  sources:`n    - $sourceJson")
@@ -358,7 +358,7 @@ function Enable-ScannerConfig {
 function Set-HookEnabled {
     param([string]$ConfigPath)
     $text = [System.IO.File]::ReadAllText($ConfigPath, $Utf8NoBom)
-    $text = [regex]::Replace($text, '(?m)^    enabled: .+$', '    enabled: true', 1)
+    $text = [regex]::Replace($text, '(?m)^    enabled: [^\r\n]+(?=\r?$)', '    enabled: true', 1)
     Write-AtomicUtf8 $ConfigPath $text
 }
 
@@ -372,15 +372,15 @@ function Set-ConfigState {
         [object]$HookEnabled
     )
     $text = [System.IO.File]::ReadAllText($ConfigPath, $Utf8NoBom)
-    $text = [regex]::Replace($text, '(?m)^  enabled: .+$', ('  enabled: ' + $Enabled.ToString().ToLowerInvariant()))
-    $text = [regex]::Replace($text, '(?m)^  mode: .+$', ('  mode: ' + $Mode))
-    $text = [regex]::Replace($text, '(?m)^  paused: .+$', ('  paused: ' + $Paused.ToString().ToLowerInvariant()))
+    $text = [regex]::Replace($text, '(?m)^  enabled: [^\r\n]+(?=\r?$)', ('  enabled: ' + $Enabled.ToString().ToLowerInvariant()))
+    $text = [regex]::Replace($text, '(?m)^  mode: [^\r\n]+(?=\r?$)', ('  mode: ' + $Mode))
+    $text = [regex]::Replace($text, '(?m)^  paused: [^\r\n]+(?=\r?$)', ('  paused: ' + $Paused.ToString().ToLowerInvariant()))
     if ($null -ne $Budget) {
-        $text = [regex]::Replace($text, '(?m)^    incremental_total_tokens: .+$', ('    incremental_total_tokens: ' + [int]$Budget))
+        $text = [regex]::Replace($text, '(?m)^    incremental_total_tokens: [^\r\n]+(?=\r?$)', ('    incremental_total_tokens: ' + [int]$Budget))
     }
     if ($null -ne $HookEnabled) {
         $replacement = '    enabled: ' + ([bool]$HookEnabled).ToString().ToLowerInvariant()
-        $text = [regex]::Replace($text, '(?m)^    enabled: .+$', $replacement, 1)
+        $text = [regex]::Replace($text, '(?m)^    enabled: [^\r\n]+(?=\r?$)', $replacement, 1)
     }
     Write-AtomicUtf8 $ConfigPath $text
 }
