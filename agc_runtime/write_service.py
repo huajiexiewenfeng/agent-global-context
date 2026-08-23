@@ -7,7 +7,10 @@ from pathlib import Path
 from typing import Any, Callable
 
 from agc_runtime.catalog import rebuild_catalog
-from agc_runtime.capture_review import parse_capture_observation_ids
+from agc_runtime.capture_review import (
+    parse_capture_observation_ids,
+    validate_formalization_item,
+)
 from agc_runtime.capture_store import CaptureStore
 from agc_runtime.contracts import (
     EvidenceSummary,
@@ -205,6 +208,56 @@ def _load_memory_markdown(request: dict[str, Any]) -> MemoryItem:
     return item
 
 
+def _capture_observation_ids(request: dict[str, Any]) -> tuple[str, ...]:
+    if "capture_observation_ids" not in request:
+        return ()
+    return parse_capture_observation_ids(request["capture_observation_ids"])
+
+
+def _prevalidate_draft_reviews(
+    paths: MemoryPaths,
+    observation_ids: tuple[str, ...],
+    *,
+    target_memory_id: str,
+) -> None:
+    if not observation_ids:
+        return
+    CaptureStore(paths).validate_review_batch(
+        observation_ids,
+        outcome="draft",
+        target_memory_id=target_memory_id,
+    )
+
+
+def _attach_draft_reviews(
+    paths: MemoryPaths,
+    response: ToolResponse,
+    observation_ids: tuple[str, ...],
+) -> ToolResponse:
+    memory_id = response.data.get("memory_id")
+    if (
+        response.status != "accepted"
+        or not observation_ids
+        or not isinstance(memory_id, str)
+    ):
+        return response
+    try:
+        count = CaptureStore(paths).record_reviews(
+            observation_ids,
+            outcome="draft",
+            target_memory_id=memory_id,
+        )
+    except (OSError, RuntimeError, ValueError):
+        return replace(
+            response,
+            warnings=(*response.warnings, "capture_review_receipt_failed"),
+        )
+    return replace(
+        response,
+        data={**response.data, "capture_reviewed_count": count},
+    )
+
+
 def _decision_response(
     action: str,
     decision: PolicyDecision,
@@ -221,6 +274,20 @@ def _decision_response(
 
 def _handle_observe(paths: MemoryPaths, request: dict[str, Any]) -> ToolResponse:
     envelope = _load_observation(request)
+    capture_ids = _capture_observation_ids(request)
+    if capture_ids and envelope.proposal.disposition != "reinforce":
+        raise ValueError(
+            "capture_observation_ids are supported only for observe reinforce"
+        )
+    if capture_ids:
+        target_memory_id = envelope.proposal.match_memory_id
+        if not isinstance(target_memory_id, str) or not target_memory_id:
+            raise ValueError("observe reinforce requires match_memory_id")
+        _prevalidate_draft_reviews(
+            paths,
+            capture_ids,
+            target_memory_id=target_memory_id,
+        )
     initial = evaluate_observation(envelope)
     if initial.status == "rejected_policy":
         return _decision_response("observe", initial)
@@ -264,9 +331,10 @@ def _handle_observe(paths: MemoryPaths, request: dict[str, Any]) -> ToolResponse
         result = store.add_evidence(
             match_memory_id or "", source, envelope.source.observed_at
         )
-        return _mutation_response(
+        response = _mutation_response(
             "observe", result, store.get_memory(match_memory_id or "")
         )
+        return _attach_draft_reviews(paths, response, capture_ids)
     if disposition == "update":
         item = _load_memory_markdown(request)
         if item.id != match_memory_id:
@@ -357,26 +425,50 @@ def _handle_propose(paths: MemoryPaths, request: dict[str, Any]) -> ToolResponse
 
 
 def _handle_confirm(paths: MemoryPaths, request: dict[str, Any]) -> ToolResponse:
+    capture_ids = _capture_observation_ids(request)
     nested = {**request, "action": "observe"}
+    nested.pop("capture_observation_ids", None)
     observation = dict(nested.get("observation", {}))
     proposal = dict(observation.get("proposal", {}))
     proposal["disposition"] = "new"
     proposal["requested_confidence"] = "confirmed"
     observation["proposal"] = proposal
     nested["observation"] = observation
+    item = _load_memory_markdown(nested)
+    validate_formalization_item(item)
+    _prevalidate_draft_reviews(
+        paths,
+        capture_ids,
+        target_memory_id=item.id,
+    )
     response = _handle_observe(paths, nested)
-    return replace(response, action="confirm")
+    response = replace(response, action="confirm")
+    return _attach_draft_reviews(paths, response, capture_ids)
 
 
 def _handle_update(paths: MemoryPaths, request: dict[str, Any]) -> ToolResponse:
+    capture_ids = _capture_observation_ids(request)
     nested = {**request, "action": "observe"}
+    nested.pop("capture_observation_ids", None)
     observation = dict(nested.get("observation", {}))
     proposal = dict(observation.get("proposal", {}))
     proposal["disposition"] = "update"
     observation["proposal"] = proposal
     nested["observation"] = observation
+    item = _load_memory_markdown(nested)
+    validate_formalization_item(item)
+    envelope = _load_observation(nested)
+    match_memory_id = envelope.proposal.match_memory_id
+    if item.id != match_memory_id:
+        raise ValueError("memory_markdown id must match match_memory_id")
+    _prevalidate_draft_reviews(
+        paths,
+        capture_ids,
+        target_memory_id=item.id,
+    )
     response = _handle_observe(paths, nested)
-    return replace(response, action="update")
+    response = replace(response, action="update")
+    return _attach_draft_reviews(paths, response, capture_ids)
 
 
 def _handle_transition(
@@ -509,6 +601,13 @@ def dispatch_write(paths: MemoryPaths, request: Any) -> ToolResponse:
             },
         )
     try:
+        if (
+            "capture_observation_ids" in request
+            and action not in {"confirm", "update", "observe"}
+        ):
+            raise ValueError(
+                "capture_observation_ids are unsupported for this write action"
+            )
         response = _HANDLERS[action](paths, request)
         if action in {"forget", "capture_forget", "capture_review"}:
             return response

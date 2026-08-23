@@ -1,12 +1,15 @@
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from agc_runtime.catalog import rebuild_catalog
+from agc_runtime.capture_store import CaptureStore
 from agc_runtime.models import MemoryItem
 from agc_runtime.paths import MemoryPaths
 from agc_runtime.read_service import dispatch_read
+from agc_runtime.store import MemoryStore
 from agc_runtime.write_service import dispatch_write
 
 
@@ -398,3 +401,196 @@ def test_capture_review_rejects_draft_and_unknown_fields_before_write(
     assert response.status == "failed"
     assert response.error["code"] == "invalid_request"
     assert not paths.capture.reviews.exists()
+
+
+def test_confirm_merges_two_capture_observations_into_one_draft_target(
+    tmp_path, visible_capture_observations
+):
+    paths = MemoryPaths.from_root(tmp_path / "memory")
+    _store, observations = visible_capture_observations(
+        paths,
+        ["Automate publishing.", "Human confirms final publication."],
+    )
+    observation_ids = tuple(item.observation_id for item in observations)
+    response = dispatch_write(
+        paths,
+        {
+            "action": "confirm",
+            "observation": observation(),
+            "memory_markdown": principle().to_markdown(),
+            "capture_observation_ids": list(observation_ids),
+        },
+    )
+    assert response.status == "accepted"
+    assert response.data["memory_id"] == principle().id
+    assert response.data["capture_reviewed_count"] == 2
+    reviews = CaptureStore(paths).read_snapshot().review_receipts
+    assert {
+        (item.observation_id, item.outcome, item.target_memory_id) for item in reviews
+    } == {
+        (observation_ids[0], "draft", principle().id),
+        (observation_ids[1], "draft", principle().id),
+    }
+
+
+def test_failed_formal_write_never_records_draft_review(
+    tmp_path, monkeypatch, visible_capture_observations
+):
+    paths = MemoryPaths.from_root(tmp_path / "memory")
+    _store, (item,) = visible_capture_observations(paths, ["Reviewable preference."])
+
+    def fail_create(*_args, **_kwargs):
+        raise OSError("disk unavailable")
+
+    monkeypatch.setattr(MemoryStore, "create_memory", fail_create)
+    response = dispatch_write(
+        paths,
+        {
+            **direct_request(),
+            "action": "confirm",
+            "capture_observation_ids": [item.observation_id],
+        },
+    )
+    assert response.status == "failed"
+    assert not list(paths.capture.reviews.glob("*.json"))
+
+
+def test_receipt_failure_warns_without_unsaving_memory(
+    tmp_path, monkeypatch, visible_capture_observations
+):
+    paths = MemoryPaths.from_root(tmp_path / "memory")
+    _store, (item,) = visible_capture_observations(paths, ["Reviewable preference."])
+
+    def fail_receipt(*_args, **_kwargs):
+        raise OSError("receipt unavailable")
+
+    monkeypatch.setattr(CaptureStore, "record_reviews", fail_receipt)
+    response = dispatch_write(
+        paths,
+        {
+            **direct_request(),
+            "action": "confirm",
+            "capture_observation_ids": [item.observation_id],
+        },
+    )
+    assert response.status == "accepted"
+    assert response.warnings == ("capture_review_receipt_failed",)
+    assert MemoryStore(paths).get_memory(principle().id).id == principle().id
+
+
+def test_formalization_rejects_dangling_reference_before_memory_write(
+    tmp_path, visible_capture_observations
+):
+    paths = MemoryPaths.from_root(tmp_path / "memory")
+    _store, (item,) = visible_capture_observations(
+        paths, ["该 skill 调用当前本地 harness。"]
+    )
+    invalid = replace(
+        principle(), full_meaning="该 skill 调用当前本地 harness。"
+    )
+    response = dispatch_write(
+        paths,
+        {
+            **direct_request(),
+            "action": "confirm",
+            "memory_markdown": invalid.to_markdown(),
+            "capture_observation_ids": [item.observation_id],
+        },
+    )
+    assert response.status == "failed"
+    assert not list(paths.memories.rglob("*.md"))
+    assert not list(paths.capture.reviews.glob("*.json"))
+
+
+def test_observe_new_rejects_capture_ids_before_creating_memory(
+    tmp_path, visible_capture_observations
+):
+    paths = MemoryPaths.from_root(tmp_path / "memory")
+    _store, (item,) = visible_capture_observations(paths, ["Reviewable preference."])
+    response = dispatch_write(
+        paths,
+        {**direct_request(), "capture_observation_ids": [item.observation_id]},
+    )
+    assert response.status == "failed"
+    assert response.error["code"] == "invalid_request"
+    assert not list(paths.memories.rglob("*.md"))
+    assert not list(paths.capture.reviews.glob("*.json"))
+
+
+def test_observe_reinforce_attaches_capture_review(
+    tmp_path, visible_capture_observations
+):
+    paths = MemoryPaths.from_root(tmp_path / "memory")
+    assert dispatch_write(paths, direct_request()).status == "accepted"
+    _store, (item,) = visible_capture_observations(paths, ["Reinforces preference."])
+    response = dispatch_write(
+        paths,
+        {
+            **direct_request(
+                ref="codex-task:t2",
+                content_hash="b" * 64,
+                disposition="reinforce",
+                match_memory_id=principle().id,
+            ),
+            "capture_observation_ids": [item.observation_id],
+        },
+    )
+    assert response.status == "accepted"
+    assert response.data["capture_reviewed_count"] == 1
+    assert CaptureStore(paths).read_snapshot().review_receipts[0].target_memory_id == principle().id
+
+
+def test_update_attaches_capture_review_to_existing_memory(
+    tmp_path, visible_capture_observations
+):
+    paths = MemoryPaths.from_root(tmp_path / "memory")
+    assert dispatch_write(paths, direct_request()).status == "accepted"
+    _store, (item,) = visible_capture_observations(paths, ["Updates preference boundary."])
+    updated = replace(
+        principle(),
+        application_boundary="用于重要决策与正式发布；低风险草稿不强制。",
+    )
+    response = dispatch_write(
+        paths,
+        {
+            **direct_request(
+                ref="codex-task:t2",
+                content_hash="b" * 64,
+                disposition="update",
+                match_memory_id=principle().id,
+            ),
+            "action": "update",
+            "memory_markdown": updated.to_markdown(),
+            "capture_observation_ids": [item.observation_id],
+        },
+    )
+    assert response.status == "accepted"
+    assert response.data["capture_reviewed_count"] == 1
+    review = CaptureStore(paths).read_snapshot().review_receipts[0]
+    assert (review.outcome, review.target_memory_id) == ("draft", principle().id)
+
+
+def test_other_write_actions_reject_capture_observation_ids_before_mutation(
+    tmp_path, visible_capture_observations
+):
+    paths = MemoryPaths.from_root(tmp_path / "memory")
+    assert dispatch_write(paths, direct_request()).status == "accepted"
+    _store, (item,) = visible_capture_observations(paths, ["Must not bind here."])
+    response = dispatch_write(
+        paths,
+        {
+            "action": "supersede",
+            "memory_id": principle().id,
+            "observation": observation(
+                ref="codex-task:t2",
+                content_hash="b" * 64,
+                disposition="update",
+                match_memory_id=principle().id,
+            ),
+            "capture_observation_ids": [item.observation_id],
+        },
+    )
+    assert response.status == "failed"
+    assert response.error["code"] == "invalid_request"
+    assert MemoryStore(paths).get_memory(principle().id).lifecycle.status == "active"
+    assert not list(paths.capture.reviews.glob("*.json"))
