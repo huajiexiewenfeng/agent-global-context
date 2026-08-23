@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+import agc_runtime.capture_store as capture_store_module
 from agc_runtime.capture_contracts import (
     CAPTURE_SCHEMA_VERSION,
     CaptureKey,
@@ -108,11 +109,17 @@ def _store(tmp_path: Path) -> CaptureStore:
     return CaptureStore(MemoryPaths.from_root(tmp_path / "memory"), clock=lambda: UTC)
 
 
-def _revision(*, completed_at: str = "2026-08-12T12:00:00Z") -> RevisionRef:
+def _revision(
+    *,
+    task_id: str = "task-1",
+    revision_id: str = "revision-1",
+    completed_at: str = "2026-08-12T12:00:00Z",
+) -> RevisionRef:
+    key = CaptureKey("synthetic_adapter", SOURCE_ROOT, task_id, revision_id)
     return RevisionRef.from_mapping(
         {
             "schema_version": CAPTURE_SCHEMA_VERSION,
-            "capture_key": _key().to_mapping(),
+            "capture_key": key.to_mapping(),
             "rollout_anchor_id": "rollout-1",
             "completed_at": completed_at,
             "locator": "sessions/synthetic.jsonl",
@@ -438,3 +445,91 @@ def test_rebuild_census_catalog_rejects_conflicting_revision_without_publish(
         store.rebuild_census_catalog()
 
     assert not (store.capture.census_catalog / "active.json").exists()
+
+
+def test_hot_catalog_snapshot_does_not_decode_frozen_members(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = _store(tmp_path)
+    revision = _revision()
+    _freeze(store, (revision,), started_at="2026-08-13T12:00:00Z")
+    store.rebuild_census_catalog()
+    member_reads: list[Path] = []
+    original = capture_store_module.read_json
+
+    def counted(path: Path):
+        if path.parent.name == "members":
+            member_reads.append(path)
+        return original(path)
+
+    monkeypatch.setattr(capture_store_module, "read_json", counted)
+
+    snapshot = store.read_snapshot()
+
+    assert snapshot.census == (revision,)
+    assert member_reads == []
+
+
+def test_hot_catalog_rebuilds_after_new_frozen_run(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    first = _revision()
+    second = _revision(task_id="task-2", revision_id="revision-2")
+    _freeze(store, (first,), started_at="2026-08-13T11:00:00Z")
+    store.rebuild_census_catalog()
+    before = json.loads(
+        (store.capture.census_catalog / "active.json").read_text(encoding="utf-8")
+    )["catalog_id"]
+    _freeze(store, (first, second), started_at="2026-08-13T12:00:00Z")
+
+    snapshot = store.read_snapshot()
+
+    after = json.loads(
+        (store.capture.census_catalog / "active.json").read_text(encoding="utf-8")
+    )["catalog_id"]
+    assert set(snapshot.census) == {first, second}
+    assert after != before
+
+
+def test_freeze_census_refreshes_valid_catalog_without_old_member_reads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = _store(tmp_path)
+    first = _revision()
+    second = _revision(task_id="task-2", revision_id="revision-2")
+    _freeze(store, (first,), started_at="2026-08-13T11:00:00Z")
+    store.rebuild_census_catalog()
+    before = json.loads(
+        (store.capture.census_catalog / "active.json").read_text(encoding="utf-8")
+    )["catalog_id"]
+    member_reads: list[Path] = []
+    original = capture_store_module.read_json
+
+    def counted(path: Path):
+        if path.parent.name == "members":
+            member_reads.append(path)
+        return original(path)
+
+    monkeypatch.setattr(capture_store_module, "read_json", counted)
+
+    _freeze(store, (first, second), started_at="2026-08-13T12:00:00Z")
+
+    after = json.loads(
+        (store.capture.census_catalog / "active.json").read_text(encoding="utf-8")
+    )["catalog_id"]
+    assert after != before
+    assert member_reads == []
+    assert set(store.ensure_census_catalog()) == {first, second}
+
+
+def test_hot_catalog_ignores_interrupted_generation_stage(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    revision = _revision()
+    _freeze(store, (revision,), started_at="2026-08-13T12:00:00Z")
+    stage = store.capture.census_catalog / "g" / ".interrupted.tmp"
+    stage.mkdir(parents=True)
+    (stage / "private.bin").write_bytes(b"not-catalog-data")
+
+    snapshot = store.read_snapshot()
+
+    assert snapshot.census == (revision,)
+    assert snapshot.integrity_state == "healthy"

@@ -100,6 +100,28 @@ def test_validate_rejects_invalid_runtime_config(tmp_path: Path):
     )
 
 
+def test_validate_reports_invalid_census_catalog_without_private_content(
+    tmp_path: Path,
+) -> None:
+    paths = MemoryPaths.from_root(tmp_path / "memory")
+    assert dispatch_admin(paths, {"action": "init"}).status == "accepted"
+    atomic_write_text(
+        paths.capture.census_catalog / "active.json",
+        '{"private":"must-not-leak"}\n',
+    )
+
+    response = dispatch_admin(paths, {"action": "validate"})
+
+    assert response.status == "failed"
+    issues = [
+        item
+        for item in response.data["issues"]
+        if item["path"] == ".runtime/capture/census-catalog/active.json"
+    ]
+    assert len(issues) == 1
+    assert "private" not in json.dumps(issues)
+
+
 def test_validate_reports_invalid_review_graph_content_safely(
     tmp_path: Path, visible_capture_observations
 ):

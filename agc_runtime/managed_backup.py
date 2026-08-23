@@ -178,7 +178,7 @@ def backup_files(paths: MemoryPaths) -> list[tuple[str, bytes]]:
     # revisions, not with scan count.  The live immutable runs remain intact.
     from agc_runtime.capture_store import CaptureStore
 
-    for revision in CaptureStore(paths).frozen_revisions():
+    for revision in CaptureStore(paths)._frozen_revisions_read_only():
         relative = (
             ".runtime/capture/census/"
             f"{receipt_id_for(revision.key)}.json"

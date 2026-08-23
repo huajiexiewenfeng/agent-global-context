@@ -200,6 +200,29 @@ def test_ac_03_synthetic_seven_day_census_has_full_accounting(tmp_path: Path):
     assert len(snapshot.census) == len(revisions)
 
 
+def test_scanner_reuses_catalog_without_cold_member_reads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = MemoryPaths.from_root(tmp_path / "memory")
+    revision = _revision("catalog-hot")
+    adapter = SyntheticAdapter((revision,))
+    CaptureScanner(
+        CaptureStore(paths, clock=lambda: STARTED), (adapter,)
+    ).scan(run_started_at=STARTED)
+
+    def forbidden_cold_read(_store, _path):
+        raise AssertionError("scanner reopened frozen Census members")
+
+    monkeypatch.setattr(CaptureStore, "_read_frozen_run", forbidden_cold_read)
+    later = "2026-08-13T12:00:01Z"
+
+    report = CaptureScanner(
+        CaptureStore(paths, clock=lambda: later), (adapter,)
+    ).scan(run_started_at=later)
+
+    assert report.known_key_count == report.accounted_key_count == 1
+
+
 def test_ac_06_reconciliation_recovers_missed_duplicate_and_moved_sources(tmp_path: Path):
     paths = MemoryPaths.from_root(tmp_path / "memory")
     first = _revision("first", locator="sessions/first.jsonl")

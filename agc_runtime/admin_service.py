@@ -190,6 +190,23 @@ def _validate_capture(
         )
     except OSError:
         _capture_issue(issues, paths, paths.capture.schema_version, "Capture schema-version is missing")
+    catalog_entries = (
+        tuple(paths.capture.census_catalog.iterdir())
+        if paths.capture.census_catalog.exists()
+        else ()
+    )
+    if catalog_entries:
+        catalog_pointer = paths.capture.census_catalog / "active.json"
+        try:
+            store = CaptureStore(paths)
+            store._read_census_catalog(store._read_census_run_manifests())
+        except (OSError, TypeError, ValueError):
+            _capture_issue(
+                issues,
+                paths,
+                catalog_pointer,
+                "invalid Capture Census catalog",
+            )
     parsers = {
         paths.capture.receipts: CaptureReceipt.from_mapping,
         paths.capture.observations: CollectedObservation.from_mapping,
@@ -307,8 +324,11 @@ def _capture_issue(
     issues: list[dict[str, str]], paths: MemoryPaths, path: Path, message: str
 ) -> None:
     relative = path.relative_to(paths.capture.root)
-    if relative.as_posix() == "schema-version":
-        safe_relative = "schema-version"
+    if relative.as_posix() in {
+        "schema-version",
+        "census-catalog/active.json",
+    }:
+        safe_relative = relative.as_posix()
     else:
         directory = relative.parts[0] if len(relative.parts) > 1 else "objects"
         filename = relative.name
