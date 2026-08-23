@@ -198,12 +198,20 @@ $VerificationTempRoot = Join-Path (
 [System.IO.Directory]::CreateDirectory($VerificationTempRoot) | Out-Null
 $RepositoryUnderTest = $RepositoryRoot
 if ('AC-20' -in $Requested) {
-    $gitForExport = (Get-Command git -ErrorAction Stop).Source
-    $archivePath = Join-Path $VerificationTempRoot 's.zip'
     $RepositoryUnderTest = Join-Path $VerificationTempRoot 's'
-    & $gitForExport -C $RepositoryRoot -c core.autocrlf=false archive --format=zip --output=$archivePath HEAD
-    if ($LASTEXITCODE -ne 0) { throw 'commit-bound LF export failed' }
-    Expand-Archive -LiteralPath $archivePath -DestinationPath $RepositoryUnderTest
+    if (Test-Path -LiteralPath (Join-Path $RepositoryRoot '.git')) {
+        $gitForExport = (Get-Command git -ErrorAction Stop).Source
+        $archivePath = Join-Path $VerificationTempRoot 's.zip'
+        & $gitForExport -C $RepositoryRoot -c core.autocrlf=false archive --format=zip --output=$archivePath HEAD
+        if ($LASTEXITCODE -ne 0) { throw 'commit-bound LF export failed' }
+        Expand-Archive -LiteralPath $archivePath -DestinationPath $RepositoryUnderTest
+    }
+    else {
+        [System.IO.Directory]::CreateDirectory($RepositoryUnderTest) | Out-Null
+        Get-ChildItem -LiteralPath $RepositoryRoot -Force | ForEach-Object {
+            Copy-Item -LiteralPath $_.FullName -Destination $RepositoryUnderTest -Recurse -Force
+        }
+    }
     $defaultConfigBytes = [System.IO.File]::ReadAllBytes(
         (Join-Path $RepositoryUnderTest 'agc_runtime\default_config.yaml')
     )
