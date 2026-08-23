@@ -94,6 +94,14 @@ class RunnerReport:
         return result
 
 
+@dataclass(frozen=True)
+class _RankedReceipt:
+    receipt: CaptureReceipt
+    capsule_result: Any | None
+    load_error: Exception | None
+    rank: tuple[int, int, int, int, int, str, str]
+
+
 class CaptureRunner:
     def __init__(
         self,
@@ -220,6 +228,84 @@ class CaptureRunner:
             if old is None or old.status != item.status:
                 statuses[item.status] = statuses.get(item.status, 0) + 1
         return attempts, tuple(sorted(statuses.items()))
+
+    @staticmethod
+    def _capsule_rank(
+        capsule: object, receipt: CaptureReceipt
+    ) -> tuple[int, int, int, int, int, str, str]:
+        fields = tuple(
+            tuple(getattr(capsule, name, ()))
+            for name in (
+                "user_signals",
+                "decisions_results",
+                "reusable_methods",
+                "next_steps",
+            )
+        )
+        strong_count = len(fields[1]) + len(fields[2])
+        category_count = sum(bool(items) for items in fields)
+        user_signal_count = len(fields[0])
+        content_size = min(
+            sum(len(text) for items in fields for text in items), 12_000
+        )
+        return (
+            int(strong_count > 0),
+            strong_count,
+            category_count,
+            user_signal_count,
+            content_size,
+            str(getattr(capsule, "completed_at", "")),
+            receipt.receipt_id,
+        )
+
+    @classmethod
+    def _ranked_ready_receipts(
+        cls,
+        ready: Sequence[CaptureReceipt],
+        revisions: dict[CaptureKey, object],
+        adapter_by_binding: dict[tuple[str, str], object],
+        policy: object,
+        *,
+        max_items: int,
+    ) -> tuple[_RankedReceipt, ...]:
+        groups: dict[tuple[str, str, str], list[_RankedReceipt]] = {}
+        for receipt in ready:
+            capsule_result = None
+            load_error = None
+            try:
+                revision = revisions[receipt.key]
+                adapter = adapter_by_binding[
+                    (receipt.key.adapter_id, receipt.key.source_root_id)
+                ]
+                capsule_result = adapter.load_capsule(revision, policy)
+                rank = cls._capsule_rank(capsule_result.capsule, receipt)
+            except (OSError, ValueError, KeyError, TypeError, UnicodeError) as error:
+                load_error = error
+                rank = (0, 0, 0, 0, 0, "", receipt.receipt_id)
+            task_key = (
+                receipt.adapter_id,
+                receipt.source_root_id,
+                receipt.task_id,
+            )
+            groups.setdefault(task_key, []).append(
+                _RankedReceipt(receipt, capsule_result, load_error, rank)
+            )
+
+        for items in groups.values():
+            items.sort(key=lambda item: item.receipt.receipt_id)
+            items.sort(key=lambda item: item.rank, reverse=True)
+        task_keys = sorted(groups)
+        task_keys.sort(key=lambda key: groups[key][0].rank, reverse=True)
+
+        selected: list[_RankedReceipt] = []
+        for index in range(3):
+            for task_key in task_keys:
+                items = groups[task_key]
+                if index < len(items):
+                    selected.append(items[index])
+                    if len(selected) == max_items:
+                        return tuple(selected)
+        return tuple(selected)
 
     @classmethod
     def _empty_report(
@@ -443,7 +529,18 @@ class CaptureRunner:
                     if item.key in revisions and self._is_due(item, now)
                 ),
                 key=lambda item: (item.discovered_at, item.receipt_id),
-            )[:max_items]
+            )
+        )
+        adapter_by_binding = {
+            (item.describe().adapter_id, item.describe().source_root_id): item
+            for item in self.adapters
+        }
+        selected = self._ranked_ready_receipts(
+            ready,
+            revisions,
+            adapter_by_binding,
+            policy,
+            max_items=max_items,
         )
         budget = CaptureTokenBudget(
             self.paths,
@@ -455,16 +552,13 @@ class CaptureRunner:
         before_charge = budget.snapshot().charged_tokens
         attempted = completed = failed = deferred = contention = 0
         reserved_count = extractor_calls = observation_count = 0
-        adapter_by_binding = {
-            (item.describe().adapter_id, item.describe().source_root_id): item
-            for item in self.adapters
-        }
         maximum = TokenUsage(
             capture.capsule.max_tokens,
             capture.capsule.max_tokens,
             capture.capsule.max_tokens * 2,
         )
-        for current in ready:
+        for prepared in selected:
+            current = prepared.receipt
             attempted += 1
             lease = store.acquire_lease(
                 current.key,
@@ -478,10 +572,11 @@ class CaptureRunner:
             reservation = None
             try:
                 revision = revisions[current.key]
-                adapter = adapter_by_binding[
-                    (current.key.adapter_id, current.key.source_root_id)
-                ]
-                capsule_result = adapter.load_capsule(revision, policy)
+                if prepared.load_error is not None:
+                    raise prepared.load_error
+                capsule_result = prepared.capsule_result
+                if capsule_result is None:
+                    raise TypeError("capture_capsule_unavailable")
                 if not capsule_has_durable_signal(capsule_result.capsule):
                     extracting = store.begin_extraction(
                         lease, capsule_result, extractor_descriptor, now=now

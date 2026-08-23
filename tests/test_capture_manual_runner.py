@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 from pathlib import Path
 import sys
@@ -60,18 +60,23 @@ def _write_config(
     (memory_root / "config.yaml").write_text(text, encoding="utf-8")
 
 
-def _revision(revision_id: str = "turn-1") -> RevisionRef:
+def _revision(
+    revision_id: str = "turn-1",
+    *,
+    task_id: str | None = None,
+    completed_at: str = "2026-08-12T12:00:00Z",
+) -> RevisionRef:
     return RevisionRef.from_mapping(
         {
             "schema_version": 1,
             "capture_key": {
                 "adapter_id": "synthetic",
                 "source_root_id": ROOT_ID,
-                "task_id": f"task-{revision_id}",
+                "task_id": task_id or f"task-{revision_id}",
                 "revision_id": revision_id,
             },
             "rollout_anchor_id": "rollout-1",
-            "completed_at": "2026-08-12T12:00:00Z",
+            "completed_at": completed_at,
             "locator": "sessions/synthetic.jsonl",
             "identity_quality": "session_id",
             "adapter_version": "1",
@@ -88,6 +93,9 @@ class FakeAdapter:
     load_calls: int = 0
     load_error: bool = False
     identity_changed: bool = False
+    capsules_by_revision: dict[str, dict[str, tuple[str, ...]]] = field(
+        default_factory=dict
+    )
 
     def describe(self):
         from agc_runtime.capture_source import AdapterDescriptor
@@ -114,6 +122,7 @@ class FakeAdapter:
             raise OSError("private source error must not persist")
         if self.identity_changed:
             raise ValueError("capsule_source_identity_changed")
+        signals = self.capsules_by_revision.get(ref.key.revision_id, {})
         capsule = TaskCapsule(
             adapter_id=ref.key.adapter_id,
             adapter_version=ref.adapter_version,
@@ -125,7 +134,10 @@ class FakeAdapter:
             identity_quality=ref.identity_quality,
             completed_at=ref.completed_at,
             project_scope="project:stable",
-            user_signals=self.user_signals,
+            user_signals=signals.get("user_signals", self.user_signals),
+            decisions_results=signals.get("decisions_results", ()),
+            reusable_methods=signals.get("reusable_methods", ()),
+            next_steps=signals.get("next_steps", ()),
         )
         return CapsuleResult(
             capsule,
@@ -144,6 +156,7 @@ class FakeExtractor:
     extract_calls: int = 0
     fail_first: bool = False
     always_fail: bool = False
+    seen_revision_ids: list[str] = field(default_factory=list)
 
     def describe(self):
         from agc_runtime.capture_extractor import (
@@ -163,6 +176,7 @@ class FakeExtractor:
     def extract(self, capsule, reservation):
         from agc_runtime.capture_extractor import ExtractionResult
 
+        self.seen_revision_ids.append(capsule.revision_id)
         del capsule, reservation
         self.extract_calls += 1
         if self.always_fail or (self.fail_first and self.extract_calls == 1):
@@ -457,6 +471,101 @@ def test_max_items_reports_remaining_queue_backlog(tmp_path: Path) -> None:
     assert report.attempted_count == 1
     assert report.completed_count == 1
     assert report.backlog_count == 1
+
+
+def test_runner_ranks_clean_capsules_and_round_robins_tasks_deterministically(
+    tmp_path: Path,
+) -> None:
+    from agc_runtime.capture_store import CaptureStore
+
+    revisions = (
+        _revision("a-weak", task_id="task-a"),
+        _revision("a-signal", task_id="task-a"),
+        _revision("a-method", task_id="task-a"),
+        _revision("a-decision", task_id="task-a"),
+        _revision("b-signal", task_id="task-b"),
+        _revision("b-decision", task_id="task-b"),
+    )
+    capsules = {
+        "a-weak": {"user_signals": (), "next_steps": ("Maybe inspect later.",)},
+        "a-signal": {"user_signals": ("Preference one.", "Preference two.")},
+        "a-method": {"user_signals": (), "reusable_methods": ("Reusable method.",)},
+        "a-decision": {
+            "user_signals": (),
+            "decisions_results": ("Decision one.", "Decision two."),
+        },
+        "b-signal": {
+            "user_signals": ("Signal one.", "Signal two.", "Signal three.")
+        },
+        "b-decision": {"user_signals": (), "decisions_results": ("Decision.",)},
+    }
+
+    def run(order: tuple[RevisionRef, ...], root: Path):
+        memory = root / "memory"
+        source = root / "source"
+        source.mkdir(parents=True)
+        _write_config(memory, source, total=100_000)
+        paths = MemoryPaths.from_root(memory)
+        adapter = FakeAdapter(revisions=order, capsules_by_revision=capsules)
+        extractor = FakeExtractor()
+        preparation = prepare_backfill(
+            paths=paths, adapters=(adapter,), extractor=extractor, now=NOW
+        )
+        report = CaptureRunner(
+            paths, (adapter,), extractor, preparation
+        ).run_manual_backfill(
+            authorization_digest=preparation.authorization_digest,
+            max_items=4,
+            now=RUN_AT,
+        )
+        return paths, adapter, extractor, report
+
+    forward = run(revisions, tmp_path / "forward")
+    reverse = run(tuple(reversed(revisions)), tmp_path / "reverse")
+    expected = ["a-decision", "b-decision", "a-method", "b-signal"]
+
+    for paths, adapter, extractor, report in (forward, reverse):
+        assert report.attempted_count == 4
+        assert extractor.seen_revision_ids == expected
+        assert adapter.load_calls == len(revisions)
+        remaining = {
+            item.revision_id
+            for item in CaptureStore(paths).read_snapshot().receipts
+            if item.status == "discovered"
+        }
+        assert remaining == {"a-weak", "a-signal"}
+
+
+def test_runner_selects_at_most_three_revisions_from_one_task(tmp_path: Path) -> None:
+    from agc_runtime.capture_store import CaptureStore
+
+    memory = tmp_path / "memory"
+    source = tmp_path / "source"
+    source.mkdir()
+    _write_config(memory, source, total=100_000)
+    paths = MemoryPaths.from_root(memory)
+    revisions = tuple(
+        _revision(f"same-task-{index}", task_id="same-task") for index in range(4)
+    )
+    adapter = FakeAdapter(revisions=revisions)
+    extractor = FakeExtractor()
+    preparation = prepare_backfill(
+        paths=paths, adapters=(adapter,), extractor=extractor, now=NOW
+    )
+
+    report = CaptureRunner(paths, (adapter,), extractor, preparation).run_manual_backfill(
+        authorization_digest=preparation.authorization_digest,
+        max_items=4,
+        now=RUN_AT,
+    )
+
+    assert report.attempted_count == 3
+    assert extractor.extract_calls == 3
+    assert adapter.load_calls == 4
+    assert sum(
+        item.status == "discovered"
+        for item in CaptureStore(paths).read_snapshot().receipts
+    ) == 1
 
 
 def test_retry_cli_uses_opaque_receipt_key_and_requeues_without_extractor(
