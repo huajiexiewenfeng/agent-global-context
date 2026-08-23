@@ -249,6 +249,9 @@ def _updated_revision(entries: dict[str, bytes], key: CaptureKey) -> dict[str, b
     }
 
     result = _forget_revision_from_census_runs(result, key)
+    for name in tuple(result):
+        if name.startswith(".runtime/capture/census-catalog/"):
+            result.pop(name, None)
 
     # Discover observations from their strict source identity rather than from
     # a possibly missing or damaged private manifest.
@@ -461,6 +464,7 @@ def _rewrite_backup(entries: dict[str, bytes], target_kind: str, target: str | C
 
 def _apply_files(tx: CaptureForgetTransaction, paths: MemoryPaths, before: dict[str, bytes], after: dict[str, bytes]) -> None:
     empty_candidates: set[Path] = set()
+    empty_catalog_candidates: set[Path] = set()
     for name in sorted(set(before) | set(after), key=lambda item: item.encode("utf-8")):
         if before.get(name) == after.get(name):
             continue
@@ -475,11 +479,22 @@ def _apply_files(tx: CaptureForgetTransaction, paths: MemoryPaths, before: dict[
                 while candidate != root:
                     empty_candidates.add(candidate)
                     candidate = candidate.parent
+            elif name.startswith(".runtime/capture/census-catalog/"):
+                root = paths.capture.census_catalog
+                candidate = path.parent
+                while candidate != root.parent:
+                    empty_catalog_candidates.add(candidate)
+                    candidate = candidate.parent
     for directory in sorted(
         empty_candidates, key=lambda item: len(item.parts), reverse=True
     ):
         if directory.exists() and not any(directory.iterdir()):
             tx.remove_empty_census_directory(directory)
+    for directory in sorted(
+        empty_catalog_candidates, key=lambda item: len(item.parts), reverse=True
+    ):
+        if directory.exists() and not any(directory.iterdir()):
+            tx.remove_empty_catalog_directory(directory)
 
 
 def capture_forget(paths: MemoryPaths, request: dict[str, Any]) -> ToolResponse:

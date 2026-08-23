@@ -161,6 +161,9 @@ def test_capture_backup_round_trip_is_allowlisted_and_keeps_recall_isolated(tmp_
     assert ".runtime/capture/cursor-hmac-key" not in names
     assert ".runtime/queue/queued.json" not in names
     assert ".runtime/cache/cached.json" not in names
+    assert not any(
+        name.startswith(".runtime/capture/census-catalog/") for name in names
+    )
 
     paths.capture.observations.joinpath(f"{observation.observation_id}.json").unlink()
     (paths.capture.root / "census-runs" / census.census_id / "run.json").write_text(

@@ -327,6 +327,7 @@ def test_revision_forget_rewrites_authoritative_census_run_and_every_backup(
     )
     remaining = _revision(remaining_key)
     census = _freeze_census(store, (target, remaining))
+    assert (paths.capture.census_catalog / "active.json").is_file()
     first_backup = Path(dispatch_admin(paths, {"action": "backup"}).data["backup_path"])
     nested_backup = paths.backups / "nested" / "managed-copy.zip"
     nested_backup.parent.mkdir(parents=True)
@@ -337,6 +338,7 @@ def test_revision_forget_rewrites_authoritative_census_run_and_every_backup(
     )
 
     assert response.status == "accepted", response
+    assert not paths.capture.census_catalog.exists()
     run_path = paths.capture.root / "census-runs" / census.census_id
     run = json.loads((run_path / "run.json").read_text(encoding="utf-8"))
     assert run["revision_keys"] == [remaining.key.to_mapping()]

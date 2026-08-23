@@ -463,6 +463,15 @@ def _handle_validate(
 def _handle_backup(paths: MemoryPaths, _request: dict[str, Any]) -> ToolResponse:
     with root_write_lock(paths):
       with capture_write_lock(paths):
+        try:
+            CaptureStore(paths)._ensure_census_catalog_locked()
+        except (OSError, TypeError, ValueError):
+            return _failed(
+                "backup",
+                "validation_failed",
+                "refusing to back up invalid frozen Census truth",
+                invalid_count=1,
+            )
         issues = _validate_root(paths, reject_capture_runtime=False)
         if issues:
             return _failed(

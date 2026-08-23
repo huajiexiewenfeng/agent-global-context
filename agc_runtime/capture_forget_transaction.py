@@ -20,7 +20,7 @@ from agc_runtime.capture_transaction import _flush_parent, atomic_write_bytes, a
 from agc_runtime.paths import MemoryPaths
 
 
-_PRIMARY_NAMESPACES = frozenset({"receipts", "observations", "reviews", "ledger", "census", "census-runs", "tombstones", "quarantines", "conflicts", "indexes", "dirty", "journals", "staging", "leases", "scan-state", "budgets"})
+_PRIMARY_NAMESPACES = frozenset({"receipts", "observations", "reviews", "ledger", "census", "census-runs", "census-catalog", "tombstones", "quarantines", "conflicts", "indexes", "dirty", "journals", "staging", "leases", "scan-state", "budgets"})
 
 
 def _managed_target(paths: MemoryPaths, path: Path) -> str:
@@ -94,6 +94,20 @@ class CaptureForgetTransaction:
             raise ValueError("invalid frozen Census directory")
         if any(path.iterdir()):
             raise ValueError("frozen Census directory is not empty")
+        path.rmdir()
+        _flush_parent(path.parent)
+
+    def remove_empty_catalog_directory(self, path: Path) -> None:
+        """Durably remove an exact empty derived-Catalog directory."""
+
+        root = self.paths.capture.census_catalog.resolve()
+        if path.is_symlink() or not path.is_dir():
+            raise ValueError("invalid Census catalog directory")
+        resolved = path.resolve()
+        if not (resolved == root or resolved.is_relative_to(root)):
+            raise ValueError("invalid Census catalog directory")
+        if any(path.iterdir()):
+            raise ValueError("Census catalog directory is not empty")
         path.rmdir()
         _flush_parent(path.parent)
 
