@@ -22,6 +22,7 @@ from agc_runtime.capture_contracts import (
     SanitizedError, SourceQuarantine, TokenReservation, receipt_id_for, tombstone_id_for,
     validate_capture_transition,
 )
+from agc_runtime.capture_review import CaptureReviewReceipt, parse_capture_observation_ids
 from agc_runtime.capture_transaction import (
     atomic_install_json_directory,
     atomic_write_bytes,
@@ -106,6 +107,7 @@ class CaptureIntegrityDiagnostic:
 class CaptureSnapshot:
     receipts: tuple[CaptureReceipt, ...] = ()
     observations: tuple[CollectedObservation, ...] = ()
+    review_receipts: tuple[CaptureReviewReceipt, ...] = ()
     census: tuple[RevisionRef, ...] = ()
     tombstones: tuple[CaptureSuppressionTombstone, ...] = ()
     source_quarantines: tuple[SourceQuarantine, ...] = ()
@@ -280,6 +282,9 @@ class CaptureStore:
 
     def _observation_path(self, observation_id: str) -> Path:
         return self._path(self.capture.observations, observation_id, _OBSERVATION_ID)
+
+    def _review_path(self, observation_id: str) -> Path:
+        return self._path(self.capture.reviews, observation_id, _OBSERVATION_ID)
 
     def _stage_path(self, observation_id: str) -> Path:
         return self._path(self.capture.staging, observation_id, _OBSERVATION_ID)
@@ -980,9 +985,32 @@ class CaptureStore:
                 except (OSError, TypeError, ValueError):
                     degraded("invalid_dirty_marker", "dirty_marker")
 
+            review_receipts: list[CaptureReviewReceipt] = []
+            visible_observation_ids = {item.observation_id for item in visible}
+            for path in json_objects(
+                self.capture.reviews,
+                "invalid_review_receipt",
+                "review_receipt",
+            ):
+                try:
+                    if not _OBSERVATION_ID.fullmatch(path.stem):
+                        raise ValueError
+                    review = CaptureReviewReceipt.from_mapping(read_json(path))
+                    if (
+                        review.observation_id != path.stem
+                        or review.observation_id not in visible_observation_ids
+                    ):
+                        raise ValueError
+                    review_receipts.append(review)
+                except (OSError, TypeError, ValueError):
+                    degraded("invalid_review_receipt", "review_receipt")
+                    if _OBSERVATION_ID.fullmatch(path.stem):
+                        unavailable_ids.add(path.stem)
+
             return CaptureSnapshot(
                 receipts=tuple(receipts),
                 observations=tuple(visible),
+                review_receipts=tuple(review_receipts),
                 census=tuple(census),
                 tombstones=tuple(tombstones),
                 source_quarantines=tuple(quarantines),
@@ -995,6 +1023,95 @@ class CaptureStore:
                 diagnostics=tuple(diagnostics),
                 unavailable_ids=frozenset(unavailable_ids),
             )
+
+    def _validate_review_batch_locked(
+        self,
+        observation_ids: Sequence[str],
+        *,
+        outcome: str,
+        target_memory_id: str | None,
+    ) -> tuple[str, ...]:
+        ids = tuple(observation_ids)
+        candidate = CaptureReviewReceipt.from_mapping(
+            {
+                "schema_version": 1,
+                "observation_id": ids[0],
+                "outcome": outcome,
+                "target_memory_id": target_memory_id,
+                "reviewed_at": self._clock(),
+            }
+        )
+        for observation_id in ids:
+            observation = CollectedObservation.from_mapping(
+                read_json(self._observation_path(observation_id))
+            )
+            receipt = self._read_receipt(observation.receipt_id)
+            if (
+                receipt.status != "complete"
+                or observation_id not in self._read_manifest(receipt.receipt_id)
+            ):
+                raise ValueError("review observation is not visible")
+            path = self._review_path(observation_id)
+            if path.exists():
+                current = CaptureReviewReceipt.from_mapping(read_json(path))
+                if current.observation_id != observation_id:
+                    raise ValueError("review receipt filename binding mismatch")
+                if (current.outcome, current.target_memory_id) != (
+                    candidate.outcome,
+                    candidate.target_memory_id,
+                ):
+                    raise ValueError("review receipt conflicts with terminal outcome")
+        return ids
+
+    def validate_review_batch(
+        self,
+        observation_ids: Sequence[str],
+        *,
+        outcome: str,
+        target_memory_id: str | None,
+    ) -> None:
+        ids = parse_capture_observation_ids(list(observation_ids))
+        with capture_write_lock(self.paths):
+            self._ensure_layout_locked()
+            self._validate_review_batch_locked(
+                ids,
+                outcome=outcome,
+                target_memory_id=target_memory_id,
+            )
+
+    def record_reviews(
+        self,
+        observation_ids: Sequence[str],
+        *,
+        outcome: str,
+        target_memory_id: str | None,
+        reviewed_at: str | None = None,
+    ) -> int:
+        ids = parse_capture_observation_ids(list(observation_ids))
+        timestamp = reviewed_at or self._clock()
+        created = 0
+        with capture_write_lock(self.paths):
+            self._ensure_layout_locked()
+            self._validate_review_batch_locked(
+                ids,
+                outcome=outcome,
+                target_memory_id=target_memory_id,
+            )
+            for observation_id in ids:
+                path = self._review_path(observation_id)
+                receipt = CaptureReviewReceipt.from_mapping(
+                    {
+                        "schema_version": 1,
+                        "observation_id": observation_id,
+                        "outcome": outcome,
+                        "target_memory_id": target_memory_id,
+                        "reviewed_at": timestamp,
+                    }
+                )
+                if not path.exists():
+                    atomic_write_json(path, receipt.to_mapping())
+                    created += 1
+        return created
 
     def _write_receipt(self, receipt: CaptureReceipt) -> None:
         atomic_write_json(self._receipt_path(receipt.receipt_id), receipt.to_mapping())

@@ -9,6 +9,7 @@ class CapturePaths:
     cursor_hmac_key: Path
     receipts: Path
     observations: Path
+    reviews: Path
     ledger: Path
     census: Path
     tombstones: Path
@@ -28,7 +29,8 @@ class CapturePaths:
         return cls(
             root=root, schema_version=root / "schema-version", cursor_hmac_key=root / "cursor-hmac-key",
             receipts=root / "receipts",
-            observations=root / "observations", ledger=root / "ledger", census=root / "census",
+            observations=root / "observations", reviews=root / "reviews",
+            ledger=root / "ledger", census=root / "census",
             tombstones=root / "tombstones", quarantines=root / "quarantines", conflicts=root / "conflicts",
             dirty=root / "dirty", journals=root / "journals", staging=root / "staging",
             leases=root / "leases", indexes=root / "indexes", scan_state=root / "scan-state",
@@ -37,7 +39,7 @@ class CapturePaths:
 
     def directories(self) -> tuple[Path, ...]:
         return (
-            self.receipts, self.observations, self.ledger, self.census, self.tombstones,
+            self.receipts, self.observations, self.reviews, self.ledger, self.census, self.tombstones,
             self.quarantines, self.conflicts, self.dirty, self.journals, self.staging,
             self.leases, self.indexes, self.scan_state, self.budgets,
         )
