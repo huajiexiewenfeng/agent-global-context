@@ -181,8 +181,18 @@ def _matches(item: Any, filters: dict[str, Any]) -> bool:
     return True
 
 
-def _query_digest(filters: dict[str, Any], limit: int) -> str:
-    payload = json.dumps({"filters": filters, "limit": limit}, separators=(",", ":"), sort_keys=True).encode("utf-8")
+def _query_digest(
+    filters: dict[str, Any], limit: int, include_reviewed: bool
+) -> str:
+    payload = json.dumps(
+        {
+            "filters": filters,
+            "include_reviewed": include_reviewed,
+            "limit": limit,
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
 
 
@@ -191,13 +201,18 @@ def capture_search(value: MemoryPaths | Path, request: dict[str, Any]) -> dict[s
     limit = request.get("limit", SEARCH_LIMIT_DEFAULT)
     if type(limit) is not int or not 1 <= limit <= SEARCH_LIMIT_MAX:
         raise ValueError("limit must be between 1 and 100")
+    include_reviewed = request.get("include_reviewed", False)
+    if type(include_reviewed) is not bool:
+        raise ValueError("include_reviewed must be a boolean")
     store = CaptureStore(_paths(value))
-    query_digest = _query_digest(filters, limit)
+    query_digest = _query_digest(filters, limit, include_reviewed)
     cursor = store.decode_cursor(request.get("cursor"), query_digest=query_digest)
     snapshot = store.read_snapshot()
+    reviewed_ids = {item.observation_id for item in snapshot.review_receipts}
     items = [
         item for item in snapshot.observations
         if _matches(item, filters)
+        and (include_reviewed or item.observation_id not in reviewed_ids)
     ]
     items.sort(key=lambda item: (-_utc_datetime(item.captured_at, field="observation.captured_at").timestamp(), item.observation_id))
     if cursor is not None:
@@ -224,9 +239,14 @@ def capture_get(value: MemoryPaths | Path, request: dict[str, Any]) -> dict[str,
         raise ValueError("provide exactly one non-empty observation_id or receipt_id")
     snapshot = CaptureStore(_paths(value)).read_snapshot()
     if observation_id is not None:
+        reviews = {item.observation_id: item for item in snapshot.review_receipts}
         for item in snapshot.observations:
             if item.observation_id == observation_id:
-                return {"observation": _observation_mapping(item)}
+                review = reviews.get(item.observation_id)
+                return {
+                    "observation": _observation_mapping(item),
+                    "review": review.to_mapping() if review is not None else None,
+                }
         if observation_id in snapshot.unavailable_ids:
             raise CaptureReadError("capture_integrity_degraded")
         raise CaptureReadError("capture_not_found")

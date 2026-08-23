@@ -458,3 +458,48 @@ def test_capture_get_returns_fixed_safe_errors_for_missing_and_corrupt_objects(t
         assert str(paths.root) not in rendered
         assert "must-not-leak" not in rendered
         assert "Never reveal" not in rendered
+
+
+def test_capture_search_hides_terminal_reviews_by_default_and_audits_explicitly(
+    tmp_path, visible_capture_observations
+):
+    paths = MemoryPaths.from_root(tmp_path / "memory")
+    store, (first, second) = visible_capture_observations(
+        paths, ["First review fact.", "Second review fact."]
+    )
+    store.record_reviews(
+        (first.observation_id,), outcome="discard", target_memory_id=None
+    )
+
+    assert [
+        item["observation_id"] for item in capture_search(paths, {"limit": 20})["results"]
+    ] == [second.observation_id]
+    audited = capture_search(paths, {"limit": 20, "include_reviewed": True})
+    assert {item["observation_id"] for item in audited["results"]} == {
+        first.observation_id,
+        second.observation_id,
+    }
+    exact = capture_get(paths, {"observation_id": first.observation_id})
+    assert exact["review"]["outcome"] == "discard"
+    assert set(exact["review"]) == {
+        "schema_version",
+        "observation_id",
+        "outcome",
+        "target_memory_id",
+        "reviewed_at",
+    }
+
+
+def test_capture_search_cursor_binds_include_reviewed(
+    tmp_path, visible_capture_observations
+):
+    paths = MemoryPaths.from_root(tmp_path / "memory")
+    visible_capture_observations(paths, ["First review fact.", "Second review fact."])
+    cursor = capture_search(paths, {"limit": 1})["next_cursor"]
+    with pytest.raises(ValueError, match="invalid capture cursor"):
+        capture_search(
+            paths,
+            {"limit": 1, "cursor": cursor, "include_reviewed": True},
+        )
+    with pytest.raises(ValueError, match="include_reviewed"):
+        capture_search(paths, {"include_reviewed": "yes"})
