@@ -193,7 +193,7 @@ def test_restore_into_fresh_root_recreates_empty_capture_layout(tmp_path: Path):
         "state": "healthy",
         "diagnostics": [],
     }
-    assert target_paths.capture.cursor_hmac_key.is_file()
+    assert not target_paths.capture.cursor_hmac_key.exists()
 
 
 def test_backup_compacts_repeated_frozen_census_runs_before_file_limit(
