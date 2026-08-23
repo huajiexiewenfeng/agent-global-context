@@ -596,6 +596,18 @@ def _clear_replaceable_files(paths: MemoryPaths) -> None:
                     path.rmdir()
                 except OSError:
                     pass
+    catalog_root = paths.capture.census_catalog
+    if catalog_root.exists():
+        for path in sorted(catalog_root.rglob("*"), reverse=True):
+            if path.is_dir():
+                try:
+                    path.rmdir()
+                except OSError:
+                    pass
+        try:
+            catalog_root.rmdir()
+        except OSError:
+            pass
 
 
 def _restore_file_snapshot(

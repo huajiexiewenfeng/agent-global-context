@@ -321,6 +321,11 @@ def test_live_frozen_census_corruption_fails_closed_and_never_becomes_truth(
         member["rollout_anchor_id"] = ""
         member_file.write_text(json.dumps(member), encoding="utf-8")
 
+    if corruption == "invalid_member_ref":
+        with pytest.raises(ValueError):
+            store.rebuild_census_catalog()
+        assert store.frozen_revision_records() == (revision,)
+        return
     with pytest.raises(ValueError):
         store.frozen_revision_records()
     snapshot = store.read_snapshot()

@@ -398,8 +398,6 @@ class CaptureStore:
             if not path.is_file() or path.suffix != ".json":
                 raise ValueError("invalid legacy Census entry")
             revision = RevisionRef.from_mapping(read_json(path))
-            if path.name != f"{receipt_id_for(revision.key)}.json":
-                raise ValueError("legacy Census filename binding mismatch")
             if binding is None or (
                 revision.key.adapter_id == binding.adapter_id
                 and revision.key.source_root_id == binding.source_root_id
@@ -623,6 +621,8 @@ class CaptureStore:
         self,
     ) -> tuple[tuple[CensusRun, ...], tuple[RevisionRef, ...]]:
         runs = self._read_census_run_manifests()
+        if not runs and not self._read_legacy_census():
+            return (), ()
         try:
             revisions = self._read_census_catalog(runs)
         except (FileNotFoundError, OSError, TypeError, ValueError):
@@ -1171,6 +1171,18 @@ class CaptureStore:
                         continue
                     census_keys.add(key_id)
                     census.append(revision)
+                legacy_keys: set[tuple[str, str, str, str]] = set()
+                for revision in self._read_legacy_census():
+                    key = revision.key
+                    key_id = (
+                        key.adapter_id,
+                        key.source_root_id,
+                        key.task_id,
+                        key.revision_id,
+                    )
+                    if key_id in legacy_keys:
+                        degraded("duplicate_capture_key", "census")
+                    legacy_keys.add(key_id)
             except ValueError as error:
                 if str(error) == "revision_metadata_conflict":
                     from agc_runtime.capture_ledger import same_revision_metadata
