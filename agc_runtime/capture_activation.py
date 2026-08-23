@@ -7,6 +7,8 @@ import hashlib
 import json
 from typing import Any, Mapping
 
+from agc_runtime import __version__
+
 
 _EVIDENCE_FIELDS = frozenset(
     {
@@ -245,7 +247,7 @@ def diagnose_activation(
     source_roots = status["source_roots"]
     budgets = status["budgets"]
     installed_inert = (
-        status["runtime"]["version"] == "0.3.0"
+        status["runtime"]["version"] == __version__
         and state["enabled"] is False
         and state["mode"] == "off"
         and state["paused"] is False

@@ -73,7 +73,7 @@ def _attach_activation(status: dict[str, Any]) -> dict[str, Any]:
     ).hexdigest()
     state = status["state"]
     installed_inert = (
-        status["runtime"]["version"] == "0.3.0"
+        status["runtime"]["version"] == __version__
         and state["enabled"] is False
         and state["mode"] == "off"
         and state["paused"] is False

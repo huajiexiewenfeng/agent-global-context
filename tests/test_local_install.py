@@ -230,7 +230,7 @@ def test_runtime_upgrade_is_inactive_and_failed_upgrade_preserves_active_venv(
         check=False,
     )
     assert first_probe.returncode == 0
-    assert first_probe.stdout.decode("utf-8", errors="strict").strip() == "0.3.0"
+    assert first_probe.stdout.decode("utf-8", errors="strict").strip() == "0.4.0"
     runtime_source = repository / "agc_runtime" / "__init__.py"
     runtime_source.write_bytes(runtime_source.read_bytes() + b"\n# upgrade fixture\n")
     failed_env = {
@@ -277,7 +277,7 @@ def test_runtime_upgrade_is_inactive_and_failed_upgrade_preserves_active_venv(
         check=False,
     )
     assert second_probe.returncode == 0
-    assert second_probe.stdout.decode("utf-8", errors="strict").strip() == "0.3.0"
+    assert second_probe.stdout.decode("utf-8", errors="strict").strip() == "0.4.0"
     assert _tree_snapshot(first_venv) == first_snapshot
     _assert_toml_paths(
         config,

@@ -30,7 +30,7 @@ The public MCP surface remains exactly `agc.read`, `agc.write`, and
 Use a synthetic Memory Root first. Keep a backup and verify `capture_status`
 after every transition.
 
-1. Install Runtime 0.3.0; this still leaves Capture off.
+1. Install the quality-first formalization Runtime 0.4.0; this still leaves Capture off and does not automatically promote observations.
 2. Audit the active AGC route and write one content-free activation-evidence
    JSON file. It contains only schema version, route counts, hash-match facts,
    Recall Gate result, Extractor capability enum, and Hook/Scheduler/Census
@@ -88,7 +88,7 @@ The exact `codex-app` selector searches only the bounded App Runtime location
 under `%LOCALAPPDATA%\OpenAI\Codex\bin`. It never falls back to PATH, an npm
 CLI, another model, the registry, or a network lookup. Missing, invalid, or
 ambiguous App Runtime candidates fail closed as Extractor unavailable. This
-selector is Windows-only in Runtime 0.3.0; other platforms must keep an
+selector remains Windows-only in Runtime 0.4.0; other platforms must keep an
 explicit literal executable command.
 
 The resolved executable identity is included in backfill authorization. After
