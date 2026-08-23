@@ -1,7 +1,7 @@
 # AGC Task-Aware Census Catalog Design
 
-**Date:** 2026-08-23  
-**Status:** Approved for implementation  
+**Date:** 2026-08-23
+**Status:** Approved for implementation
 **Scope:** Capture Census read performance and quality-first historical backfill selection
 
 ## Context
