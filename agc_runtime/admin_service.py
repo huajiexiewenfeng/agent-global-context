@@ -701,6 +701,7 @@ def _handle_restore(paths: MemoryPaths, request: dict[str, Any]) -> ToolResponse
                 for _name, pure, text in prepared:
                     target = paths.resolve_managed(Path(*pure.parts))
                     atomic_write_text(target, text)
+                CaptureStore(paths)._ensure_layout_locked()
                 for value in tombstones.values():
                     memory_id = value["memory_id"]
                     digest = hashlib.sha256(memory_id.encode("utf-8")).hexdigest()

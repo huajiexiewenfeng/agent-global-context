@@ -17,6 +17,7 @@ import pytest
 from agc_runtime import admin_service, managed_backup
 from agc_runtime.admin_service import dispatch_admin
 from agc_runtime.capture_contracts import CaptureKey, CaptureReceipt, CollectedObservation, RevisionRef, TokenUsage, observation_fingerprint_for, observation_id_for, receipt_id_for
+from agc_runtime.capture_read_service import capture_overview
 from agc_runtime.capture_store import CaptureStore
 from agc_runtime.locking import capture_write_lock
 from agc_runtime.paths import MemoryPaths
@@ -170,7 +171,29 @@ def test_capture_backup_round_trip_is_allowlisted_and_keeps_recall_isolated(tmp_
     assert restored.status == "accepted"
     assert [item.observation_id for item in store.iter_visible_observations()] == [observation.observation_id]
     assert set(store.frozen_revisions()) == {revision, legacy}
+    assert capture_overview(paths)["integrity"] == {
+        "state": "healthy",
+        "diagnostics": [],
+    }
     assert not list(paths.memories.rglob("*.md"))
+
+
+def test_restore_into_fresh_root_recreates_empty_capture_layout(tmp_path: Path):
+    source_paths, _store, _observation_value = _populated(tmp_path / "source")
+    backup = dispatch_admin(source_paths, {"action": "backup"})
+    target_paths = MemoryPaths.from_root(tmp_path / "target" / "memory")
+
+    restored = dispatch_admin(
+        target_paths,
+        {"action": "restore", "backup_path": backup.data["backup_path"]},
+    )
+
+    assert restored.status == "accepted", restored
+    assert capture_overview(target_paths)["integrity"] == {
+        "state": "healthy",
+        "diagnostics": [],
+    }
+    assert target_paths.capture.cursor_hmac_key.is_file()
 
 
 def test_backup_compacts_repeated_frozen_census_runs_before_file_limit(
