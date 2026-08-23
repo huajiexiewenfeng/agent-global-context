@@ -33,7 +33,7 @@ The product priority is content quality and early usefulness. Automatic backgrou
 
 Formalization is a Codex App review workflow, not a second extraction pipeline.
 
-The existing `agent-global-context-review` skill orchestrates the flow. It uses `agc.read` to retrieve a small set of unreviewed Capture observations and a compact set of relevant active Memory Cards. The active Codex App model performs semantic grouping, deduplication, and drafting. The rollout model boundary is `gpt-5.6-sol`, resolved by Codex App rather than by an npm-installed Codex CLI. Runtime remains responsible for deterministic validation, persistence, idempotency, and the existing `agc.write` commit rules.
+The Codex App AGC review workflow orchestrates the flow. In this v2 repository it is packaged inside the single public `agent-global-context` skill; the retired standalone `agent-global-context-review` skill is not reintroduced. The workflow uses `agc.read` to retrieve a small set of unreviewed Capture observations and a compact set of relevant active Memory Cards. The active Codex App model performs semantic grouping, deduplication, and drafting. The rollout model boundary is `gpt-5.6-sol`, resolved by Codex App rather than by an npm-installed Codex CLI. Runtime remains responsible for deterministic validation, persistence, idempotency, and the existing `agc.write` commit rules.
 
 The public tool surface remains exactly:
 
