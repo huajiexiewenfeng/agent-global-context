@@ -174,6 +174,28 @@ def test_capture_backup_round_trip_is_allowlisted_and_keeps_recall_isolated(tmp_
     assert not list(paths.memories.rglob("*.md"))
 
 
+def test_capture_review_receipt_round_trips_in_managed_backup(tmp_path: Path):
+    paths, store, observation = _populated(tmp_path)
+    store.record_reviews(
+        (observation.observation_id,),
+        outcome="discard",
+        target_memory_id=None,
+    )
+    backup = dispatch_admin(paths, {"action": "backup"})
+
+    assert backup.status == "accepted"
+    assert "capture-review-receipts-v1" in backup.data["manifest"]["capabilities"]
+    review_path = paths.capture.reviews / f"{observation.observation_id}.json"
+    review_path.unlink()
+    restored = dispatch_admin(
+        paths,
+        {"action": "restore", "backup_path": backup.data["backup_path"]},
+    )
+    assert restored.status == "accepted"
+    assert review_path.is_file()
+    assert store.read_snapshot().review_receipts[0].outcome == "discard"
+
+
 def test_interrupted_census_staging_is_excluded_from_backup_and_later_freeze_converges(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):

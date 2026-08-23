@@ -180,6 +180,8 @@ def _scrub_observation_runtime(entries: dict[str, bytes], observation_id: str) -
 
 def _updated_observation(entries: dict[str, bytes], observation_id: str) -> tuple[dict[str, bytes], str | None]:
     name = f".runtime/capture/observations/{observation_id}.json"
+    result = dict(entries)
+    result.pop(f".runtime/capture/reviews/{observation_id}.json", None)
     observation: CollectedObservation | None = None
     if name in entries:
         observation = CollectedObservation.from_mapping(_strict_json(entries[name]))
@@ -202,7 +204,7 @@ def _updated_observation(entries: dict[str, bytes], observation_id: str) -> tupl
     if not manifest_receipts:
         if observation is not None:
             raise ValueError("observation is not bound by its immutable manifest")
-        return _scrub_observation_runtime(entries, observation_id), None
+        return _scrub_observation_runtime(result, observation_id), None
 
     receipt_id = manifest_receipts[0]
     if observation is not None and observation.receipt_id != receipt_id:
@@ -228,7 +230,6 @@ def _updated_observation(entries: dict[str, bytes], observation_id: str) -> tupl
     })
     CaptureReceipt.from_mapping(receipt)
     manifest["observation_ids"] = updated_ids
-    result = dict(entries)
     result.pop(name, None)
     result[receipt_name] = canonical_json_bytes(receipt)
     result[manifest_name] = canonical_json_bytes(manifest)
@@ -308,6 +309,7 @@ def _updated_revision(entries: dict[str, bytes], key: CaptureKey) -> dict[str, b
 
     for observation_id in target_observations:
         result.pop(f".runtime/capture/observations/{observation_id}.json", None)
+        result.pop(f".runtime/capture/reviews/{observation_id}.json", None)
 
     for name, data in tuple(result.items()):
         if name.startswith(_RUNTIME_PREFIXES):

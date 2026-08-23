@@ -177,6 +177,58 @@ def test_observation_capture_forget_rewrites_backups_and_clears_receipt_hashes(t
     assert "a" * 64 not in text and "b" * 64 not in text
 
 
+def test_observation_forget_removes_review_receipt_from_primary_and_backups(
+    tmp_path: Path,
+):
+    paths, store, _receipt_value, observations = _populated(tmp_path)
+    observation = observations[0]
+    store.record_reviews(
+        (observation.observation_id,), outcome="discard", target_memory_id=None
+    )
+    backup = dispatch_admin(paths, {"action": "backup"})
+    assert backup.status == "accepted"
+
+    response = dispatch_write(
+        paths,
+        _request(
+            {"type": "observation", "observation_id": observation.observation_id}
+        ),
+    )
+
+    assert response.status == "accepted"
+    review_name = f".runtime/capture/reviews/{observation.observation_id}.json"
+    assert not (paths.capture.reviews / f"{observation.observation_id}.json").exists()
+    for backup_path in paths.backups.glob("*.zip"):
+        with zipfile.ZipFile(backup_path) as archive:
+            assert review_name not in archive.namelist()
+
+
+def test_revision_forget_removes_all_bound_review_receipts(tmp_path: Path):
+    paths, store, _receipt_value, observations = _populated(tmp_path)
+    store.record_reviews(
+        tuple(item.observation_id for item in observations),
+        outcome="discard",
+        target_memory_id=None,
+    )
+    backup = dispatch_admin(paths, {"action": "backup"})
+    assert backup.status == "accepted"
+
+    response = dispatch_write(
+        paths,
+        _request({"type": "revision", **_key().to_mapping()}),
+    )
+
+    assert response.status == "accepted"
+    assert not list(paths.capture.reviews.glob("*.json"))
+    for backup_path in paths.backups.glob("*.zip"):
+        with zipfile.ZipFile(backup_path) as archive:
+            names = set(archive.namelist())
+        assert all(
+            f".runtime/capture/reviews/{item.observation_id}.json" not in names
+            for item in observations
+        )
+
+
 def test_observation_forget_scrubs_every_strictly_bound_runtime_copy(tmp_path: Path):
     paths, _store, receipt, observations = _populated(tmp_path)
     target = observations[0]

@@ -20,6 +20,7 @@ from agc_runtime.capture_contracts import (
     RevisionRef,
     SourceQuarantine,
 )
+from agc_runtime.capture_review import CaptureReviewReceipt
 from agc_runtime.capture_status_service import capture_status
 from agc_runtime.capture_store import CaptureStore
 from agc_runtime.capture_transaction import safe_unlink
@@ -32,6 +33,7 @@ from agc_runtime.paths import MemoryPaths
 from agc_runtime.policy import validate_transition
 from agc_runtime.runtime_config import default_config_text, load_runtime_config
 from agc_runtime.schema import validate_memory_item
+from agc_runtime.store import MemoryStore
 from agc_runtime.utf8_io import atomic_write_text, strict_read_text
 
 
@@ -191,11 +193,13 @@ def _validate_capture(
     parsers = {
         paths.capture.receipts: CaptureReceipt.from_mapping,
         paths.capture.observations: CollectedObservation.from_mapping,
+        paths.capture.reviews: CaptureReviewReceipt.from_mapping,
         paths.capture.ledger: LedgerEntry.from_mapping,
         paths.capture.census: RevisionRef.from_mapping,
         paths.capture.quarantines: SourceQuarantine.from_mapping,
         paths.capture.tombstones: CaptureSuppressionTombstone.from_mapping,
     }
+    review_receipts: dict[str, tuple[CaptureReviewReceipt, Path]] = {}
     for directory, parser in parsers.items():
         if not directory.exists():
             continue
@@ -206,13 +210,58 @@ def _validate_capture(
                 _capture_issue(issues, paths, path, "unsupported Capture object file")
                 continue
             try:
-                parser(json.loads(strict_read_text(path)))
+                parsed = parser(json.loads(strict_read_text(path)))
+                if directory == paths.capture.reviews:
+                    review = parsed
+                    if path.name != f"{review.observation_id}.json":
+                        _capture_issue(
+                            issues,
+                            paths,
+                            path,
+                            "Capture review receipt filename binding is invalid",
+                        )
+                    elif review.observation_id in review_receipts:
+                        _capture_issue(
+                            issues,
+                            paths,
+                            path,
+                            "duplicate Capture review receipt",
+                        )
+                    else:
+                        review_receipts[review.observation_id] = (review, path)
             except OSError:
                 _capture_issue(
                     issues, paths, path, "Capture object could not be read"
                 )
             except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as error:
                 _capture_issue(issues, paths, path, f"invalid Capture object: {error}")
+    if review_receipts:
+        try:
+            visible_ids = {
+                item.observation_id
+                for item in CaptureStore(paths).iter_visible_observations()
+            }
+        except (OSError, TypeError, ValueError):
+            visible_ids = set()
+        memory_store = MemoryStore(paths)
+        for observation_id, (review, path) in review_receipts.items():
+            if observation_id not in visible_ids:
+                _capture_issue(
+                    issues,
+                    paths,
+                    path,
+                    "orphan Capture review receipt",
+                )
+            if review.outcome == "draft" and review.target_memory_id is not None:
+                try:
+                    memory_store.get_memory(review.target_memory_id)
+                except (OSError, RuntimeError, TypeError, ValueError):
+                    _capture_issue(
+                        issues,
+                        paths,
+                        path,
+                        "Capture review target memory is unavailable",
+                    )
     if paths.capture.conflicts.exists():
         for path in sorted(paths.capture.conflicts.glob("*.json")):
             try:

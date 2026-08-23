@@ -100,6 +100,74 @@ def test_validate_rejects_invalid_runtime_config(tmp_path: Path):
     )
 
 
+def test_validate_reports_invalid_review_graph_content_safely(
+    tmp_path: Path, visible_capture_observations
+):
+    paths = MemoryPaths.from_root(tmp_path / "memory")
+    assert dispatch_admin(paths, {"action": "init"}).status == "accepted"
+    _store, observations = visible_capture_observations(
+        paths,
+        [
+            "Private invalid-filename statement.",
+            "Private unknown-outcome statement.",
+            "Private dangling-target statement.",
+        ],
+    )
+    MemoryStore(paths).create_memory(
+        principle(), SourceKey("codex-task:t1", "r1", "a" * 64)
+    )
+    rebuild_catalog(paths)
+
+    def write_review(filename: str, observation_id: str, outcome: str, target):
+        atomic_write_text(
+            paths.capture.reviews / filename,
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "observation_id": observation_id,
+                    "outcome": outcome,
+                    "target_memory_id": target,
+                    "reviewed_at": "2026-08-23T12:00:00Z",
+                },
+                sort_keys=True,
+            )
+            + "\n",
+        )
+
+    write_review("bad review.json", observations[0].observation_id, "discard", None)
+    write_review(
+        f"{observations[1].observation_id}.json",
+        observations[1].observation_id,
+        "unknown",
+        None,
+    )
+    write_review(
+        f"{observations[2].observation_id}.json",
+        observations[2].observation_id,
+        "draft",
+        "missing-memory",
+    )
+    orphan_id = "co_" + "f" * 64
+    write_review(f"{orphan_id}.json", orphan_id, "discard", None)
+
+    response = dispatch_admin(paths, {"action": "validate"})
+
+    assert response.status == "failed"
+    review_issues = [
+        issue
+        for issue in response.data["issues"]
+        if issue["path"].startswith(".runtime/capture/reviews/")
+    ]
+    assert len(review_issues) >= 4
+    rendered = json.dumps(review_issues, ensure_ascii=False)
+    assert "<invalid-name>" in rendered
+    assert "outcome" in rendered
+    assert "target" in rendered
+    assert "orphan" in rendered
+    assert str(paths.root) not in rendered
+    assert "Private " not in rendered
+
+
 def test_backup_is_deterministic_and_excludes_runtime_noise(tmp_path: Path):
     paths = MemoryPaths.from_root(tmp_path / "memory")
     dispatch_admin(paths, {"action": "init"})

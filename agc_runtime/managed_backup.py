@@ -21,16 +21,18 @@ from agc_runtime.capture_contracts import (
     CollectedObservation, LedgerEntry, RevisionRef, SourceQuarantine,
     receipt_id_for,
 )
+from agc_runtime.capture_review import CaptureReviewReceipt
 from agc_runtime.capture_transaction import read_json
 from agc_runtime.paths import MemoryPaths
 
 ARCHIVE_SCHEMA_VERSION = 2
 CAPTURE_BACKUP_CAPABILITY = "capture-backup-v1"
 CAPTURE_CENSUS_RUNS_CAPABILITY = "capture-census-runs-v1"
+CAPTURE_REVIEW_RECEIPTS_CAPABILITY = "capture-review-receipts-v1"
 _CAPTURE_ROOT = ".runtime/capture"
 _CAPTURE_PREFIX = f"{_CAPTURE_ROOT}/"
 _CAPTURE_ALLOWLIST = frozenset({
-    "schema-version", "receipts", "observations", "ledger", "census", "census-runs",
+    "schema-version", "receipts", "observations", "reviews", "ledger", "census", "census-runs",
     "tombstones", "quarantines", "conflicts", "indexes",
 })
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -180,6 +182,11 @@ def manifest(files: list[tuple[str, bytes]]) -> dict[str, Any]:
             for name, _data in files
         ):
             capabilities.append(CAPTURE_CENSUS_RUNS_CAPABILITY)
+        if any(
+            name.startswith(".runtime/capture/reviews/")
+            for name, _data in files
+        ):
+            capabilities.append(CAPTURE_REVIEW_RECEIPTS_CAPABILITY)
         value.update({
             "capture_schema_version": CAPTURE_SCHEMA_VERSION,
             "capabilities": capabilities,
@@ -247,6 +254,8 @@ def _validate_capture_entries(entries: dict[str, bytes], value: dict[str, Any]) 
     expected_capabilities = [CAPTURE_BACKUP_CAPABILITY]
     if any(name.startswith(".runtime/capture/census-runs/") for name in names):
         expected_capabilities.append(CAPTURE_CENSUS_RUNS_CAPABILITY)
+    if any(name.startswith(".runtime/capture/reviews/") for name in names):
+        expected_capabilities.append(CAPTURE_REVIEW_RECEIPTS_CAPABILITY)
     if not isinstance(capabilities, list) or capabilities != expected_capabilities:
         raise ValueError("unsupported Capture archive capabilities")
     schema_name = ".runtime/capture/schema-version"
@@ -257,6 +266,7 @@ def _validate_capture_entries(entries: dict[str, bytes], value: dict[str, Any]) 
 
     receipts: dict[str, CaptureReceipt] = {}
     observations: dict[str, CollectedObservation] = {}
+    reviews: dict[str, CaptureReviewReceipt] = {}
     ledgers: dict[str, LedgerEntry] = {}
     manifests: dict[str, tuple[str, ...]] = {}
     census_keys: set[tuple[str, str, str, str]] = set()
@@ -317,6 +327,13 @@ def _validate_capture_entries(entries: dict[str, bytes], value: dict[str, Any]) 
             if item.observation_id != object_id:
                 raise ValueError("Capture observation filename binding is invalid")
             observations[item.observation_id] = item
+        elif namespace == "reviews":
+            if not _OBSERVATION_ID.fullmatch(object_id):
+                raise ValueError("invalid Capture review receipt filename")
+            item = CaptureReviewReceipt.from_mapping(payload)
+            if item.observation_id != object_id:
+                raise ValueError("Capture review receipt filename binding is invalid")
+            reviews[item.observation_id] = item
         elif namespace == "ledger":
             if not _RECEIPT_ID.fullmatch(object_id):
                 raise ValueError("invalid Capture ledger filename")
@@ -396,6 +413,8 @@ def _validate_capture_entries(entries: dict[str, bytes], value: dict[str, Any]) 
         raise ValueError("orphan Capture observation")
     if set(observations) != referenced:
         raise ValueError("unreferenced Capture observation")
+    if set(reviews) - set(observations):
+        raise ValueError("orphan Capture review receipt")
     if set(manifests) - set(receipts) or set(ledgers) - set(receipts):
         raise ValueError("orphan Capture graph object")
 
