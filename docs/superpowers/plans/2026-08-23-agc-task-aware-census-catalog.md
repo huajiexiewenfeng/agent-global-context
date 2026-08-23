@@ -49,7 +49,7 @@
 - Produces: `CapturePaths.census_catalog: Path`
 - Produces: `CaptureStore.rebuild_census_catalog() -> tuple[RevisionRef, ...]`
 - Produces: private `CaptureStore._read_census_catalog(runs: Sequence[CensusRun]) -> tuple[RevisionRef, ...]`
-- Produces: catalog layout `census-catalog/active.json` and `census-catalog/generations/<catalog-id>/{manifest.json,revisions/<receipt-id>.json}`
+- Produces: Windows-safe catalog layout `census-catalog/active.json` and `census-catalog/g/<catalog-id>/{manifest.json,r/<receipt-id>.json}`
 
 - [ ] **Step 1: Write the failing deduplication and conflict tests**
 
@@ -59,8 +59,8 @@ Add tests that freeze two overlapping runs containing the same revision, call `r
 revisions = store.rebuild_census_catalog()
 assert revisions == (revision,)
 active = read_json(paths.capture.census_catalog / "active.json")
-generation = paths.capture.census_catalog / "generations" / active["catalog_id"]
-assert sorted(path.name for path in generation.joinpath("revisions").iterdir()) == [
+generation = paths.capture.census_catalog / "g" / active["catalog_id"]
+assert sorted(path.name for path in generation.joinpath("r").iterdir()) == [
     f"{receipt_id_for(revision.key)}.json"
 ]
 manifest = read_json(generation / "manifest.json")

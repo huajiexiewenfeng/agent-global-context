@@ -37,8 +37,8 @@ The product priority is useful, correct candidate memory with low noise. This ch
 
 Capture adds a derived `census-catalog` namespace below the managed Capture runtime root. It contains:
 
-- an atomic `active.json` pointer to one immutable content-addressed generation;
-- one canonical `RevisionRef` JSON object per unique `CaptureKey` inside that generation;
+- an atomic `active.json` pointer to one immutable content-addressed generation under the deliberately short Windows-safe `g/<digest>` path;
+- one canonical `RevisionRef` JSON object per unique `CaptureKey` inside that generation's `r/` directory;
 - one generation manifest containing its format version, ordered frozen-run identities, unique revision count, and a deterministic digest over canonical revision metadata; and
 - no transcript text, Capsule text, observation statement, path outside the already permitted opaque locator contract, or model content.
 

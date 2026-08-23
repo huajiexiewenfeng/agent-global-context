@@ -12,6 +12,7 @@ class CapturePaths:
     reviews: Path
     ledger: Path
     census: Path
+    census_catalog: Path
     tombstones: Path
     quarantines: Path
     conflicts: Path
@@ -31,6 +32,7 @@ class CapturePaths:
             receipts=root / "receipts",
             observations=root / "observations", reviews=root / "reviews",
             ledger=root / "ledger", census=root / "census",
+            census_catalog=root / "census-catalog",
             tombstones=root / "tombstones", quarantines=root / "quarantines", conflicts=root / "conflicts",
             dirty=root / "dirty", journals=root / "journals", staging=root / "staging",
             leases=root / "leases", indexes=root / "indexes", scan_state=root / "scan-state",
@@ -39,7 +41,8 @@ class CapturePaths:
 
     def directories(self) -> tuple[Path, ...]:
         return (
-            self.receipts, self.observations, self.reviews, self.ledger, self.census, self.tombstones,
+            self.receipts, self.observations, self.reviews, self.ledger, self.census,
+            self.census_catalog, self.tombstones,
             self.quarantines, self.conflicts, self.dirty, self.journals, self.staging,
             self.leases, self.indexes, self.scan_state, self.budgets,
         )

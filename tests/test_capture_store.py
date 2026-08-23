@@ -12,6 +12,7 @@ from agc_runtime.capture_contracts import (
     CaptureLease,
     CaptureReceipt,
     CollectedObservation,
+    RevisionRef,
     TokenUsage,
     observation_fingerprint_for,
     observation_id_for,
@@ -105,6 +106,40 @@ def _observation(statement: str, ordinal: int) -> CollectedObservation:
 
 def _store(tmp_path: Path) -> CaptureStore:
     return CaptureStore(MemoryPaths.from_root(tmp_path / "memory"), clock=lambda: UTC)
+
+
+def _revision(*, completed_at: str = "2026-08-12T12:00:00Z") -> RevisionRef:
+    return RevisionRef.from_mapping(
+        {
+            "schema_version": CAPTURE_SCHEMA_VERSION,
+            "capture_key": _key().to_mapping(),
+            "rollout_anchor_id": "rollout-1",
+            "completed_at": completed_at,
+            "locator": "sessions/synthetic.jsonl",
+            "identity_quality": "session_id",
+            "adapter_version": "1",
+            "source_schema_version": "1",
+        }
+    )
+
+
+def _freeze(
+    store: CaptureStore,
+    revisions: tuple[RevisionRef, ...],
+    *,
+    started_at: str,
+) -> None:
+    from datetime import datetime, timedelta
+    from agc_runtime.capture_source import SourceBindingKey, TimeWindow
+
+    end = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+    start = (end - timedelta(days=7)).isoformat().replace("+00:00", "Z")
+    store.freeze_census(
+        binding=SourceBindingKey(1, "synthetic_adapter", SOURCE_ROOT),
+        window=TimeWindow(1, start, started_at),
+        started_at=started_at,
+        revisions=revisions,
+    )
 
 
 def _complete_receipt(receipt: CaptureReceipt, count: int) -> CaptureReceipt:
@@ -361,3 +396,45 @@ def test_corrupt_capture_lock_fails_closed(tmp_path: Path):
     with pytest.raises(RuntimeError, match="active Capture"):
         with capture_write_lock(paths):
             pass
+
+
+def test_rebuild_census_catalog_deduplicates_overlapping_frozen_runs(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    revision = _revision()
+    _freeze(store, (revision,), started_at="2026-08-13T11:00:00Z")
+    _freeze(store, (revision,), started_at="2026-08-13T12:00:00Z")
+
+    revisions = store.rebuild_census_catalog()
+
+    active = json.loads(
+        (store.capture.census_catalog / "active.json").read_text(encoding="utf-8")
+    )
+    generation = (
+        store.capture.census_catalog / "g" / active["catalog_id"]
+    )
+    assert revisions == (revision,)
+    assert sorted(path.name for path in (generation / "r").iterdir()) == [
+        f"{receipt_id_for(revision.key)}.json"
+    ]
+    manifest = json.loads((generation / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["catalog_schema_version"] == "census-catalog-v1"
+    assert manifest["revision_count"] == 1
+
+
+def test_rebuild_census_catalog_rejects_conflicting_revision_without_publish(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    _freeze(store, (_revision(),), started_at="2026-08-13T11:00:00Z")
+    _freeze(
+        store,
+        (_revision(completed_at="2026-08-12T12:00:01Z"),),
+        started_at="2026-08-13T12:00:00Z",
+    )
+
+    with pytest.raises(ValueError, match="revision_metadata_conflict"):
+        store.rebuild_census_catalog()
+
+    assert not (store.capture.census_catalog / "active.json").exists()

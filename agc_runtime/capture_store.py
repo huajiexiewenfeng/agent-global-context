@@ -14,7 +14,7 @@ import os
 import re
 import secrets
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable, Sequence
+from typing import TYPE_CHECKING, Callable, Mapping, Sequence
 
 from agc_runtime.capture_contracts import (
     CAPTURE_SCHEMA_VERSION, CAPTURE_STATUSES, BudgetSettlement, CaptureKey, CaptureLease, CaptureReceipt,
@@ -42,6 +42,7 @@ _RECEIPT_ID = re.compile(r"^cr_[0-9a-f]{64}$")
 _OBSERVATION_ID = re.compile(r"^co_[0-9a-f]{64}$")
 _CURSOR_VERSION = 1
 _CURSOR_KEY_BYTES = 32
+_CENSUS_CATALOG_SCHEMA_VERSION = "census-catalog-v1"
 
 
 def _utc_now() -> str:
@@ -348,7 +349,16 @@ class CaptureStore:
     ) -> tuple[RevisionRef, ...]:
         """Return legacy and immutable-run truth without coalescing conflicts."""
 
+        _runs, revisions = self._read_cold_census_truth(binding=binding)
+        return revisions
+
+    def _read_cold_census_truth(
+        self, *, binding: SourceBindingKey | None = None
+    ) -> tuple[tuple[CensusRun, ...], tuple[RevisionRef, ...]]:
+        """Decode every frozen member for an explicit cold audit or rebuild."""
+
         revisions: list[RevisionRef] = []
+        runs: list[CensusRun] = []
         if self.capture.census.exists():
             for path in sorted(self.capture.census.iterdir()):
                 if not path.is_file() or path.suffix != ".json":
@@ -361,15 +371,89 @@ class CaptureStore:
                     revisions.append(revision)
         root = self.capture.root / "census-runs"
         if not root.exists():
-            return tuple(revisions)
+            return tuple(runs), tuple(revisions)
         for path in sorted(root.iterdir()):
             if path.name.startswith("."):
                 continue
             census, members = self._read_frozen_run(path)
             if binding is not None and census.binding != binding:
                 continue
+            runs.append(census)
             revisions.extend(members)
-        return tuple(revisions)
+        return tuple(runs), tuple(revisions)
+
+    @staticmethod
+    def _catalog_digest(value: Mapping[str, object]) -> str:
+        encoded = json.dumps(
+            value,
+            allow_nan=False,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    def _rebuild_census_catalog_locked(self) -> tuple[RevisionRef, ...]:
+        from agc_runtime.capture_ledger import same_revision_metadata
+
+        runs, records = self._read_cold_census_truth()
+        unique: dict[CaptureKey, RevisionRef] = {}
+        for revision in records:
+            current = unique.get(revision.key)
+            if current is not None and not same_revision_metadata(current, revision):
+                raise ValueError("revision_metadata_conflict")
+            unique.setdefault(revision.key, revision)
+        revisions = tuple(sorted(unique.values(), key=self._revision_sort_key))
+        run_values = [item.to_mapping() for item in runs]
+        revision_values = [item.to_mapping() for item in revisions]
+        run_digest = self._catalog_digest({"runs": run_values})
+        revision_digest = self._catalog_digest({"revisions": revision_values})
+        catalog_id = self._catalog_digest(
+            {
+                "catalog_schema_version": _CENSUS_CATALOG_SCHEMA_VERSION,
+                "run_digest": run_digest,
+                "revision_digest": revision_digest,
+            }
+        )
+        manifest = {
+            "schema_version": CAPTURE_SCHEMA_VERSION,
+            "catalog_schema_version": _CENSUS_CATALOG_SCHEMA_VERSION,
+            "catalog_id": catalog_id,
+            "run_ids": [item.census_id for item in runs],
+            "run_digest": run_digest,
+            "revision_count": len(revisions),
+            "revision_digest": revision_digest,
+        }
+        generation = self.capture.census_catalog / "g" / catalog_id
+        if not generation.exists():
+            files: dict[str, Mapping[str, object]] = {"manifest.json": manifest}
+            files.update(
+                {
+                    f"r/{receipt_id_for(item.key)}.json": item.to_mapping()
+                    for item in revisions
+                }
+            )
+            atomic_install_json_directory(
+                generation,
+                files,
+                directories=("r",),
+            )
+        atomic_write_json(
+            self.capture.census_catalog / "active.json",
+            {
+                "schema_version": CAPTURE_SCHEMA_VERSION,
+                "catalog_schema_version": _CENSUS_CATALOG_SCHEMA_VERSION,
+                "catalog_id": catalog_id,
+            },
+        )
+        return revisions
+
+    def rebuild_census_catalog(self) -> tuple[RevisionRef, ...]:
+        """Validate all cold Census evidence and publish one canonical catalog."""
+
+        with capture_write_lock(self.paths):
+            self._ensure_layout_locked()
+            return self._rebuild_census_catalog_locked()
 
     def frozen_revisions(
         self, *, binding: SourceBindingKey | None = None
