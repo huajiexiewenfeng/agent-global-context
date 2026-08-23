@@ -126,6 +126,11 @@ def test_ac_20_runs_from_commit_bound_lf_export_with_short_test_root():
     assert "core.autocrlf=false" in text
     assert "RepositoryUnderTest" in text
     assert "VerificationTempRoot" in text
+    assert "Split-Path -Parent $ResolvedEvidence" in text
+    assert (
+        "$VerificationTempRoot = Join-Path (\n"
+        "    [System.IO.Path]::GetTempPath()"
+    ) not in text
     assert "LF export contains CR bytes" in text
     assert "--basetemp',$fullTemp" in text
     assert "Invoke-RecordedProcess 'AC-20' 'full-suite'" in text

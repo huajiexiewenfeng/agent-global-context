@@ -193,7 +193,7 @@ Write-Manifest
 
 $Requested = if ($Gate -eq 'All') { @($GateNodes.Keys) } else { @($Gate) }
 $VerificationTempRoot = Join-Path (
-    [System.IO.Path]::GetTempPath()
+    Split-Path -Parent $ResolvedEvidence
 ) ('agr-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
 [System.IO.Directory]::CreateDirectory($VerificationTempRoot) | Out-Null
 $RepositoryUnderTest = $RepositoryRoot
