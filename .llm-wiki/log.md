@@ -107,3 +107,4 @@
 - Agent-local evidence: 1334 full-suite tests before the final Capture-only packed layout, then 1064 Capture tests after it; package and installed/source hash gates passed.
 - Production read-only acceptance found 915 unique revisions, cold rebuild 26.172 seconds, hot reads 8.370/6.122 seconds, zero hot member reads, and zero formal-memory/observation/token/Extractor deltas.
 - Installed immutable Runtime 0.4.1 at `4f63831e...96bcf`. Codex config is updated; the current App task still holds the previous MCP process and requires restart before live-route closure.
+- On 2026-08-24 the user restarted Codex App. The live MCP returned Runtime 0.4.1 with the expected production binding, enabled `scanner_only`, paused false, 946/946 accounted keys, zero pending keys, and zero silent loss; the archive gate is closed.

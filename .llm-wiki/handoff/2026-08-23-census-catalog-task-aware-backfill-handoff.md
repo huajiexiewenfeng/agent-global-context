@@ -8,7 +8,7 @@ The packed Census catalog and task-aware high-signal selection are implemented, 
 
 - Codex config points to Runtime `4f63831e...96bcf` and production memory root `C:\Users\admin\.agent-global-context-v2`.
 - Direct installed probe reports Runtime 0.4.1, enabled `scanner_only`, paused false, matching memory-root fingerprint, and zero pending/silent-loss Census keys.
-- The current Codex task still owns the previous MCP process. Restart Codex App before closing the live-route gate.
+- After the user restarted Codex App, the live in-app MCP returned Runtime 0.4.1, the expected production fingerprint, enabled `scanner_only`, paused false, 946/946 accounted keys, zero pending keys, and zero silent loss.
 
 ## Verification
 
@@ -25,4 +25,4 @@ The packed Census catalog and task-aware high-signal selection are implemented, 
 
 ## Next Action
 
-Restart Codex App, then call the live AGC status tool once and confirm Runtime 0.4.1. After that, choose whether to merge or push `codex/task-aware-census-catalog`; any historical processing still requires a fresh exact authorization.
+Choose whether to merge `codex/task-aware-census-catalog` into `main` or open a Pull Request. The branch is already pushed to GitHub. Any historical processing still requires a fresh exact authorization.

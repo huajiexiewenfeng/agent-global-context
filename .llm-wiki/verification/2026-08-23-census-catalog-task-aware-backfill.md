@@ -2,8 +2,8 @@
 
 - verification_id: `2026-08-23-census-catalog-task-aware-backfill`
 - branch: `codex/task-aware-census-catalog`
-- source_head: `3ed1089`
-- status: passed-agent-local; live Codex App reload pending
+- source_head: `09654d3`
+- status: passed-agent-local and verified-live
 - authority: local agent execution; no CI or independent reviewer claim
 
 ## Regression Evidence
@@ -50,6 +50,6 @@
 
 ## Residual Risk
 
-- The current Codex task retained the old MCP process after the config update. Its `capture_status` call still exceeded 60 seconds and was terminated. Restarting Codex App is required to prove the in-app process is the newly installed 0.4.1 route.
-- Scanner source health remains degraded and the Runner reports 837 discovered backlog items. This release does not process that backlog and no model authorization is implied.
+- After the user restarted Codex App on 2026-08-24, the live `agc.admin/capture_status` call returned `accepted` from Runtime 0.4.1 in 28.2 seconds. The production fingerprint matched, state was enabled `scanner_only` and paused false, and accounting reported 946 known, 946 accounted, zero pending, and zero silent loss.
+- Scanner source health remains degraded and the Runner reports 868 discovered backlog items. This release does not process that backlog and no model authorization is implied.
 - Existing frozen evidence remains on disk; the catalog removes hot-read amplification but does not compact historical run files.

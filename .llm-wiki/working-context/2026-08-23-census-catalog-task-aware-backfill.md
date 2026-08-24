@@ -19,8 +19,8 @@
   - installer/release scripts only if package verification proves they require adjustment
 - excluded_scope:
   - model/prompt changes, safety-gate relaxation, automatic formal-memory promotion, raw Session persistence, live backfill, Hook/continuous Runner activation, unrelated refactoring
-- current_gate: installed verification complete; Codex App reload gate pending
-- requested_stage_or_bridge: restart Codex App, then verify the live MCP reports Runtime 0.4.1
+- current_gate: archived completion
+- requested_stage_or_bridge: none; integration choice remains independent
 - constraints:
   - all test temporary output is rooted under `D:\tmp_test`
   - zero new Extractor/model calls without a fresh exact authorization
@@ -56,4 +56,5 @@
 - installed_version: `0.4.1`
 - production_acceptance: cold 26.172 seconds; hot 8.370 and 6.122 seconds; 915/915 unique revision match; zero hot member JSON reads
 - zero_mutation_check: formal-memory, observation count, and budget fingerprints unchanged
-- pending: restart Codex App because the current task still holds the previous MCP process
+- live_mcp_verification: Runtime 0.4.1; production fingerprint matched; `scanner_only`; paused false; 946 known/accounted; zero pending and silent-loss keys
+- pending: no implementation or installation gate remains; merge/PR is a separate integration decision

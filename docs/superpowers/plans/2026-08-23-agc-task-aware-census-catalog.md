@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.11+, dataclasses, pathlib, canonical JSON/atomic directory publication already in `capture_transaction.py`, pytest, existing immutable wheel/venv installer flow.
 
-**Execution status (2026-08-23):** Tasks 1–4 and Task 5 steps 1–6 and 8–9 are implemented and locally verified on `codex/task-aware-census-catalog`. Runtime 0.4.1 is installed and the configured route is updated. Task 5 step 7 and final integration remain open until Codex App restarts and the live MCP process reports 0.4.1.
+**Execution status (2026-08-24):** Implementation, regression, packaging, production read-only acceptance, immutable Runtime 0.4.1 installation, Codex App restart, and live MCP verification are complete on `codex/task-aware-census-catalog`. The branch is synchronized to GitHub; merge or Pull Request remains a separate integration choice.
 
 ## Global Constraints
 
@@ -405,7 +405,7 @@ formal_memory_hash_delta = 0
 
 Store only content-free counts, timings, hashes, and pass/fail facts under `D:\tmp_test`; do not copy Session text or memory statements.
 
-- [ ] **Step 7: Restart/reload the Codex App route if required and verify live status**
+- [x] **Step 7: Restart/reload the Codex App route if required and verify live status**
 
 Verify runtime version `0.4.1`, production memory-root fingerprint, `scanner_only` mode, paused state, and model boundary `gpt-5.6-sol`. Do not run a backfill without a fresh authorization digest.
 

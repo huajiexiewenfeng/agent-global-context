@@ -3,7 +3,7 @@
 ## Summary
 
 - title: Repeated frozen Census reads amplify I/O and fragment-first scheduling wastes bounded backfill capacity
-- status: verified-installed; Codex App process reload pending
+- status: verified-live
 - flow_id: `2026-08-23-census-catalog-task-aware-backfill`
 - severity: high operational latency and low candidate yield; no formal-memory corruption observed
 - owner: Codex
@@ -95,7 +95,7 @@ Implement the approved `census-catalog` derived namespace with atomic rebuild an
 | plan | done | `docs/superpowers/plans/2026-08-23-agc-task-aware-census-catalog.md` | 2026-08-23 |
 | development | done | commits `5e9b61a` through `3ed1089` | 2026-08-23 |
 | testing | passed-agent-local | `.llm-wiki/verification/2026-08-23-census-catalog-task-aware-backfill.md` | 2026-08-23 |
-| archive | active | handoff created; current Codex App process must restart to load the new MCP route | 2026-08-23 |
+| archive | done | restarted Codex App live MCP returned Runtime 0.4.1 and the expected production binding | 2026-08-24 |
 
 ## Artifacts
 
@@ -110,4 +110,4 @@ None. The user approved the recommended per-invocation cap of three locally high
 
 ## Residual Risk
 
-The first catalog construction remains a full cold validation. Existing frozen evidence remains unchanged, so disk file count is not reduced. The installed route is 0.4.1, but the Codex App process that was already running retained the previous MCP process and must be restarted before in-app verification can close the archive gate.
+The first catalog construction remains a full cold validation. Existing frozen evidence remains unchanged, so disk file count is not reduced. After the user restarted Codex App, the live MCP returned Runtime 0.4.1 with the expected production root, `scanner_only` mode, 946/946 keys accounted, zero pending keys, and zero silent loss.
