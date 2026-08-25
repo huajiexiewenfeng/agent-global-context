@@ -32,6 +32,12 @@ def test_windows_scheduler_has_a_current_session_time_trigger():
     assert "<StartBoundary>$startBoundary</StartBoundary>" in script
 
 
+def test_windows_scheduler_allows_a_full_runner_cycle_before_timeout():
+    script = SCRIPT.read_text(encoding="utf-8")
+
+    assert "<ExecutionTimeLimit>PT30M</ExecutionTimeLimit>" in script
+
+
 def _tree(root: Path) -> dict[str, bytes]:
     if not root.exists():
         return {}
