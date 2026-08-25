@@ -25,6 +25,13 @@ def test_windows_scheduler_registration_errors_are_terminating():
     ) in script
 
 
+def test_windows_scheduler_has_a_current_session_time_trigger():
+    script = SCRIPT.read_text(encoding="utf-8")
+
+    assert "<TimeTrigger>" in script
+    assert "<StartBoundary>$startBoundary</StartBoundary>" in script
+
+
 def _tree(root: Path) -> dict[str, bytes]:
     if not root.exists():
         return {}

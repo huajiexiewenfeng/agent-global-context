@@ -406,11 +406,15 @@ function Set-SchedulerState {
     }
     $userId = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
     $interval = 'PT' + $ScheduleMinutes + 'M'
+    $startBoundary = (Get-Date).AddMinutes(1).ToString('yyyy-MM-ddTHH:mm:ss')
     $xml = @"
 <?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo><Description>Agent Global Context Capture one-shot cycle</Description></RegistrationInfo>
-  <Triggers><LogonTrigger><Enabled>true</Enabled><Repetition><Interval>$interval</Interval><StopAtDurationEnd>false</StopAtDurationEnd></Repetition></LogonTrigger></Triggers>
+  <Triggers>
+    <LogonTrigger><Enabled>true</Enabled></LogonTrigger>
+    <TimeTrigger><Repetition><Interval>$interval</Interval><StopAtDurationEnd>false</StopAtDurationEnd></Repetition><StartBoundary>$startBoundary</StartBoundary><Enabled>true</Enabled></TimeTrigger>
+  </Triggers>
   <Principals><Principal id="Author"><UserId>$([System.Security.SecurityElement]::Escape($userId))</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals>
   <Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><StartWhenAvailable>true</StartWhenAvailable><Enabled>true</Enabled><ExecutionTimeLimit>PT15M</ExecutionTimeLimit></Settings>
   <Actions Context="Author"><Exec><Command>$([System.Security.SecurityElement]::Escape($captureLauncher))</Command><Arguments>$([System.Security.SecurityElement]::Escape($arguments))</Arguments></Exec></Actions>
