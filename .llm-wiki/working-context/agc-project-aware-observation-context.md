@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.11+, frozen dataclasses, pathlib pure paths, hashlib, pytest, Markdown Skill contracts, existing AGC Capture schema v1.
 
-**Execution Status:** Implemented and verified on 2026-08-25; awaiting project-finish branch disposition.
+**Execution Status:** Implemented, verified, merged locally to `main`, and archived on 2026-08-25.
 
 ## Global Constraints
 
@@ -478,7 +478,7 @@ git commit -m "docs: record project-aware capture verification"
 - read-only scope: Runner, schema v1, Capture read/filter contracts, existing Capture Coverage requirement
 - excluded scope: schema migration, fuzzy clustering, historical rewrite, production replay/model/install/release, task-aware ranking performance
 - required method: TDD RED → GREEN per task, frequent commits, inline execution by default
-- next gate: invoke `finishing-a-development-branch`; installation, release, production replay, and push remain excluded until separately authorized
+- next gate: separate installation/release or production replay authorization; no deployment or push is implied by local merge
 
 ## Verification Evidence
 

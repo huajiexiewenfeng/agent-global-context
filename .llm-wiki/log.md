@@ -1,5 +1,14 @@
 # LLM Wiki Log
 
+## 2026-08-25 — AGC project-aware Observation context
+
+- Added deterministic opaque project scopes derived from validated Session cwd metadata without persisting or exposing the source path.
+- Propagated exact scopes through Capsule and Observation persistence while preserving explicit caller scopes and schema v1.
+- Strengthened extractor instructions for grounded self-contained project referents while retaining atomic predicates and prohibiting inference from opaque scope hashes.
+- Updated quality-first formalization to group same-receipt observations, expand exact non-null project scopes to at most 20 items, and keep null/different scopes conservative.
+- Agent-local verification passed 582 focused adjacent tests in the feature worktree and again after local fast-forward merge to `main`; compileall, diff, UTF-8/no-BOM, and test-integrity checks passed.
+- No install, release, production replay/model call, historical rewrite, formal-memory promotion, or GitHub push was performed.
+
 ## 2026-08-22 — semantic Capture candidates
 
 - Fixed historical `extractor_empty` results by adding a bounded semantic input lane while preserving exact deterministic direct-memory validation.

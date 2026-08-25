@@ -4,7 +4,7 @@
 
 - title: AGC project-aware Observation context and review aggregation
 - flow_id: agc-project-aware-observation-context
-- status: executing
+- status: done
 - change: Preserve a stable, opaque project scope during Codex Capture and use it to aggregate related atomic Observations during quality-first review.
 - why: Production backfill produced correct but fragmented statements with `project_scope: null`, forcing the user to explain that observations from multiple Sessions referred to one X-publishing open-source project.
 
@@ -143,8 +143,8 @@ This change does not rewrite Observation ids, fingerprints, receipts, or histori
 - read_only_scope: existing Observation/Capsule/read contracts and Capture Coverage requirement
 - candidate_scope: none
 - excluded_scope: schema migration, fuzzy clustering, production replay/model/install/release
-- current_gate: project-finish review
-- requested_stage_or_bridge: finishing-a-development-branch
+- current_gate: archived completion
+- requested_stage_or_bridge: separate install/release gate if authorized
 - constraints: correctness and low noise over capture volume; no auto-promotion; no raw Session reopening during review
 
 ## Flow Record
@@ -155,8 +155,8 @@ This change does not rewrite Observation ids, fingerprints, receipts, or histori
 | design | done | confirmed design recorded in this Change Brief | 2026-08-25 |
 | plan | done | `.llm-wiki/working-context/agc-project-aware-observation-context.md` | 2026-08-25 |
 | development | done | `f7b4c86`, `6ee4b04`, `ce54a93`, `bb24171` | 2026-08-25 |
-| testing | done | focused adjacent suite: 582 passed; compileall/diff/UTF-8 gates passed | 2026-08-25 |
-| archive | pending |  | 2026-08-25 |
+| testing | done | passed-agent-local: merged-main suite 582 passed in 36.90s; compileall/diff/UTF-8 gates passed | 2026-08-25 |
+| archive | done | `.llm-wiki/handoff/agc-project-aware-observation-context-handoff.md` | 2026-08-25 |
 
 ## Open Questions
 
