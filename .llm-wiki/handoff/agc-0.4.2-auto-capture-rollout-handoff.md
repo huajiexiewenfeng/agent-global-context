@@ -11,7 +11,9 @@ AGC 0.4.2 is installed and live in Codex App. Automatic Capture runs every 15 mi
 - Scheduler: enabled, LogonTrigger plus 15-minute TimeTrigger, 30-minute execution limit, `--max-items 10`, `IgnoreNew`.
 - Hook: disabled.
 - First cycle: 10 settlements, one new Observation, formal Memory unchanged at 26.
-- Accounting: 1214/1214 accounted, pending 0, silent loss 0.
+- Latest witnessed automatic cycle: started 17:11:45, crossed the 17:26:45 trigger without overlap, used Codex App `gpt-5.6-sol`, and exited normally at 17:32:24 with task result 0.
+- Latest automatic-cycle delta: five new isolated Observations; 22 total Observations; formal Memory still byte-identical at 26.
+- Accounting: 1238/1238 accounted, pending 0, silent loss 0; complete 111, discovered 1124, retryable 3, settled tokens 336000.
 
 ## Verification
 
@@ -19,6 +21,7 @@ AGC 0.4.2 is installed and live in Codex App. Automatic Capture runs every 15 mi
 - Local commits: release `b1c9629`; scheduler fixes `1563396`, `e83fdb9`, and `fc00887`.
 - Final activation reports `continuous_runner_ready=true` with no conflicts.
 - Host configurator fixes passed 15/15 tests after three observed RED cases.
+- A real scheduled run verified single-instance suppression across an overlapping trigger and clean process-tree exit before the 30-minute limit.
 - Verification authority remains agent-local.
 
 ## Residual Risk

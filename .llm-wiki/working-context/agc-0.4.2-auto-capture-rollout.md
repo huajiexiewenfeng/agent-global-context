@@ -54,6 +54,7 @@ Activation evidence:
 - Scheduler: enabled, LogonTrigger plus 15-minute TimeTrigger, `IgnoreNew`, 30-minute execution limit, Runner maximum 10 items.
 - Host bugs found during activation: non-terminating registration failure, missing active-session TimeTrigger, and a 15-minute execution limit that orphaned children. All received observed RED/GREEN regressions; `tests/test_capture_host_config.py` passes 15/15.
 - Overlap containment: temporarily disabled the task, observed the second cycle exit, terminated the stale first orphan after it exceeded 25 minutes without reaching Extractor, verified 1228/1228 accounting with zero pending/silent loss, then re-enabled with `PT30M`.
+- Final live schedule acceptance: the 17:11:45 cycle remained the sole process tree across the 17:26:45 trigger, reached Codex App `gpt-5.6-sol`, and exited at 17:32:24 with result 0. It added five isolated Observations; final accounting was 1238/1238 with zero pending/silent loss, while all 26 formal memories retained fingerprint `41b92a78473d58600dc1d3876a927c6edda82cce014950cb526bf128ee749c17`.
 
 ### Task 5: Finish evidence
 

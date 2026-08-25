@@ -33,7 +33,16 @@
 - Extractor process evidence used the Codex App Runtime with `gpt-5.6-sol`, ephemeral/read-only sandbox, and the v1 output schema.
 - First verification cycle created 10 incremental settlements and charged 60000 reserved tokens; one Observation was added.
 - Formal Memory stayed byte-identical at 26 files with combined fingerprint `41b92a78473d58600dc1d3876a927c6edda82cce014950cb526bf128ee749c17`.
-- Post-cycle Census: 1214 known/accounted, pending 0, silent loss 0.
+- Final exact-consent activation diagnosis again reported `continuous_runner_ready=true`, no conflicts, and digest `dc7e0e096eaa2e9ebf33e1a63b5ff83ffe9313f6cac39dec1179734bc66318af`.
+
+## Live Scheduled Acceptance
+
+- Windows started the repaired task automatically at 17:11:45 on 2026-08-25. One Runner root (PID 27820, created 17:11:46) remained the only registered cycle process throughout the run.
+- At the next 15-minute trigger, 17:26:45, Task Scheduler attempted another launch but `IgnoreNew` preserved the original single process tree; no second Runner or orphan appeared.
+- The original cycle reached the Codex App Runtime boundary at 17:29:00. Every observed Extractor child used `codex.exe exec --ephemeral`, read-only sandboxing, the v1 output schema, and model `gpt-5.6-sol`.
+- The cycle exited naturally at 17:32:24, before the 30-minute limit. The task returned to `Ready`, `LastTaskResult=0`, the next run was 17:41:44, and no Runner or Extractor process remained.
+- The cycle added five isolated Observations, taking the total to 22. It advanced complete receipts from 104 to 111 and settled tokens from 288000 to 336000; three receipts remained retryable under the existing bounded retry policy.
+- Final accounting was 1238 known / 1238 accounted, pending 0, silent loss 0, and dirty markers 0. Formal Memory remained byte-identical at 26 files with the same combined fingerprint `41b92a78473d58600dc1d3876a927c6edda82cce014950cb526bf128ee749c17`.
 
 ## Scheduler Regression
 
@@ -44,6 +53,7 @@
 - A second observed RED proved the scheduler XML lacked an active-session TimeTrigger. Production then reported `NextRunTime=16:41:44`, Windows automatically started the task at that time, and scheduled the following run for 16:56:44.
 - A third observed RED proved the 15-minute task execution limit was shorter than a real scheduled cycle. The limit is now 30 minutes; the complete Host configurator file passed 15/15 in 57.44 seconds.
 - During containment the task was disabled, a naturally exited second attempt was confirmed, and the remaining stale orphan was terminated by exact PID. Post-recovery status reported 1228/1228 accounted, pending 0, silent loss 0.
+- The subsequent real 20-minute-39-second scheduled cycle crossed a second trigger with exactly one process tree and then completed with result 0, providing live evidence for both `IgnoreNew` and the 30-minute limit.
 - Test integrity: one exact error-contract assertion was added; no safety assertion, fixture, mock, or expected success behavior was weakened.
 
 ## Residual Risk
