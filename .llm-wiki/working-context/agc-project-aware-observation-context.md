@@ -8,6 +8,8 @@
 
 **Tech Stack:** Python 3.11+, frozen dataclasses, pathlib pure paths, hashlib, pytest, Markdown Skill contracts, existing AGC Capture schema v1.
 
+**Execution Status:** Implemented and verified on 2026-08-25; awaiting project-finish branch disposition.
+
 ## Global Constraints
 
 - Keep `CAPTURE_SCHEMA_VERSION = 1` and `capture-extractor-v1`; no migration or historical rewrite.
@@ -476,4 +478,17 @@ git commit -m "docs: record project-aware capture verification"
 - read-only scope: Runner, schema v1, Capture read/filter contracts, existing Capture Coverage requirement
 - excluded scope: schema migration, fuzzy clustering, historical rewrite, production replay/model/install/release, task-aware ranking performance
 - required method: TDD RED → GREEN per task, frequent commits, inline execution by default
-- next gate: user confirms execution approach, then invoke `executing-plans`
+- next gate: invoke `finishing-a-development-branch`; installation, release, production replay, and push remain excluded until separately authorized
+
+## Verification Evidence
+
+- TDD RED was observed before each implementation: missing resolver module; derived Capsule scope remained null; extractor instruction clauses were absent; formalization grouping/golden-case clauses were absent.
+- Task 1: `tests/test_capture_project_scope.py` — 11 passed; commit `f7b4c86`.
+- Task 2: selected adapter boundary tests — 2 passed; manual backfill E2E — 1 passed; commit `6ee4b04`.
+- Task 3: `tests/test_capture_extractor.py` — 53 passed; commit `ce54a93`.
+- Task 4: `tests/test_skill_adapter.py` — 20 passed; commit `bb24171`.
+- Focused adjacent regression command covering resolver, Capsule safety, extractor, manual backfill, Capture reads, and Skill adapter — 582 passed in 33.01 seconds.
+- Static integrity: `compileall` passed; `git diff --check` passed; 228 tracked files decoded as strict UTF-8 with no BOM.
+- Scope inspection: nine implementation/test/workflow files in `HEAD~4..HEAD`; no production Memory Root, scheduler, installer, release, or config file changed.
+- All pytest temporary artifacts were routed beneath `D:\tmp_test`.
+- Residual risk: path aliases or project moves can conservatively split scopes, while unrelated work sharing one cwd remains subject to semantic review and explicit confirmation; neither condition authorizes automatic promotion.

@@ -4,7 +4,7 @@
 
 - title: AGC project-aware Observation context and review aggregation
 - flow_id: agc-project-aware-observation-context
-- status: planned
+- status: executing
 - change: Preserve a stable, opaque project scope during Codex Capture and use it to aggregate related atomic Observations during quality-first review.
 - why: Production backfill produced correct but fragmented statements with `project_scope: null`, forcing the user to explain that observations from multiple Sessions referred to one X-publishing open-source project.
 
@@ -127,8 +127,8 @@ This change does not rewrite Observation ids, fingerprints, receipts, or histori
 ## Plan
 
 - active_plan: `.llm-wiki/working-context/agc-project-aware-observation-context.md`
-- status: candidate
-- evidence: written implementation plan created after specification confirmation; execution choice remains pending
+- status: verified
+- evidence: Tasks 1–4 implemented with TDD; focused adjacent suite reports 582 passed
 
 ## External Dependencies
 
@@ -143,8 +143,8 @@ This change does not rewrite Observation ids, fingerprints, receipts, or histori
 - read_only_scope: existing Observation/Capsule/read contracts and Capture Coverage requirement
 - candidate_scope: none
 - excluded_scope: schema migration, fuzzy clustering, production replay/model/install/release
-- current_gate: written-spec review
-- requested_stage_or_bridge: user review, then writing-plans
+- current_gate: project-finish review
+- requested_stage_or_bridge: finishing-a-development-branch
 - constraints: correctness and low noise over capture volume; no auto-promotion; no raw Session reopening during review
 
 ## Flow Record
@@ -154,16 +154,18 @@ This change does not rewrite Observation ids, fingerprints, receipts, or histori
 | source | done | user-confirmed production case and current source inspection | 2026-08-25 |
 | design | done | confirmed design recorded in this Change Brief | 2026-08-25 |
 | plan | done | `.llm-wiki/working-context/agc-project-aware-observation-context.md` | 2026-08-25 |
-| development | pending |  | 2026-08-25 |
-| testing | pending |  | 2026-08-25 |
+| development | done | `f7b4c86`, `6ee4b04`, `ce54a93`, `bb24171` | 2026-08-25 |
+| testing | done | focused adjacent suite: 582 passed; compileall/diff/UTF-8 gates passed | 2026-08-25 |
 | archive | pending |  | 2026-08-25 |
 
 ## Open Questions
 
-- none; implementation remains gated on review of this written specification
+- none
 
 ## Notes
 
 - Documentation mode: new Change Brief, because the prior Capture Coverage MVP is implemented and this adds a new observable project-linking and review behavior.
 - The design deliberately reuses `project_scope` and the existing Capture project filter instead of introducing a new Observation contract.
 - Planning reduced the production-code scope: per-revision resolution belongs inside the Source Adapter, so `capture_runner.py` remains reference-only.
+- Verification touched no production Memory Root, scheduler, installer, release, configuration, or raw Session content.
+- Residual risks remain conservative false negatives after project moves/path aliases and same-cwd unrelated work; review semantics, not scope alone, decide whether to synthesize memory.
