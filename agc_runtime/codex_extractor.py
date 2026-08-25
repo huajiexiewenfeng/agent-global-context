@@ -84,6 +84,11 @@ _EXTRACTION_INSTRUCTION = (
     "drafts, copy the full supporting signal as verbatim evidence, use "
     "assertion_mode=agent_inferred and confidence=tentative, and preserve "
     "project_scope. Never label a colloquial or compound signal as direct. "
+    "When task_capsule.project_scope is non-null and a safe task_title or user signal "
+    "explicitly supports a bounded project name, include that self-contained project "
+    "referent inside the statement object. Keep one atomic user predicate. Never derive "
+    "a project name from opaque project_scope, and never invent a referent absent from "
+    "safe evidence. "
 )
 _CAPABILITY_PROBE_STDIN = (
     b'{"instruction":"Capability probe only. Return an empty drafts array.",'

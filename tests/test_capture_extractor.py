@@ -156,6 +156,9 @@ def test_capsule_prompt_requires_exact_bilingual_atomic_transformations():
     assert "agent_inferred" in payload["instruction"]
     assert "confidence=tentative" in payload["instruction"]
     assert "Never label a colloquial or compound signal as direct" in payload["instruction"]
+    assert "self-contained project referent" in payload["instruction"]
+    assert "Never derive a project name from opaque project_scope" in payload["instruction"]
+    assert "Keep one atomic user predicate" in payload["instruction"]
 
 
 def test_descriptor_and_draft_dtos_are_strict_and_content_hidden():
