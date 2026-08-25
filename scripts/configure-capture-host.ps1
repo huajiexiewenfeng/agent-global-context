@@ -416,7 +416,7 @@ function Set-SchedulerState {
   <Actions Context="Author"><Exec><Command>$([System.Security.SecurityElement]::Escape($captureLauncher))</Command><Arguments>$([System.Security.SecurityElement]::Escape($arguments))</Arguments></Exec></Actions>
 </Task>
 "@
-    Register-ScheduledTask -TaskName $taskName -Xml $xml -Force | Out-Null
+    Register-ScheduledTask -TaskName $taskName -Xml $xml -Force -ErrorAction Stop | Out-Null
 }
 
 function Merge-OwnedHook {

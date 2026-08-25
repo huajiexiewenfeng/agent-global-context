@@ -16,6 +16,15 @@ SCRIPT = REPOSITORY_ROOT / "scripts" / "configure-capture-host.ps1"
 FIXTURES = REPOSITORY_ROOT / "tests" / "fixtures" / "codex-hooks"
 
 
+def test_windows_scheduler_registration_errors_are_terminating():
+    script = SCRIPT.read_text(encoding="utf-8")
+
+    assert (
+        "Register-ScheduledTask -TaskName $taskName -Xml $xml -Force "
+        "-ErrorAction Stop | Out-Null"
+    ) in script
+
+
 def _tree(root: Path) -> dict[str, bytes]:
     if not root.exists():
         return {}
