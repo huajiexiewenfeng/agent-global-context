@@ -4,7 +4,7 @@
 
 - title: AGC project-aware Observation context and review aggregation
 - flow_id: agc-project-aware-observation-context
-- status: clarified
+- status: planned
 - change: Preserve a stable, opaque project scope during Codex Capture and use it to aggregate related atomic Observations during quality-first review.
 - why: Production backfill produced correct but fragmented statements with `project_scope: null`, forcing the user to explain that observations from multiple Sessions referred to one X-publishing open-source project.
 
@@ -66,13 +66,14 @@ This change does not rewrite Observation ids, fingerprints, receipts, or histori
 
 - active:
   - `agc_runtime/codex_source_adapter.py`
-  - `agc_runtime/capture_runner.py`
+  - `agc_runtime/capture_project_scope.py`
   - `agc_runtime/codex_extractor.py`
   - focused Capture contract/safety/runner/extractor tests
   - `skills/agent-global-context/references/formalization-workflow.md`
   - focused Skill adapter tests
   - this Change Brief and a linked working-context/plan after approval
 - reference-only:
+  - `agc_runtime/capture_runner.py`
   - `agc_runtime/capture_capsule.py`
   - `agc_runtime/capture_extractor.py`
   - `agc_runtime/capture_read_service.py`
@@ -125,9 +126,9 @@ This change does not rewrite Observation ids, fingerprints, receipts, or histori
 
 ## Plan
 
-- active_plan: none
-- status: none
-- evidence: implementation planning starts only after user review of this written specification
+- active_plan: `.llm-wiki/working-context/agc-project-aware-observation-context.md`
+- status: candidate
+- evidence: written implementation plan created after specification confirmation; execution choice remains pending
 
 ## External Dependencies
 
@@ -152,7 +153,7 @@ This change does not rewrite Observation ids, fingerprints, receipts, or histori
 |---|---|---|---|
 | source | done | user-confirmed production case and current source inspection | 2026-08-25 |
 | design | done | confirmed design recorded in this Change Brief | 2026-08-25 |
-| plan | pending |  | 2026-08-25 |
+| plan | done | `.llm-wiki/working-context/agc-project-aware-observation-context.md` | 2026-08-25 |
 | development | pending |  | 2026-08-25 |
 | testing | pending |  | 2026-08-25 |
 | archive | pending |  | 2026-08-25 |
@@ -165,3 +166,4 @@ This change does not rewrite Observation ids, fingerprints, receipts, or histori
 
 - Documentation mode: new Change Brief, because the prior Capture Coverage MVP is implemented and this adds a new observable project-linking and review behavior.
 - The design deliberately reuses `project_scope` and the existing Capture project filter instead of introducing a new Observation contract.
+- Planning reduced the production-code scope: per-revision resolution belongs inside the Source Adapter, so `capture_runner.py` remains reference-only.
