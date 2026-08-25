@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shutil
 import sys
 from pathlib import Path
@@ -689,6 +690,63 @@ def test_codex_load_capsule_reuses_settled_target_loader_and_archive_hashes_are_
     assert first.capsule.user_signals == (
         "I prefer Rust.",
     )
+
+
+def test_codex_load_capsule_derives_opaque_scope_without_exposing_cwd(tmp_path: Path):
+    from agc_runtime.capture_capsule import CapsulePolicy
+    from agc_runtime.capture_project_scope import project_scope_from_cwd
+    from agc_runtime.codex_source_adapter import CodexSourceAdapter
+
+    private_cwd = "C:" + r"\Synthetic\XPublisher"
+    source = tmp_path / "profile" / "sessions" / "task.jsonl"
+    _write_source(source)
+    source.write_text(
+        source.read_text(encoding="utf-8").replace(
+            '"title":"Capsule task"',
+            f'"title":"Capsule task","cwd":{json.dumps(private_cwd)}',
+        ),
+        encoding="utf-8",
+    )
+    adapter = CodexSourceAdapter(tmp_path / "profile")
+    ref = next(
+        item
+        for item in adapter.discover(None, _window()).revisions
+        if item.key.revision_id == "turn-target"
+    )
+
+    result = adapter.load_capsule(ref, CapsulePolicy())
+
+    assert result.capsule.project_scope == project_scope_from_cwd(private_cwd)
+    assert "synthetic" not in repr(result).casefold()
+    assert "synthetic" not in json.dumps(result.capsule.to_mapping()).casefold()
+
+
+def test_codex_load_capsule_keeps_explicit_caller_scope_authoritative(tmp_path: Path):
+    from agc_runtime.capture_capsule import CapsulePolicy
+    from agc_runtime.codex_source_adapter import CodexSourceAdapter
+
+    private_cwd = "C:" + r"\Synthetic\XPublisher"
+    source = tmp_path / "profile" / "sessions" / "task.jsonl"
+    _write_source(source)
+    source.write_text(
+        source.read_text(encoding="utf-8").replace(
+            '"title":"Capsule task"',
+            f'"title":"Capsule task","cwd":{json.dumps(private_cwd)}',
+        ),
+        encoding="utf-8",
+    )
+    adapter = CodexSourceAdapter(tmp_path / "profile")
+    ref = next(
+        item
+        for item in adapter.discover(None, _window()).revisions
+        if item.key.revision_id == "turn-target"
+    )
+
+    result = adapter.load_capsule(
+        ref, CapsulePolicy(project_scope="project:caller-authoritative")
+    )
+
+    assert result.capsule.project_scope == "project:caller-authoritative"
 
 
 def test_codex_load_capsule_fails_closed_with_content_safe_error_on_drift(

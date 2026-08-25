@@ -7,6 +7,7 @@ import subprocess
 import sys
 
 from agc_runtime.capture_contracts import CaptureReceipt, CollectedObservation
+from agc_runtime.capture_project_scope import project_scope_from_cwd
 from agc_runtime.capture_transaction import read_json
 from agc_runtime.paths import MemoryPaths
 
@@ -37,6 +38,9 @@ def test_manual_backfill_cli_prepares_authorizes_collects_and_replays(
     now = datetime.now(timezone.utc).replace(microsecond=0)
     completed = now - timedelta(minutes=1)
     started = completed - timedelta(minutes=1)
+    cwd = "C:" + r"\Synthetic\XPublisher"
+    expected_scope = project_scope_from_cwd(cwd)
+    assert expected_scope is not None
     records = (
         {
             "timestamp": started.isoformat().replace("+00:00", "Z"),
@@ -45,6 +49,7 @@ def test_manual_backfill_cli_prepares_authorizes_collects_and_replays(
                 "id": "rollout-manual",
                 "session_id": "task-manual",
                 "source": "cli",
+                "cwd": cwd,
             },
         },
         {
@@ -80,7 +85,10 @@ def test_manual_backfill_cli_prepares_authorizes_collects_and_replays(
         fake_text.replace("The user prefers privacy.", "The user prefers Rust.")
         .replace("I prefer privacy.", "I prefer Rust.")
         .replace("CAPSULE_ONLY_SENTINEL", "I prefer Rust.")
-        .replace('"project_scope": "project:stable"', '"project_scope": None'),
+        .replace(
+            '"project_scope": "project:stable"',
+            f'"project_scope": {json.dumps(expected_scope)}',
+        ),
         encoding="utf-8",
     )
     memory.mkdir()
@@ -123,9 +131,9 @@ def test_manual_backfill_cli_prepares_authorizes_collects_and_replays(
     receipt_path = next(paths.capture.receipts.glob("*.json"))
     observation_path = next(paths.capture.observations.glob("*.json"))
     assert CaptureReceipt.from_mapping(read_json(receipt_path)).status == "complete"
-    assert CollectedObservation.from_mapping(read_json(observation_path)).statement == (
-        "The user prefers Rust."
-    )
+    observation = CollectedObservation.from_mapping(read_json(observation_path))
+    assert observation.statement == "The user prefers Rust."
+    assert observation.project_scope == expected_scope
 
     replay_result, replay = _invoke(
         "backfill",
@@ -149,6 +157,7 @@ def test_manual_backfill_cli_prepares_authorizes_collects_and_replays(
                 "id": "rollout-runner",
                 "session_id": "task-runner",
                 "source": "cli",
+                "cwd": cwd,
             },
         },
         {
@@ -200,6 +209,13 @@ def test_manual_backfill_cli_prepares_authorizes_collects_and_replays(
     assert cycle["data"]["observation_count"] == 1
     assert cycle["data"]["charged_tokens"] == 18
     assert cycle["data"]["backlog_count"] == 0
+
+    observations = [
+        CollectedObservation.from_mapping(read_json(path))
+        for path in paths.capture.observations.glob("co_*.json")
+    ]
+    assert len(observations) == 2
+    assert {item.project_scope for item in observations} == {expected_scope}
 
     probe_result, probe = _invoke("probe", "--root", str(memory))
     assert probe_result.returncode == 0

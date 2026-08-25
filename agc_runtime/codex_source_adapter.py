@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterator
 
 from agc_runtime.capture_contracts import CAPTURE_SCHEMA_VERSION, CaptureKey, RevisionRef
+from agc_runtime.capture_project_scope import project_scope_from_cwd
 from agc_runtime.capture_source import (
     AdapterDescriptor,
     DiscoveryBatch,
@@ -81,6 +82,14 @@ def _identifier(value: Any) -> str | None:
     return value
 
 
+def _session_project_scope(records: tuple[dict[str, Any], ...]) -> str | None:
+    for record in records:
+        payload = record.get("payload")
+        if record.get("type") == "session_meta" and isinstance(payload, dict):
+            return project_scope_from_cwd(payload.get("cwd"))
+    return None
+
+
 class CodexSourceAdapter(SourceAdapter):
     """Discover completed main-task turns under one configured Codex root."""
 
@@ -115,7 +124,14 @@ class CodexSourceAdapter(SourceAdapter):
             raise CapabilityUnavailable("semantic_capture_not_installed")
         self._validate_ref(ref)
         try:
-            return build_capsule(self._iter_target_turn_records(ref), ref, policy)
+            records = tuple(self._iter_target_turn_records(ref))
+            effective_policy = policy
+            if policy.project_scope is None:
+                effective_policy = replace(
+                    policy,
+                    project_scope=_session_project_scope(records),
+                )
+            return build_capsule(records, ref, effective_policy)
         except _SourceIdentityMismatch:
             raise ValueError("capsule_source_identity_changed") from None
         except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError):
