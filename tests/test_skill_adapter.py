@@ -295,6 +295,28 @@ def test_quality_first_formalization_workflow_is_bounded_and_user_confirmed():
     assert "该 skill" in guidance
 
 
+def test_formalization_groups_receipts_and_expands_exact_project_scope():
+    guidance = _guidance_text()
+    text = guidance.casefold()
+
+    assert "same receipt" in text
+    assert "filters.project" in text
+    assert "exact non-null project_scope" in text
+    assert "at most 20" in text
+    assert "different non-null project scopes" in text
+    assert "null project_scope" in text
+
+
+def test_x_publishing_golden_case_is_one_project_proposal():
+    guidance = _guidance_text()
+
+    assert "X 发文开源项目" in guidance
+    assert "规划文章的整体路线" in guidance
+    assert "每篇文章撰写摘要" in guidance
+    assert "参与开源项目" in guidance
+    assert "one coherent project proposal" in guidance
+
+
 def test_golden_six_observations_have_exact_expected_review_results():
     text = _guidance_text()
     assert "Codex 自动完成发布" in text and "人工只确认发布" in text
