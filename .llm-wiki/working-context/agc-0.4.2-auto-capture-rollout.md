@@ -51,8 +51,9 @@ Activation evidence:
 - Final readiness: route/scanner/backfill/continuous Runner ready; Hook remains disabled.
 - First verification cycle: 10 incremental settlements, 60,000 reserved tokens charged, one new Observation, formal Memory count/hash unchanged at 26 / `41b92a78473d58600dc1d3876a927c6edda82cce014950cb526bf128ee749c17`.
 - Census after cycle: 1,214 known/accounted, pending 0, silent loss 0.
-- Scheduler: enabled, LogonTrigger plus 15-minute TimeTrigger, `IgnoreNew`, Runner maximum 10 items; Windows automatically started the task at 16:41:44 and scheduled the next run for 16:56:44.
-- Host bugs found during activation: scheduler registration denial was non-terminating, and a LogonTrigger alone did not start periodic work in the active session. Both received observed RED/GREEN regressions; `tests/test_capture_host_config.py` passes 14/14.
+- Scheduler: enabled, LogonTrigger plus 15-minute TimeTrigger, `IgnoreNew`, 30-minute execution limit, Runner maximum 10 items.
+- Host bugs found during activation: non-terminating registration failure, missing active-session TimeTrigger, and a 15-minute execution limit that orphaned children. All received observed RED/GREEN regressions; `tests/test_capture_host_config.py` passes 15/15.
+- Overlap containment: temporarily disabled the task, observed the second cycle exit, terminated the stale first orphan after it exceeded 25 minutes without reaching Extractor, verified 1228/1228 accounting with zero pending/silent loss, then re-enabled with `PT30M`.
 
 ### Task 5: Finish evidence
 

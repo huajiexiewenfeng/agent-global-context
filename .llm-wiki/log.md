@@ -125,4 +125,5 @@
 - Final activation reported route/scanner/backfill/continuous Runner ready with no conflicts; Census accounting was 1214/1214 with zero pending and zero silent loss.
 - The first verification cycle settled 10 incremental calls, added one review-only Observation, and left all 26 formal memories byte-identical.
 - Fixed two Host configurator defects found during activation: scheduler registration errors now terminate/roll back, and an independent TimeTrigger starts the 15-minute cadence in the active Windows session. Two RED/GREEN cases and 14/14 focused tests passed; a real automatic start was observed.
+- A real scheduled cycle then exposed a 15-minute execution-limit collision that orphaned children and allowed the next trigger to start another scan. The task was quiesced, stale processes were removed after exact PID checks, accounting remained lossless, and `fc00887` raised the limit to 30 minutes with a third RED/GREEN contract; Host tests pass 15/15.
 - GitHub push and GitHub Release remain intentionally excluded.

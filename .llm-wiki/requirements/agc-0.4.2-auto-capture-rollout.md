@@ -55,8 +55,8 @@
 | source | done | explicit user release/install/Runner authorization | 2026-08-25 |
 | design | done | staged immutable install and exact-digest activation sequence | 2026-08-25 |
 | plan | done | `.llm-wiki/working-context/agc-0.4.2-auto-capture-rollout.md` | 2026-08-25 |
-| development | done | release `b1c9629`; scheduler fail-closed `1563396`; active-session TimeTrigger `e83fdb9` | 2026-08-25 |
-| testing | passed-agent-local | 1349 full-suite tests; 582 focused tests; 14/14 Host configurator tests; installed/live/automatic-trigger evidence | 2026-08-25 |
+| development | done | release `b1c9629`; scheduler fixes `1563396`, `e83fdb9`, `fc00887` | 2026-08-25 |
+| testing | passed-agent-local | 1349 full-suite tests; 582 focused tests; 15/15 Host configurator tests; installed/live/automatic-trigger evidence | 2026-08-25 |
 | archive | done | verification and handoff records for `agc-0.4.2-auto-capture-rollout` | 2026-08-25 |
 
 ## Risks And Controls
@@ -65,9 +65,10 @@
 - Enabling Runner exposes safe Capsules to the configured provider: explicit authorization and a 500000-token ceiling are recorded.
 - Existing backlog is large: task-aware bounded selection and one-worker concurrency remain unchanged.
 - Installation/config changes are transactional and retain the prior immutable Runtime and before-image backup.
-- The first Runner cycle spent about ten minutes in local Census/candidate preparation before model calls; scheduled `IgnoreNew` prevents overlap, but cycle latency remains a performance risk.
+- The first Runner cycle spent about ten minutes in local Census/candidate preparation before model calls; the task keeps a 15-minute trigger but now permits 30 minutes for one cycle and uses `IgnoreNew`.
 - The existing Windows task required one UAC-assisted Action update because its ACL used the legacy local principal. Future registration failures now terminate and roll back instead of reporting false success.
 - A standalone TimeTrigger is required for activation inside an already logged-on session; production now has a LogonTrigger plus a 15-minute TimeTrigger with a non-null next run.
+- The original 15-minute execution limit orphaned child processes at the trigger boundary. Production was quiesced, stale children were terminated after content-free health checks, and the limit was raised to 30 minutes before re-enabling.
 
 ## Open Questions
 

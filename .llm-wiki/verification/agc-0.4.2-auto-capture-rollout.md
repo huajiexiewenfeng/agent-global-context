@@ -5,6 +5,7 @@
 - release_commit: `b1c9629`
 - scheduler_fix_commit: `1563396`
 - scheduler_time_trigger_commit: `e83fdb9`
+- scheduler_timeout_commit: `fc00887`
 - status: passed-agent-local
 - executor: agent-local plus user-approved Windows UAC for the existing task ACL
 - authority: agent-local; no CI or independent reviewer claim
@@ -28,7 +29,7 @@
 - Activation evidence: `D:\tmp_test\agc042-activation-evidence-20260825.json`, SHA-256 `ff280a62fad48b2a68fe42f499a3eb202fd48f88bc7aa41687c07e1e8c52be0f`.
 - Final activation digest: `dc7e0e096eaa2e9ebf33e1a63b5ff83ffe9313f6cac39dec1179734bc66318af`.
 - Final activation: route/scanner/backfill/continuous Runner ready, no conflicts, Hook disabled.
-- Runner configuration: enabled/unpaused, mode `runner`, one worker, 500000 incremental tokens, LogonTrigger plus 15-minute TimeTrigger, maximum 10 items, `IgnoreNew`.
+- Runner configuration: enabled/unpaused, mode `runner`, one worker, 500000 incremental tokens, LogonTrigger plus 15-minute TimeTrigger, 30-minute execution limit, maximum 10 items, `IgnoreNew`.
 - Extractor process evidence used the Codex App Runtime with `gpt-5.6-sol`, ephemeral/read-only sandbox, and the v1 output schema.
 - First verification cycle created 10 incremental settlements and charged 60000 reserved tokens; one Observation was added.
 - Formal Memory stayed byte-identical at 26 files with combined fingerprint `41b92a78473d58600dc1d3876a927c6edda82cce014950cb526bf128ee749c17`.
@@ -41,12 +42,13 @@
 - TDD RED: `test_windows_scheduler_registration_errors_are_terminating` failed against the original script.
 - GREEN: the same test passed after the one-line fix.
 - A second observed RED proved the scheduler XML lacked an active-session TimeTrigger. Production then reported `NextRunTime=16:41:44`, Windows automatically started the task at that time, and scheduled the following run for 16:56:44.
-- The complete Host configurator file passed 14/14 in 48.32 seconds after both fixes.
+- A third observed RED proved the 15-minute task execution limit was shorter than a real scheduled cycle. The limit is now 30 minutes; the complete Host configurator file passed 15/15 in 57.44 seconds.
+- During containment the task was disabled, a naturally exited second attempt was confirmed, and the remaining stale orphan was terminated by exact PID. Post-recovery status reported 1228/1228 accounted, pending 0, silent loss 0.
 - Test integrity: one exact error-contract assertion was added; no safety assertion, fixture, mock, or expected success behavior was weakened.
 
 ## Residual Risk
 
 - Verification authority is agent-local, not CI or an independent review.
-- A Runner cycle spent roughly ten minutes in local Census/candidate preparation before model calls; the 15-minute task uses `IgnoreNew`, preventing overlap but potentially reducing effective cadence.
+- A Runner cycle can exceed the 15-minute trigger interval. The task now allows 30 minutes and uses `IgnoreNew`, so effective cadence can be 30 minutes when a prior cycle is still active.
 - Model charges were reserved-usage settlements because the App Runtime did not expose accepted actual-usage metadata for these calls.
 - Host configurator PowerShell scripts are repository deployment assets and are not members of the Runtime wheel; production was updated explicitly through the verified UAC transaction.
