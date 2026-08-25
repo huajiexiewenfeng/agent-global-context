@@ -4,7 +4,7 @@
 
 - title: AGC 0.4.2 release, immutable install, and automatic Capture rollout
 - flow_id: agc-0.4.2-auto-capture-rollout
-- status: executing
+- status: complete
 - change: Release the merged project-aware Capture implementation as Runtime 0.4.2, install it immutably, and enable the scheduled Runner with a 500000-token incremental ceiling every 15 minutes.
 - authorization: explicit user authorization on 2026-08-25 to send safe Capsules from new and pending Codex Sessions to OpenAI `gpt-5.6-sol`; no automatic formal-memory promotion.
 
@@ -32,7 +32,7 @@
 
 1. Source, package metadata, CLI, MCP, and installer probes report exactly `0.4.2`.
 2. Project-aware Capture regressions and release gates pass with artifacts under `D:\tmp_test`.
-3. Wheel and sdist contain required Runtime assets and no tests, Session data, production memory, or Census data.
+3. Wheel contains required Runtime assets and no tests; wheel and sdist contain no Session data, production memory, or Census data.
 4. Installer publishes a new content-addressed Runtime without mutating/removing the previous Runtime and updates the Codex App route transactionally.
 5. Installed source hashes match committed source and `pip check` passes.
 6. Live App status reports Runtime 0.4.2 after process reload; if the current App process remains on 0.4.1, Runner activation stops until restart.
@@ -55,16 +55,19 @@
 | source | done | explicit user release/install/Runner authorization | 2026-08-25 |
 | design | done | staged immutable install and exact-digest activation sequence | 2026-08-25 |
 | plan | done | `.llm-wiki/working-context/agc-0.4.2-auto-capture-rollout.md` | 2026-08-25 |
-| development | active | 0.4.2 version contract pending | 2026-08-25 |
-| testing | pending |  | 2026-08-25 |
-| archive | pending |  | 2026-08-25 |
+| development | done | release `b1c9629`; scheduler fail-closed `1563396`; active-session TimeTrigger `e83fdb9` | 2026-08-25 |
+| testing | passed-agent-local | 1349 full-suite tests; 582 focused tests; 14/14 Host configurator tests; installed/live/automatic-trigger evidence | 2026-08-25 |
+| archive | done | verification and handoff records for `agc-0.4.2-auto-capture-rollout` | 2026-08-25 |
 
 ## Risks And Controls
 
-- Current App process is still Runtime 0.4.1: install may require a user restart before live verification and activation.
+- Codex App was restarted and the live MCP route reports Runtime 0.4.2.
 - Enabling Runner exposes safe Capsules to the configured provider: explicit authorization and a 500000-token ceiling are recorded.
 - Existing backlog is large: task-aware bounded selection and one-worker concurrency remain unchanged.
 - Installation/config changes are transactional and retain the prior immutable Runtime and before-image backup.
+- The first Runner cycle spent about ten minutes in local Census/candidate preparation before model calls; scheduled `IgnoreNew` prevents overlap, but cycle latency remains a performance risk.
+- The existing Windows task required one UAC-assisted Action update because its ACL used the legacy local principal. Future registration failures now terminate and roll back instead of reporting false success.
+- A standalone TimeTrigger is required for activation inside an already logged-on session; production now has a LogonTrigger plus a 15-minute TimeTrigger with a non-null next run.
 
 ## Open Questions
 

@@ -117,3 +117,12 @@
 - Production read-only acceptance found 915 unique revisions, cold rebuild 26.172 seconds, hot reads 8.370/6.122 seconds, zero hot member reads, and zero formal-memory/observation/token/Extractor deltas.
 - Installed immutable Runtime 0.4.1 at `4f63831e...96bcf`. Codex config is updated; the current App task still holds the previous MCP process and requires restart before live-route closure.
 - On 2026-08-24 the user restarted Codex App. The live MCP returned Runtime 0.4.1 with the expected production binding, enabled `scanner_only`, paused false, 946/946 accounted keys, zero pending keys, and zero silent loss; the archive gate is closed.
+
+## 2026-08-25 — AGC 0.4.2 automatic Capture rollout
+
+- Released and immutably installed Runtime 0.4.2, then verified the live Codex App MCP route after restart.
+- Enabled the automatic Runner with one worker, a 500000-token incremental ceiling, a 15-minute `IgnoreNew` schedule, `gpt-5.6-sol`, and Hook/automatic formal-memory promotion disabled.
+- Final activation reported route/scanner/backfill/continuous Runner ready with no conflicts; Census accounting was 1214/1214 with zero pending and zero silent loss.
+- The first verification cycle settled 10 incremental calls, added one review-only Observation, and left all 26 formal memories byte-identical.
+- Fixed two Host configurator defects found during activation: scheduler registration errors now terminate/roll back, and an independent TimeTrigger starts the 15-minute cadence in the active Windows session. Two RED/GREEN cases and 14/14 focused tests passed; a real automatic start was observed.
+- GitHub push and GitHub Release remain intentionally excluded.
