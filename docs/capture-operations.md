@@ -30,7 +30,7 @@ The public MCP surface remains exactly `agc.read`, `agc.write`, and
 Use a synthetic Memory Root first. Keep a backup and verify `capture_status`
 after every transition.
 
-1. Install the quality-first formalization Runtime 0.4.1; this still leaves Capture off and does not automatically promote observations.
+1. Install the project-aware formalization Runtime 0.4.2; this still leaves Capture off and does not automatically promote observations.
 2. Audit the active AGC route and write one content-free activation-evidence
    JSON file. It contains only schema version, route counts, hash-match facts,
    Recall Gate result, Extractor capability enum, and Hook/Scheduler/Census
@@ -88,7 +88,7 @@ The exact `codex-app` selector searches only the bounded App Runtime location
 under `%LOCALAPPDATA%\OpenAI\Codex\bin`. It never falls back to PATH, an npm
 CLI, another model, the registry, or a network lookup. Missing, invalid, or
 ambiguous App Runtime candidates fail closed as Extractor unavailable. This
-selector remains Windows-only in Runtime 0.4.1; other platforms must keep an
+selector remains Windows-only in Runtime 0.4.2; other platforms must keep an
 explicit literal executable command.
 
 The resolved executable identity is included in backfill authorization. After
@@ -146,7 +146,7 @@ or several observations, and policy can suppress or quarantine them.
 
 ### Census catalog and task-aware batches
 
-Runtime 0.4.1 keeps immutable frozen Census runs as cold audit evidence and
+Runtime 0.4.2 keeps immutable frozen Census runs as cold audit evidence and
 derives a content-addressed `census-catalog` for normal reads. The first read
 after installation, restore, invalidation, or a missing catalog performs one
 strict cold rebuild. Later reads validate run manifests and load one canonical
