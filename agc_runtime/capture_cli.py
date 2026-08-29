@@ -12,6 +12,7 @@ from typing import Any
 
 from agc_runtime.capture_status_service import bind_capture_status, capture_status
 from agc_runtime.capture_store import CaptureStore, root_fingerprint
+from agc_runtime.capture_trace import record_capture_failure, record_capture_success
 from agc_runtime.contracts import ToolResponse
 from agc_runtime.paths import MemoryPaths
 from agc_runtime.runtime_config import load_runtime_config
@@ -27,12 +28,20 @@ def _emit(response: ToolResponse, *, exit_code: int) -> int:
     return exit_code
 
 
-def _failed(action: str, code: str, message: str, *, exit_code: int = 2) -> int:
+def _failed(
+    action: str,
+    code: str,
+    message: str,
+    *,
+    exit_code: int = 2,
+    data: dict[str, Any] | None = None,
+) -> int:
     return _emit(
         ToolResponse(
             tool=_TOOL,
             action=action,
             status="failed",
+            data={} if data is None else data,
             error={"code": code, "message": message},
         ),
         exit_code=exit_code,
@@ -585,20 +594,35 @@ def _run_retry(paths: MemoryPaths, receipt_id: str) -> int:
 def _run_runner(
     paths: MemoryPaths, *, action: str, maximum: int, scan_first: bool
 ) -> int:
+    trace_started_at = datetime.now(timezone.utc)
+
+    def failed(code: str, message: str, *, exit_code: int = 2) -> int:
+        trace_status = record_capture_failure(
+            action=action,
+            started_at=trace_started_at,
+            code=code,
+            message=message,
+        )
+        return _failed(
+            action,
+            code,
+            message,
+            exit_code=exit_code,
+            data={"trace_status": trace_status},
+        )
+
     try:
         config = load_runtime_config(paths)
         capture = config.capture
         if not capture.enabled:
-            return _failed(action, "capture_disabled", "Capture is disabled")
+            return failed("capture_disabled", "Capture is disabled")
         if capture.mode != "runner":
-            return _failed(
-                action,
+            return failed(
                 "capture_mode_unsupported",
                 "Capture mode is not runner",
             )
         if not capture.sources:
-            return _failed(
-                action,
+            return failed(
                 "capture_sources_unconfigured",
                 "Capture sources are not configured",
             )
@@ -631,22 +655,30 @@ def _run_runner(
             if str(error) in {"capture_extractor_unavailable"}
             else "capture_busy"
         )
-        return _failed(action, code, "Capture Runner did not start", exit_code=1)
+        return failed(code, "Capture Runner did not start", exit_code=1)
     except OSError:
-        return _failed(
-            action,
+        return failed(
             "capture_source_failed",
             "Capture source is unavailable",
             exit_code=1,
         )
     except (KeyError, TypeError, UnicodeError, ValueError):
-        return _failed(
-            action,
+        return failed(
             "capture_integrity_failed",
             "Capture Runner state failed integrity validation",
             exit_code=1,
         )
-    data: dict[str, Any] = {"once": True, **report.to_mapping()}
+    report_mapping = report.to_mapping()
+    trace_status = record_capture_success(
+        action=action,
+        started_at=trace_started_at,
+        report=report_mapping,
+    )
+    data: dict[str, Any] = {
+        "once": True,
+        **report_mapping,
+        "trace_status": trace_status,
+    }
     if scan is not None:
         data["scan"] = _scan_mapping(scan)
     return _emit(

@@ -71,6 +71,35 @@ Relevant configuration controls include `capture.sources`,
 Provider selection, and Runner budget. Exclusions are applied before new
 observations are accepted; they are not a provider-side deletion mechanism.
 
+### Optional Capture tracing
+
+Scheduled Capture Runner processes execute outside Codex Turns, so Codex Hooks
+cannot observe their batch health. Install AGC with its optional Trace support
+and explicitly set `AGENT_TRACE_DB` for the Runner process to record one
+metadata-only Trace root per useful `agc-capture run` or `cycle` invocation:
+
+```powershell
+python -m pip install ".[trace]"
+$env:AGENT_TRACE_DB = ".agent-runtime/trace.sqlite3"
+agc-capture cycle --root MEMORY_ROOT --once --max-items 5
+```
+
+The CLI response reports one of four states:
+
+- `recorded`: the intended start and terminal events were persisted;
+- `suppressed`: a successful cycle had no attempted, completed, failed,
+  deferred, contended, observed, or charged activity;
+- `disabled`: `AGENT_TRACE_DB` was absent, so Trace Runtime was not imported;
+- `unavailable`: the optional package or store was unavailable, while Capture
+  retained its original result and exit code.
+
+Trace stores only the stable action, aggregate counters, duration, and status
+deltas. It does not receive prompts, responses, task or project identifiers,
+source paths, Capsules, observations, memory content, Extractor input/output,
+raw exceptions, credentials, or environment contents. Trace availability never
+controls whether Capture succeeds. Production installer or scheduled-task
+changes remain a separate operator action.
+
 ### Codex App Runtime on Windows
 
 When Codex App is the primary Session host, bind Capture to the App-managed

@@ -13,7 +13,8 @@ import sys
 import pytest
 
 from agc_runtime.capture_contracts import CaptureReceipt
-from agc_runtime.capture_cli import _extractor_command
+from agc_runtime.capture_cli import _extractor_command, _run_runner
+from agc_runtime.capture_runner import RunnerReport
 from agc_runtime.capture_transaction import read_json
 from agc_runtime.paths import MemoryPaths
 
@@ -54,6 +55,30 @@ def _payload(result: subprocess.CompletedProcess[str]) -> dict[str, object]:
     assert result.stderr == ""
     assert len(result.stdout.splitlines()) == 1
     return json.loads(result.stdout)
+
+
+def _runner_report(**changes: object) -> RunnerReport:
+    values: dict[str, object] = {
+        "attempted_count": 0,
+        "completed_count": 0,
+        "failed_count": 0,
+        "deferred_budget_count": 0,
+        "lease_contention_count": 0,
+        "reserved_attempt_count": 0,
+        "extractor_call_count": 0,
+        "observation_count": 0,
+        "charged_tokens": 0,
+        "silent_loss_count": 0,
+        "backlog_count": 0,
+        "oldest_unresolved_at": None,
+        "attempt_count_delta": 0,
+        "status_deltas": (),
+        "run_time_ms": 1,
+        "source_bytes_read": 0,
+        "peak_process_count": 0,
+    }
+    values.update(changes)
+    return RunnerReport(**values)
 
 
 def _write_config(
@@ -536,3 +561,108 @@ def test_activation_cli_uses_exact_runtime_digest_and_rejects_invalid_evidence(
     assert invalid.returncode != 0
     assert _payload(invalid)["error"]["code"] == "invalid_activation_evidence"
     assert "private" not in invalid.stdout
+
+
+@pytest.mark.parametrize("action", ["run", "cycle"])
+def test_runner_success_exposes_disabled_trace_status_without_changing_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    action: str,
+) -> None:
+    memory_root = tmp_path / "memory"
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    _write_config(memory_root, source_root, mode="runner")
+    report = _runner_report(completed_count=1)
+    monkeypatch.delenv("AGENT_TRACE_DB", raising=False)
+    monkeypatch.setattr(
+        "agc_runtime.capture_runner.CaptureRunner.run_once",
+        lambda self, **kwargs: report,
+    )
+
+    exit_code = _run_runner(
+        MemoryPaths.from_root(memory_root),
+        action=action,
+        maximum=1,
+        scan_first=False,
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert payload["status"] == "accepted"
+    assert payload["data"]["completed_count"] == 1
+    assert payload["data"]["trace_status"] == "disabled"
+
+
+def test_runner_failure_exposes_trace_status_without_changing_sanitized_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    memory_root = tmp_path / "memory"
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    _write_config(memory_root, source_root, mode="runner")
+    monkeypatch.delenv("AGENT_TRACE_DB", raising=False)
+
+    def fail_runner(*args: object, **kwargs: object) -> RunnerReport:
+        raise RuntimeError("capture_extractor_unavailable")
+
+    monkeypatch.setattr(
+        "agc_runtime.capture_runner.CaptureRunner.run_once",
+        fail_runner,
+    )
+
+    exit_code = _run_runner(
+        MemoryPaths.from_root(memory_root),
+        action="cycle",
+        maximum=1,
+        scan_first=False,
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 1
+    assert payload["status"] == "failed"
+    assert payload["error"] == {
+        "code": "capture_extractor_unavailable",
+        "message": "Capture Runner did not start",
+    }
+    assert payload["data"] == {"trace_status": "disabled"}
+
+
+def test_runner_passes_timezone_aware_datetime_to_trace_bridge(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    memory_root = tmp_path / "memory"
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    _write_config(memory_root, source_root, mode="runner")
+    report = _runner_report(completed_count=1)
+    observed: dict[str, object] = {}
+    monkeypatch.setattr(
+        "agc_runtime.capture_runner.CaptureRunner.run_once",
+        lambda self, **kwargs: report,
+    )
+
+    def record(**values: object) -> str:
+        observed.update(values)
+        return "recorded"
+
+    monkeypatch.setattr("agc_runtime.capture_cli.record_capture_success", record)
+
+    exit_code = _run_runner(
+        MemoryPaths.from_root(memory_root),
+        action="cycle",
+        maximum=1,
+        scan_first=False,
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert payload["data"]["trace_status"] == "recorded"
+    assert isinstance(observed["started_at"], datetime)
+    assert observed["started_at"].tzinfo is not None
+    assert observed["started_at"].utcoffset() is not None
