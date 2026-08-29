@@ -3,7 +3,7 @@
 ## Summary
 
 - flow_id: `agc-capture-trace-bridge`
-- status: design-confirmed
+- status: implemented-verified-local
 - why: Observe scheduled Capture batch health in Trace without coupling AGC memory behavior to Trace availability or exporting memory content.
 - original_path: `docs/superpowers/specs/2026-08-29-agc-capture-trace-bridge-design.md`
 
@@ -48,7 +48,7 @@ Add an optional, metadata-only, failure-open Trace bridge at the `agc-capture ru
 - dependency_type: optional runtime library
 - required_contract: Trace Runtime `0.1.x` exports `EventStore`, `PrincipalRef`, `TraceService`, `create_event`, and `resolve_db_path`, and accepts runtime-sourced `trace.root.*` events
 - evidence: source-verified against the current Trace Runtime public exports, event validation, store, and service implementation
-- verification_status: source-verified
+- verification_status: local-smoke-verified
 - impact_on_change: supplies optional event persistence only; AGC remains functional without it
 - fallback_or_handoff: return `trace_status: unavailable` and preserve the original Capture result
 
@@ -64,11 +64,12 @@ Add an optional, metadata-only, failure-open Trace bridge at the `agc-capture ru
 |---|---|---|---|
 | source | done | current Capture CLI/Runner reports and source-verified Trace v0.1 API | 2026-08-29 |
 | design | done | user-confirmed optional failure-open design; linked specification | 2026-08-29 |
-| plan | pending | implementation plan not yet written | 2026-08-29 |
-| development | pending | implementation not started | 2026-08-29 |
-| testing | pending | TDD and cross-repository smoke not started | 2026-08-29 |
-| archive | pending | handoff not written | 2026-08-29 |
+| plan | done | `docs/superpowers/plans/2026-08-29-agc-capture-trace-bridge.md`; commit `d18a298` | 2026-08-29 |
+| development | done | optional bridge, CLI boundary, package extra, operations docs; commit `6780ffa` | 2026-08-29 |
+| testing | done | `.llm-wiki/verification/2026-08-29-agc-capture-trace-bridge.md` | 2026-08-29 |
+| archive | done | `.llm-wiki/handoff/2026-08-29-agc-capture-trace-bridge-handoff.md` | 2026-08-29 |
 
 ## Open Questions
 
-- Production installation and scheduled-task environment activation require later explicit confirmation.
+- Production installation, scheduled-task environment activation, versioning,
+  publishing, and GitHub push require later explicit confirmation.
