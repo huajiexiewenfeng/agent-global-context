@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Mapping
-from datetime import datetime, timezone
+from collections.abc import Mapping, Sequence
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Literal
 from uuid import uuid4
 
 from agc_runtime.capture_contracts import CAPTURE_STATUSES
+from agc_runtime.capture_eval_evidence import CaptureItemTraceReport
 
 TraceStatus = Literal["disabled", "suppressed", "recorded", "unavailable"]
 
@@ -37,6 +38,20 @@ _SIGNIFICANT_FIELDS = frozenset(
         "lease_contention_count",
         "observation_count",
         "charged_tokens",
+    }
+)
+_ITEM_FIELDS = frozenset(
+    {
+        "schema_version",
+        "outcome",
+        "reason_code",
+        "observation_count",
+        "filtered_counts",
+        "duplicate_suppression_count",
+        "token_usage",
+        "extractor_version",
+        "taxonomy_version",
+        "evidence_ref",
     }
 )
 
@@ -81,6 +96,26 @@ def _success_payload(action: str, report: Mapping[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def _validated_items(items: Sequence[CaptureItemTraceReport]) -> tuple[CaptureItemTraceReport, ...]:
+    if isinstance(items, (str, bytes)) or not isinstance(items, Sequence):
+        raise TypeError("trace_items_invalid")
+    values = tuple(items)
+    if len(values) > 100:
+        raise ValueError("trace_items_invalid")
+    for item in values:
+        if not isinstance(item, CaptureItemTraceReport):
+            raise TypeError("trace_items_invalid")
+        if not isinstance(item.payload, Mapping) or frozenset(item.payload) != _ITEM_FIELDS:
+            raise ValueError("trace_items_invalid")
+        try:
+            observed = datetime.fromisoformat(item.occurred_at.replace("Z", "+00:00"))
+        except (AttributeError, TypeError, ValueError) as error:
+            raise ValueError("trace_items_invalid") from error
+        if not item.occurred_at.endswith("Z") or observed.utcoffset() != timedelta(0):
+            raise ValueError("trace_items_invalid")
+    return values
+
+
 def _emit_root(
     *,
     database_value: str,
@@ -88,6 +123,7 @@ def _emit_root(
     finished_at: datetime,
     terminal_event_type: str,
     terminal_payload: Mapping[str, Any],
+    items: Sequence[CaptureItemTraceReport] = (),
 ) -> TraceStatus:
     if not database_value:
         return "unavailable"
@@ -119,6 +155,20 @@ def _emit_root(
                 clock=lambda: started_at,
             )
         )
+        for item in items:
+            observed = datetime.fromisoformat(item.occurred_at.replace("Z", "+00:00"))
+            service.emit(
+                create_event(
+                    trace_id=trace_id,
+                    span_id=span_id,
+                    parent_span_id=None,
+                    event_type="agc.capture.item.completed",
+                    source="principal",
+                    principal_ref=principal,
+                    payload=item.payload,
+                    clock=lambda observed=observed: observed,
+                )
+            )
         service.emit(
             create_event(
                 trace_id=trace_id,
@@ -141,6 +191,7 @@ def record_capture_success(
     action: str,
     started_at: datetime,
     report: Mapping[str, Any],
+    items: Sequence[CaptureItemTraceReport] = (),
     finished_at: datetime | None = None,
 ) -> TraceStatus:
     """Record one useful successful cycle without exposing Capture content."""
@@ -148,6 +199,7 @@ def record_capture_success(
     if _TRACE_ENV not in os.environ:
         return "disabled"
     try:
+        checked_items = _validated_items(items)
         if not _is_significant(report):
             return "suppressed"
         terminal_payload = _success_payload(action, report)
@@ -159,6 +211,7 @@ def record_capture_success(
         finished_at=finished_at or _now(),
         terminal_event_type="trace.root.completed",
         terminal_payload=terminal_payload,
+        items=checked_items,
     )
 
 

@@ -673,6 +673,7 @@ def _run_runner(
         action=action,
         started_at=trace_started_at,
         report=report_mapping,
+        items=report.trace_items,
     )
     data: dict[str, Any] = {
         "once": True,

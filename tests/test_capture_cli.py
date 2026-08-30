@@ -13,6 +13,7 @@ import sys
 import pytest
 
 from agc_runtime.capture_contracts import CaptureReceipt
+from agc_runtime.capture_eval_evidence import CaptureItemTraceReport
 from agc_runtime.capture_cli import _extractor_command, _run_runner
 from agc_runtime.capture_runner import RunnerReport
 from agc_runtime.capture_transaction import read_json
@@ -640,7 +641,11 @@ def test_runner_passes_timezone_aware_datetime_to_trace_bridge(
     source_root = tmp_path / "source"
     source_root.mkdir()
     _write_config(memory_root, source_root, mode="runner")
-    report = _runner_report(completed_count=1)
+    item = CaptureItemTraceReport(
+        occurred_at="2026-08-30T08:00:00Z",
+        payload={"evidence_ref": {"ref": "opaque"}},
+    )
+    report = _runner_report(completed_count=1, trace_items=(item,))
     observed: dict[str, object] = {}
     monkeypatch.setattr(
         "agc_runtime.capture_runner.CaptureRunner.run_once",
@@ -666,3 +671,6 @@ def test_runner_passes_timezone_aware_datetime_to_trace_bridge(
     assert isinstance(observed["started_at"], datetime)
     assert observed["started_at"].tzinfo is not None
     assert observed["started_at"].utcoffset() is not None
+    assert observed["items"] == (item,)
+    assert "trace_items" not in payload["data"]
+    assert "evidence_ref" not in repr(payload["data"])

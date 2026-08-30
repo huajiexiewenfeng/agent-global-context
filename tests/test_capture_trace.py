@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import builtins
 import sys
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -16,10 +17,36 @@ from agc_runtime.capture_trace import (
     record_capture_failure,
     record_capture_success,
 )
+from agc_runtime.capture_eval_evidence import CaptureItemTraceReport
 
 STARTED_AT = datetime(2026, 8, 29, 8, 0, tzinfo=timezone.utc)
 FINISHED_AT = STARTED_AT + timedelta(seconds=3)
 SENTINEL = "private-session-content-must-not-enter-trace"
+
+
+def safe_item_report() -> CaptureItemTraceReport:
+    return CaptureItemTraceReport(
+        occurred_at="2026-08-29T08:00:02Z",
+        payload={
+            "schema_version": "agc.capture.item-trace.v1",
+            "outcome": "collected",
+            "reason_code": "observations_collected",
+            "observation_count": 1,
+            "filtered_counts": {"safety": 0, "policy": 0, "over_limit": 0},
+            "duplicate_suppression_count": 0,
+            "token_usage": {"input_tokens": 100, "output_tokens": 50, "total_tokens": 150},
+            "extractor_version": "0.4.3",
+            "taxonomy_version": "taxonomy-v1",
+            "evidence_ref": {
+                "schema_version": "eval.evidence-ref.v0.1",
+                "provider": "agc",
+                "kind": "capture-item",
+                "ref": "cr_" + "a" * 64,
+                "digest": "sha256:" + "b" * 64,
+                "version": "1",
+            },
+        },
+    )
 
 
 def _report(**changes: Any) -> dict[str, Any]:
@@ -201,6 +228,83 @@ def test_significant_success_records_one_allowlisted_root(
         "status_deltas": {"complete": 1, "failed": 1},
     }
     assert SENTINEL not in repr(events)
+
+
+def test_significant_success_records_content_free_item_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AGENT_TRACE_DB", r"D:\tmp_test\trace.sqlite3")
+    events, _resolved = _install_fake_runtime(monkeypatch)
+    item = safe_item_report()
+
+    status = record_capture_success(
+        action="cycle",
+        started_at=STARTED_AT,
+        finished_at=FINISHED_AT,
+        report=_report(completed_count=1, observation_count=1),
+        items=(item,),
+    )
+
+    assert status == "recorded"
+    assert [event["event_type"] for event in events] == [
+        "trace.root.started",
+        "agc.capture.item.completed",
+        "trace.root.completed",
+    ]
+    assert events[1]["source"] == "principal"
+    assert events[1]["trace_id"] == events[0]["trace_id"] == events[2]["trace_id"]
+    assert events[1]["span_id"] == events[0]["span_id"] == events[2]["span_id"]
+    assert events[1]["timestamp"] == datetime.fromisoformat(
+        item.occurred_at.replace("Z", "+00:00")
+    )
+    assert events[1]["payload"] == item.payload
+    assert SENTINEL not in repr(events)
+
+
+def test_item_batch_is_bounded_and_malformed_payload_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AGENT_TRACE_DB", r"D:\tmp_test\trace.sqlite3")
+    _install_fake_runtime(monkeypatch)
+    item = safe_item_report()
+    assert (
+        record_capture_success(
+            action="cycle",
+            started_at=STARTED_AT,
+            finished_at=FINISHED_AT,
+            report=_report(completed_count=1),
+            items=(item,) * 101,
+        )
+        == "unavailable"
+    )
+    malformed = replace(item, payload={"raw": SENTINEL})
+    assert (
+        record_capture_success(
+            action="cycle",
+            started_at=STARTED_AT,
+            finished_at=FINISHED_AT,
+            report=_report(completed_count=1),
+            items=(malformed,),
+        )
+        == "unavailable"
+    )
+
+
+def test_item_emit_failure_never_raises_into_capture(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AGENT_TRACE_DB", r"D:\tmp_test\trace.sqlite3")
+    _install_fake_runtime(monkeypatch, fail_emit_at=2)
+    assert (
+        record_capture_success(
+            action="cycle",
+            started_at=STARTED_AT,
+            finished_at=FINISHED_AT,
+            report=_report(completed_count=1),
+            items=(safe_item_report(),),
+        )
+        == "unavailable"
+    )
 
 
 def test_failure_records_only_sanitized_cli_error(
