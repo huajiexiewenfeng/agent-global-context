@@ -79,12 +79,21 @@ $repository = (Resolve-Path "D:\src\agent-global-context").Path
   -InstallRoot "$env:USERPROFILE\.agent-global-context-runtime"
 ```
 
+Runtime 0.4.3 可在上述命令中增加
+`-EnableCaptureTrace -TraceRuntimeRoot "D:\src\agent-runtime-modules"`，为自动
+Capture 启用仅含聚合元数据的 Trace。在 Trace Runtime 包正式发布前，本地源码
+Root 是必需参数。
+默认数据库是
+`$env:USERPROFILE\.agent-trace-runtime\trace.sqlite3`；只有需要覆盖默认值时
+才增加 `-TraceDatabase "D:\path\trace.sqlite3"`。该选项记录 Capture 批次
+健康状态，不记录记忆或 Session 正文。
+
 3. 重启 Codex，并新建一个 task。
 
 安装器最终只保留一个公开 `agent-global-context` Skill，并通过一个 MCP Server
 注册且仅注册三个工具：`agc.read`、`agc.write` 和 `agc.admin`。被替换的当前
 文件会进入唯一备份；安装器可安全重复执行。质量优先记忆正式化 Runtime 版本为
-`0.4.1`；安装器还会在 `agc-mcp.cmd` 旁发布稳定的
+`0.4.3`；安装器还会在 `agc-mcp.cmd` 旁发布稳定的
 `agc-capture.cmd` 与 `agc-capture-hook.cmd` 本地入口。
 
 安装器不会迁移 Memory，不会启用 Codex 任务采集或 backfill，也不会自动晋升

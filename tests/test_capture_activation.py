@@ -30,7 +30,7 @@ def _unload_activation_module():
 def _status(*, enabled: bool = True, mode: str = "scanner_only") -> dict:
     return {
         "schema_version": 2,
-        "runtime": {"version": "0.4.2", "sha256": "1" * 64},
+        "runtime": {"version": "0.4.3", "sha256": "1" * 64},
         "config_source": {"kind": "memory_root_config", "sha256": "2" * 64},
         "memory_root": {
             "fingerprint": "3" * 64,

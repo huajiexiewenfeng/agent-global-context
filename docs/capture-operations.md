@@ -30,7 +30,7 @@ The public MCP surface remains exactly `agc.read`, `agc.write`, and
 Use a synthetic Memory Root first. Keep a backup and verify `capture_status`
 after every transition.
 
-1. Install the project-aware formalization Runtime 0.4.2; this still leaves Capture off and does not automatically promote observations.
+1. Install the project-aware formalization Runtime 0.4.3; this still leaves Capture off and does not automatically promote observations.
 2. Audit the active AGC route and write one content-free activation-evidence
    JSON file. It contains only schema version, route counts, hash-match facts,
    Recall Gate result, Extractor capability enum, and Hook/Scheduler/Census
@@ -74,13 +74,27 @@ observations are accepted; they are not a provider-side deletion mechanism.
 ### Optional Capture tracing
 
 Scheduled Capture Runner processes execute outside Codex Turns, so Codex Hooks
-cannot observe their batch health. Install AGC with its optional Trace support
-and explicitly set `AGENT_TRACE_DB` for the Runner process to record one
-metadata-only Trace root per useful `agc-capture run` or `cycle` invocation:
+cannot observe their batch health. In Runtime 0.4.3, add
+`-EnableCaptureTrace -TraceRuntimeRoot <agent-runtime-modules-root>` to the
+normal `install-local.ps1` command. The local source root is required until
+Trace Runtime packages are published. The installer publishes a distinct
+immutable Runtime containing local Contracts + Trace and AGC's `mcp,trace`
+extras, then writes `AGENT_TRACE_DB` only into the stable Capture launcher.
+The selected Python must be 3.12 or newer for Trace Runtime `0.1.0`.
+Its default value is
+`$env:USERPROFILE\.agent-trace-runtime\trace.sqlite3`; an explicit absolute
+path can be supplied with `-TraceDatabase` alongside the enable switch.
+
+The resulting launcher records one metadata-only Trace root per useful
+`agc-capture run` or `cycle` invocation. For a temporary developer-only shell,
+the equivalent direct invocation remains:
 
 ```powershell
-python -m pip install ".[trace]"
-$env:AGENT_TRACE_DB = ".agent-runtime/trace.sqlite3"
+python -m pip install `
+  "D:\src\agent-runtime-modules\contracts" `
+  "D:\src\agent-runtime-modules\runtimes\trace" `
+  ".[mcp,trace]"
+$env:AGENT_TRACE_DB = "$env:USERPROFILE\.agent-trace-runtime\trace.sqlite3"
 agc-capture cycle --root MEMORY_ROOT --once --max-items 5
 ```
 
@@ -97,8 +111,8 @@ Trace stores only the stable action, aggregate counters, duration, and status
 deltas. It does not receive prompts, responses, task or project identifiers,
 source paths, Capsules, observations, memory content, Extractor input/output,
 raw exceptions, credentials, or environment contents. Trace availability never
-controls whether Capture succeeds. Production installer or scheduled-task
-changes remain a separate operator action.
+controls whether Capture succeeds. The installer does not change the scheduled
+task definition; it keeps targeting the stable Capture launcher.
 
 ### Codex App Runtime on Windows
 
@@ -117,7 +131,7 @@ The exact `codex-app` selector searches only the bounded App Runtime location
 under `%LOCALAPPDATA%\OpenAI\Codex\bin`. It never falls back to PATH, an npm
 CLI, another model, the registry, or a network lookup. Missing, invalid, or
 ambiguous App Runtime candidates fail closed as Extractor unavailable. This
-selector remains Windows-only in Runtime 0.4.2; other platforms must keep an
+selector remains Windows-only in Runtime 0.4.3; other platforms must keep an
 explicit literal executable command.
 
 The resolved executable identity is included in backfill authorization. After
@@ -175,7 +189,7 @@ or several observations, and policy can suppress or quarantine them.
 
 ### Census catalog and task-aware batches
 
-Runtime 0.4.2 keeps immutable frozen Census runs as cold audit evidence and
+Runtime 0.4.3 keeps immutable frozen Census runs as cold audit evidence and
 derives a content-addressed `census-catalog` for normal reads. The first read
 after installation, restore, invalidation, or a missing catalog performs one
 strict cold rebuild. Later reads validate run manifests and load one canonical

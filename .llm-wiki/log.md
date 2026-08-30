@@ -128,3 +128,19 @@
 - A real scheduled cycle then exposed a 15-minute execution-limit collision that orphaned children and allowed the next trigger to start another scan. The task was quiesced, stale processes were removed after exact PID checks, accounting remained lossless, and `fc00887` raised the limit to 30 minutes with a third RED/GREEN contract; Host tests pass 15/15.
 - The repaired task then completed a real 17:11:45–17:32:24 automatic cycle. It stayed single-instance across the 17:26:45 trigger, used Codex App `gpt-5.6-sol`, exited with result 0 and no leftover processes, added five isolated Observations, and left all 26 formal memories byte-identical; final accounting was 1238/1238 with zero pending or silent loss.
 - GitHub push and GitHub Release remain intentionally excluded.
+
+## 2026-08-30 — AGC 0.4.3 Capture Trace activation source
+
+- Added an opt-in `mcp+trace` local-install profile that consumes the current
+  local Runtime Contracts and Trace Runtime packages and binds their contents
+  into a distinct immutable deployment key.
+- Kept default installation, MCP, Hook, scheduler XML, Capture semantics, and
+  production 0.4.2 unchanged; only an enabled Capture launcher receives
+  `AGENT_TRACE_DB`.
+- TDD covered invalid options, Windows absolute-path validation, real Contracts
+  layout, launcher isolation, and immutable profile separation.
+- Built AGC 0.4.3 and completed an isolated real cross-repository install under
+  `D:\tmp_test`; Trace Doctor passed and a controlled failed Capture cycle
+  persisted only a sanitized two-event root.
+- Production installation, live scheduled-cycle acceptance, and GitHub push
+  remain pending explicit authorization.

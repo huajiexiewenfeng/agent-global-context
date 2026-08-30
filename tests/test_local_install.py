@@ -94,6 +94,64 @@ def _create_runtime_repository(root: Path) -> Path:
     return repository
 
 
+def _create_trace_runtime_repository(root: Path) -> Path:
+    repository = root / "trace-runtime"
+    _write_utf8(
+        repository / "contracts" / "pyproject.toml",
+        """[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-runtime-contracts"
+version = "0.1.0"
+requires-python = ">=3.10"
+
+[tool.setuptools]
+packages = ["agent_runtime_contracts"]
+package-dir = {agent_runtime_contracts = "."}
+""",
+    )
+    _write_utf8(
+        repository / "contracts" / "__init__.py",
+        "__version__ = \"0.1.0\"\n",
+    )
+    _write_utf8(
+        repository / "contracts" / "core" / "principal.schema.json",
+        "{}\n",
+    )
+    _write_utf8(
+        repository / "contracts" / "trace" / "event.schema.json",
+        "{}\n",
+    )
+    _write_utf8(
+        repository / "runtimes" / "trace" / "pyproject.toml",
+        """[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-trace-runtime"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = ["agent-runtime-contracts>=0.1,<0.2"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+""",
+    )
+    _write_utf8(
+        repository
+        / "runtimes"
+        / "trace"
+        / "src"
+        / "agent_trace_runtime"
+        / "__init__.py",
+        "__version__ = \"0.1.0\"\n",
+    )
+    return repository
+
+
 def _create_active_install(root: Path) -> tuple[Path, Path]:
     skills = root / "active-skills"
     skills.mkdir()
@@ -124,6 +182,9 @@ def _invoke(
     powershell: str | None = None,
     check: bool = True,
     skip_runtime_install: bool = True,
+    enable_capture_trace: bool = False,
+    trace_runtime_root: Path | None = None,
+    trace_database: Path | None = None,
 ) -> tuple[subprocess.CompletedProcess[bytes], dict[str, object] | None]:
     command = [
         powershell or _powershell(),
@@ -145,6 +206,12 @@ def _invoke(
     ]
     if skip_runtime_install:
         command.append("-SkipRuntimeInstall")
+    if enable_capture_trace:
+        command.append("-EnableCaptureTrace")
+    if trace_runtime_root is not None:
+        command.extend(("-TraceRuntimeRoot", str(trace_runtime_root)))
+    if trace_database is not None:
+        command.extend(("-TraceDatabase", str(trace_database)))
     process_env = os.environ.copy()
     if env:
         process_env.update(env)
@@ -173,11 +240,194 @@ def test_installer_accepts_explicit_python_executable_without_test_environment()
     assert text.index("$PythonExecutable") < text.index("$env:AGC_INSTALL_TEST_PYTHON")
 
 
-def test_runtime_deployment_key_binds_the_selected_python_executable():
+def test_runtime_deployment_key_binds_python_and_install_profile():
     text = SCRIPT.read_text(encoding="utf-8")
-    assert "param([string]$Repository, [string]$PythonExecutable)" in text
+    assert (
+        "param(\n"
+        "        [string]$Repository,\n"
+        "        [string]$PythonExecutable,\n"
+        "        [string]$InstallProfile,\n"
+        "        [string]$TraceRuntimeRoot\n"
+        "    )"
+    ) in text
     assert 'Get-FileHash -LiteralPath $PythonExecutable -Algorithm SHA256' in text
-    assert 'Get-RuntimeDeploymentKey `\n            -Repository $resolvedRepository `\n            -PythonExecutable $selectedPythonExecutable' in text
+    assert '$records.Add("__profile__`0$InstallProfile")' in text
+    assert '"__trace_source__/' in text
+    assert (
+        "Get-RuntimeDeploymentKey `\n"
+        "            -Repository $resolvedRepository `\n"
+        "            -PythonExecutable $selectedPythonExecutable `\n"
+        "            -InstallProfile $runtimeInstallProfile `\n"
+        "            -TraceRuntimeRoot $resolvedTraceRuntimeRoot"
+    ) in text
+
+
+def test_capture_trace_activation_changes_only_capture_launcher(tmp_path: Path):
+    repository = _create_repository(tmp_path)
+    skills, config = _create_active_install(tmp_path)
+    memory = tmp_path / "memory"
+    install = tmp_path / "runtime"
+    trace_runtime_root = _create_trace_runtime_repository(tmp_path)
+    trace_database = tmp_path / "trace%store" / "trace.sqlite3"
+
+    _, result = _invoke(
+        repository,
+        skills,
+        config,
+        memory,
+        install,
+        enable_capture_trace=True,
+        trace_runtime_root=trace_runtime_root,
+        trace_database=trace_database,
+    )
+
+    assert result is not None
+    mcp_executable = Path(str(result["mcp_executable"]))
+    capture_executable = Path(str(result["capture_executable"]))
+    hook_executable = Path(str(result["capture_hook_executable"]))
+    assert _strict_utf8_without_bom(Path(str(result["launcher"]))) == (
+        f'@"{mcp_executable}" %*\n'
+    )
+    assert _strict_utf8_without_bom(Path(str(result["capture_hook_launcher"]))) == (
+        f'@"{hook_executable}" %*\n'
+    )
+    escaped_database = str(trace_database.resolve()).replace("%", "%%")
+    assert _strict_utf8_without_bom(Path(str(result["capture_launcher"]))) == (
+        f'@set "AGENT_TRACE_DB={escaped_database}"\n'
+        f'@"{capture_executable}" %*\n'
+    )
+
+
+def test_trace_database_without_activation_fails_before_mutation(tmp_path: Path):
+    repository = _create_repository(tmp_path)
+    skills, config = _create_active_install(tmp_path)
+    memory = tmp_path / "memory"
+    install = tmp_path / "runtime"
+    before_config = config.read_bytes()
+    before_skills = _tree_snapshot(skills)
+
+    completed, result = _invoke(
+        repository,
+        skills,
+        config,
+        memory,
+        install,
+        trace_database=tmp_path / "trace.sqlite3",
+        check=False,
+    )
+
+    assert completed.returncode != 0
+    assert result is None
+    assert b"TraceDatabase requires EnableCaptureTrace" in completed.stderr
+    assert config.read_bytes() == before_config
+    assert _tree_snapshot(skills) == before_skills
+    assert not install.exists()
+
+
+def test_capture_trace_rejects_drive_relative_database_path(tmp_path: Path):
+    repository = _create_repository(tmp_path)
+    skills, config = _create_active_install(tmp_path)
+    trace_runtime_root = _create_trace_runtime_repository(tmp_path)
+
+    completed, result = _invoke(
+        repository,
+        skills,
+        config,
+        tmp_path / "memory",
+        tmp_path / "runtime",
+        enable_capture_trace=True,
+        trace_runtime_root=trace_runtime_root,
+        trace_database=Path("D:trace.sqlite3"),
+        check=False,
+    )
+
+    assert completed.returncode != 0
+    assert result is None
+    assert b"TraceDatabase must be an absolute path" in completed.stderr
+
+
+def test_capture_trace_requires_a_local_trace_runtime_root(tmp_path: Path):
+    repository = _create_repository(tmp_path)
+    skills, config = _create_active_install(tmp_path)
+
+    completed, result = _invoke(
+        repository,
+        skills,
+        config,
+        tmp_path / "memory",
+        tmp_path / "runtime",
+        enable_capture_trace=True,
+        check=False,
+    )
+
+    assert completed.returncode != 0
+    assert result is None
+    assert b"EnableCaptureTrace requires TraceRuntimeRoot" in completed.stderr
+
+
+def test_trace_runtime_root_without_activation_fails_before_mutation(
+    tmp_path: Path,
+):
+    repository = _create_repository(tmp_path)
+    skills, config = _create_active_install(tmp_path)
+    trace_runtime_root = _create_trace_runtime_repository(tmp_path)
+
+    completed, result = _invoke(
+        repository,
+        skills,
+        config,
+        tmp_path / "memory",
+        tmp_path / "runtime",
+        trace_runtime_root=trace_runtime_root,
+        check=False,
+    )
+
+    assert completed.returncode != 0
+    assert result is None
+    assert b"TraceRuntimeRoot requires EnableCaptureTrace" in completed.stderr
+
+
+def test_capture_trace_uses_a_distinct_immutable_runtime_profile(tmp_path: Path):
+    repository = _create_runtime_repository(tmp_path)
+    skills, config = _create_active_install(tmp_path)
+    memory = tmp_path / "memory"
+    install = tmp_path / "runtime"
+    trace_runtime_root = _create_trace_runtime_repository(tmp_path)
+    install_env = {
+        "AGC_INSTALL_TEST_PIP_NO_DEPS": "1",
+        "AGC_INSTALL_TEST_PYTHON": sys.executable,
+    }
+
+    _, default_result = _invoke(
+        repository,
+        skills,
+        config,
+        memory,
+        install,
+        env=install_env,
+        skip_runtime_install=False,
+    )
+    _, trace_result = _invoke(
+        repository,
+        skills,
+        config,
+        memory,
+        install,
+        env=install_env,
+        skip_runtime_install=False,
+        enable_capture_trace=True,
+        trace_runtime_root=trace_runtime_root,
+        trace_database=tmp_path / "trace.sqlite3",
+    )
+
+    assert default_result is not None
+    assert trace_result is not None
+    default_venv = Path(str(default_result["mcp_executable"])).parents[1]
+    trace_venv = Path(str(trace_result["mcp_executable"])).parents[1]
+    assert trace_venv != default_venv
+    assert default_venv.is_dir()
+    assert trace_venv.is_dir()
+    assert set((install / "venvs").iterdir()) == {default_venv, trace_venv}
 
 
 def test_runtime_upgrade_is_inactive_and_failed_upgrade_preserves_active_venv(
@@ -230,7 +480,7 @@ def test_runtime_upgrade_is_inactive_and_failed_upgrade_preserves_active_venv(
         check=False,
     )
     assert first_probe.returncode == 0
-    assert first_probe.stdout.decode("utf-8", errors="strict").strip() == "0.4.2"
+    assert first_probe.stdout.decode("utf-8", errors="strict").strip() == "0.4.3"
     runtime_source = repository / "agc_runtime" / "__init__.py"
     runtime_source.write_bytes(runtime_source.read_bytes() + b"\n# upgrade fixture\n")
     failed_env = {
@@ -277,7 +527,7 @@ def test_runtime_upgrade_is_inactive_and_failed_upgrade_preserves_active_venv(
         check=False,
     )
     assert second_probe.returncode == 0
-    assert second_probe.stdout.decode("utf-8", errors="strict").strip() == "0.4.2"
+    assert second_probe.stdout.decode("utf-8", errors="strict").strip() == "0.4.3"
     assert _tree_snapshot(first_venv) == first_snapshot
     _assert_toml_paths(
         config,

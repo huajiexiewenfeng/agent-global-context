@@ -69,6 +69,35 @@ modify or remove the previously configured venv; Codex switches to the validated
 content-addressed venv only after its final-path Python imports and
 `agc-mcp.exe --version` probe pass.
 
+### Optional automatic Capture tracing
+
+Runtime 0.4.3 can install and activate the optional Trace Runtime dependency
+without changing the scheduled-task definition:
+
+```powershell
+& "$repository\scripts\install-local.ps1" `
+  -RepositoryRoot $repository `
+  -SkillsRoot $skills `
+  -CodexConfig $codexConfig `
+  -MemoryRoot $memoryV2 `
+  -InstallRoot $runtimeInstall `
+  -EnableCaptureTrace `
+  -TraceRuntimeRoot "D:\src\agent-runtime-modules"
+```
+
+Trace Runtime `0.1.0` is not yet available from the package index, so the
+explicit local root is required for this release. The installer publishes a
+separate immutable Runtime containing local Contracts + Trace and AGC's
+`mcp,trace` extras. Their source content participates in the deployment key.
+The selected Python must be 3.12 or newer to satisfy Trace Runtime `0.1.0`.
+It adds `AGENT_TRACE_DB` only to the stable `agc-capture.cmd` launcher. The
+default database is `$env:USERPROFILE\.agent-trace-runtime\trace.sqlite3`.
+Use `-TraceDatabase "D:\path\trace.sqlite3"` with
+`-EnableCaptureTrace` to override it. Supplying `-TraceDatabase` by itself is
+rejected before active installation state is changed. `-TraceRuntimeRoot`
+without `-EnableCaptureTrace` is rejected the same way. Default installations
+remain Trace-disabled and install only the `mcp` extra.
+
 ## After Registration
 
 Restart Codex and start a new task so the new Skill and MCP server are loaded.

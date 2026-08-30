@@ -6,7 +6,10 @@ param(
     [Parameter(Mandatory=$true)][string]$MemoryRoot,
     [string]$InstallRoot = "$env:USERPROFILE\.agent-global-context-runtime",
     [string]$PythonExecutable,
-    [switch]$SkipRuntimeInstall
+    [switch]$SkipRuntimeInstall,
+    [switch]$EnableCaptureTrace,
+    [string]$TraceRuntimeRoot,
+    [string]$TraceDatabase
 )
 
 Set-StrictMode -Version Latest
@@ -790,7 +793,12 @@ function Invoke-NativeCommand {
 }
 
 function Get-RuntimeDeploymentKey {
-    param([string]$Repository, [string]$PythonExecutable)
+    param(
+        [string]$Repository,
+        [string]$PythonExecutable,
+        [string]$InstallProfile,
+        [string]$TraceRuntimeRoot
+    )
 
     $runtimeRoot = Join-Path $Repository "agc_runtime"
     $manifestFiles = @(
@@ -824,6 +832,59 @@ function Get-RuntimeDeploymentKey {
         $records.Add("$relative`0$($fileHash.ToLowerInvariant())")
     }
 
+    if (-not [string]::IsNullOrWhiteSpace($TraceRuntimeRoot)) {
+        $contractsPackage = Join-Path $TraceRuntimeRoot "contracts"
+        $tracePackage = Join-Path $TraceRuntimeRoot "runtimes\trace"
+        $contractsSource = $contractsPackage
+        $contractsDataRoots = @(
+            (Join-Path $contractsPackage "core"),
+            (Join-Path $contractsPackage "trace")
+        )
+        $traceSource = Join-Path $tracePackage "src\agent_trace_runtime"
+        foreach ($sourceRoot in @($contractsDataRoots) + @($traceSource)) {
+            if (-not (Test-Path -LiteralPath $sourceRoot -PathType Container)) {
+                throw "Trace Runtime package source was not found: $sourceRoot"
+            }
+            Assert-NoReparsePointTree `
+                -Root $sourceRoot -Label "Trace Runtime package source"
+        }
+        $traceFiles = @(
+            (Join-Path $contractsPackage "pyproject.toml"),
+            (Join-Path $contractsSource "__init__.py"),
+            (Join-Path $tracePackage "pyproject.toml")
+        )
+        foreach ($dataRoot in $contractsDataRoots) {
+            $traceFiles += @(
+                Get-ChildItem -LiteralPath $dataRoot -File -Recurse |
+                    Sort-Object -Property FullName |
+                    Select-Object -ExpandProperty FullName
+            )
+        }
+        $traceFiles += @(
+            Get-ChildItem -LiteralPath $traceSource -File -Recurse |
+                Sort-Object -Property FullName |
+                Select-Object -ExpandProperty FullName
+        )
+        foreach ($file in $traceFiles) {
+            if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
+                throw "Trace Runtime deployment input was not found: $file"
+            }
+            $item = Get-Item -LiteralPath $file -Force
+            if (
+                ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) `
+                    -ne 0
+            ) {
+                throw "Trace Runtime deployment input must not be a reparse point: $file"
+            }
+            $traceRelative = $item.FullName.Substring($TraceRuntimeRoot.Length)
+            $traceRelative = $traceRelative.TrimStart([char[]]"\/").Replace("\", "/")
+            $traceHash = (
+                Get-FileHash -LiteralPath $item.FullName -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+            $records.Add("__trace_source__/$traceRelative`0$traceHash")
+        }
+    }
+
     $pythonHash = (
         Get-FileHash -LiteralPath $PythonExecutable -Algorithm SHA256
     ).Hash.ToLowerInvariant()
@@ -831,6 +892,7 @@ function Get-RuntimeDeploymentKey {
         $PythonExecutable
     ).ToLowerInvariant()
     $records.Add("__python__`0$pythonPath`0$pythonHash")
+    $records.Add("__profile__`0$InstallProfile")
 
     $payload = $WriteUtf8.GetBytes(($records -join "`n"))
     $sha256 = [System.Security.Cryptography.SHA256]::Create()
@@ -856,8 +918,69 @@ $captureLauncherExisted = $false
 $captureHookLauncherChanged = $false
 $captureHookLauncherExisted = $false
 $pendingRuntimePath = $null
+$resolvedTraceDatabase = $null
+$resolvedTraceRuntimeRoot = $null
+$traceContractsPackage = $null
+$traceRuntimePackage = $null
 
 try {
+    if (
+        $PSBoundParameters.ContainsKey("TraceRuntimeRoot") -and
+        -not $EnableCaptureTrace
+    ) {
+        throw "TraceRuntimeRoot requires EnableCaptureTrace."
+    }
+    if (
+        $PSBoundParameters.ContainsKey("TraceDatabase") -and
+        -not $EnableCaptureTrace
+    ) {
+        throw "TraceDatabase requires EnableCaptureTrace."
+    }
+    if ($EnableCaptureTrace) {
+        if (
+            -not $PSBoundParameters.ContainsKey("TraceRuntimeRoot") -or
+            [string]::IsNullOrWhiteSpace($TraceRuntimeRoot)
+        ) {
+            throw "EnableCaptureTrace requires TraceRuntimeRoot."
+        }
+        Assert-NoReparsePointInAncestors `
+            -Path $TraceRuntimeRoot -Label "TraceRuntimeRoot"
+        $resolvedTraceRuntimeRoot = Get-ExistingDirectoryPath `
+            -Path $TraceRuntimeRoot -Label "TraceRuntimeRoot"
+        $traceContractsPackage = Join-Path `
+            $resolvedTraceRuntimeRoot "contracts"
+        $traceRuntimePackage = Join-Path `
+            $resolvedTraceRuntimeRoot "runtimes\trace"
+        foreach ($packageRoot in @($traceContractsPackage, $traceRuntimePackage)) {
+            [void](Get-ExistingFilePath `
+                -Path (Join-Path $packageRoot "pyproject.toml") `
+                -Label "Trace Runtime package metadata")
+        }
+        if ($PSBoundParameters.ContainsKey("TraceDatabase")) {
+            if ($TraceDatabase -notmatch '^(?:[A-Za-z]:[\\/]|\\\\)') {
+                throw "TraceDatabase must be an absolute path."
+            }
+            $traceDatabaseInput = $TraceDatabase
+        }
+        else {
+            $userProfile = [Environment]::GetFolderPath(
+                [Environment+SpecialFolder]::UserProfile
+            )
+            $traceDatabaseInput = Join-Path `
+                $userProfile ".agent-trace-runtime\trace.sqlite3"
+        }
+        Assert-NoReparsePointInAncestors `
+            -Path $traceDatabaseInput -Label "TraceDatabase"
+        $resolvedTraceDatabase = Get-AbsolutePath `
+            -Path $traceDatabaseInput -Label "TraceDatabase"
+        if (
+            (Test-Path -LiteralPath $resolvedTraceDatabase) -and
+            -not (Test-Path -LiteralPath $resolvedTraceDatabase -PathType Leaf)
+        ) {
+            throw "TraceDatabase must be a file path."
+        }
+    }
+
     # Reject path aliases before resolving or creating any input path.
     Assert-NoReparsePointInAncestors `
         -Path $RepositoryRoot -Label "RepositoryRoot"
@@ -1004,9 +1127,17 @@ try {
             $pythonCommand = Get-Command python -ErrorAction Stop
             $selectedPythonExecutable = $pythonCommand.Source
         }
+        $runtimeInstallProfile = if ($EnableCaptureTrace) {
+            "mcp+trace"
+        }
+        else {
+            "mcp"
+        }
         $deploymentKey = Get-RuntimeDeploymentKey `
             -Repository $resolvedRepository `
-            -PythonExecutable $selectedPythonExecutable
+            -PythonExecutable $selectedPythonExecutable `
+            -InstallProfile $runtimeInstallProfile `
+            -TraceRuntimeRoot $resolvedTraceRuntimeRoot
         $venvsRoot = Join-Path $resolvedInstall "venvs"
         $publishedVenv = Join-Path $venvsRoot $deploymentKey
         $venvPython = Join-Path $publishedVenv "Scripts\python.exe"
@@ -1047,12 +1178,17 @@ try {
                 throw "Creating the dedicated Runtime virtual environment failed."
             }
 
-            $pipArguments = @(
-                "-m",
-                "pip",
-                "install",
-                "$resolvedRepository[mcp]"
-            )
+            $pipArguments = @("-m", "pip", "install")
+            if ($EnableCaptureTrace) {
+                $pipArguments += @(
+                    $traceContractsPackage,
+                    $traceRuntimePackage,
+                    "${resolvedRepository}[mcp,trace]"
+                )
+            }
+            else {
+                $pipArguments += "${resolvedRepository}[mcp]"
+            }
             if (
                 -not [string]::IsNullOrEmpty(
                     $env:AGC_INSTALL_TEST_PIP_NO_DEPS
@@ -1083,6 +1219,9 @@ try {
             )
             if ([string]::IsNullOrEmpty($env:AGC_INSTALL_TEST_PIP_NO_DEPS)) {
                 $validationImports += "; import mcp"
+                if ($EnableCaptureTrace) {
+                    $validationImports += "; import agent_trace_runtime"
+                }
             }
             $validationExitCode = Invoke-NativeCommand `
                 -Executable $venvPython `
@@ -1128,7 +1267,16 @@ try {
             -Second $launcherBytes)
     )
     $captureBatchExecutable = $captureExecutable.Replace("%", "%%")
-    $captureLauncherText = "@`"$captureBatchExecutable`" %*`n"
+    $captureLauncherPrefix = ""
+    if ($EnableCaptureTrace) {
+        $captureTraceDatabase = $resolvedTraceDatabase.Replace("%", "%%")
+        $captureLauncherPrefix = (
+            "@set `"AGENT_TRACE_DB=$captureTraceDatabase`"`n"
+        )
+    }
+    $captureLauncherText = (
+        $captureLauncherPrefix + "@`"$captureBatchExecutable`" %*`n"
+    )
     $captureLauncherBytes = $WriteUtf8.GetBytes(
         (Get-NormalizedLf -Text $captureLauncherText)
     )
