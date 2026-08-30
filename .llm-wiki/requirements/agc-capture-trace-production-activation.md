@@ -4,7 +4,7 @@
 
 - flow_id: `agc-capture-trace-production-activation`
 - parent_flow_id: `agc-capture-trace-bridge`
-- status: implemented-verified-local
+- status: installed-verified
 - why: Make the verified optional Capture-to-Trace bridge reproducibly installable without mutating an existing immutable Runtime deployment or complicating the Windows scheduled-task definition.
 
 ## Change
@@ -58,6 +58,17 @@ Release the local source as Runtime `0.4.3` and add one explicit installer switc
 | development | done | optional local-source Trace profile and Capture-only launcher binding | 2026-08-30 |
 | testing | passed-agent-local | `.llm-wiki/verification/agc-capture-trace-production-activation.md` | 2026-08-30 |
 | archive | done | `.llm-wiki/handoff/agc-capture-trace-production-activation-handoff.md` | 2026-08-30 |
+
+## Production Activation
+
+The user separately authorized installation, production Capture Trace
+activation, acceptance, scheduler restoration, and GitHub push. Runtime 0.4.3
+was installed into immutable deployment `13728135...eac8a`; the 32-file formal
+memory digest remained unchanged. A no-model synthetic probe through the live
+Capture launcher produced a valid sanitized two-event Trace Snapshot. The
+restored task then started its next automatic cycle through the new deployment.
+That cycle completed with scheduler result `0`, a complete two-event Trace
+Snapshot, and zero silent loss; formal-memory bytes remained unchanged.
 
 ## Changed Assumption
 

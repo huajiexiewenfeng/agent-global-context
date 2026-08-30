@@ -2,11 +2,12 @@
 
 ## Result
 
-AGC Runtime 0.4.3 source is locally ready for optional Capture tracing. The
-installer can build an immutable `mcp+trace` deployment from the local Trace
-Runtime repository and binds `AGENT_TRACE_DB` only in `agc-capture.cmd`.
-Production remains on 0.4.2; no scheduled task, live configuration, installed
-Runtime, or GitHub remote was changed.
+AGC Runtime 0.4.3 is installed in production with optional Capture tracing.
+The installer built immutable `mcp+trace` deployment `13728135...eac8a` from
+the local Trace Runtime repository and bound `AGENT_TRACE_DB` only in
+`agc-capture.cmd`. The existing scheduled-task definition was retained and
+restored after installation. GitHub had not yet been pushed when this evidence
+was recorded.
 
 ## Contract And TDD Evidence
 
@@ -76,7 +77,36 @@ for rejected options. Synthetic local packages mirror the real repository
 layout; the isolated smoke additionally exercises the actual Trace repository.
 No mock substitutes for installer behavior or Trace persistence.
 
+## Production Activation Evidence
+
+- The scheduled task was disabled through an explicitly elevated Windows
+  command, and the already-running 0.4.2 cycle was allowed to finish naturally.
+- The production install created immutable Runtime
+  `137281353a90221c48b622263082148362948c3f15b66b12486b75a4288eac8a`
+  and backup
+  `20260830-093914-864-75e27278c79b4d5eae05c6aab7ecb59c`.
+- Package metadata reports AGC 0.4.3, Trace Runtime 0.1.0, and Runtime Contracts
+  0.1.0; `pip check` reports no broken requirements.
+- MCP and Hook launchers contain only the new executable path. The Capture
+  launcher alone contains
+  `AGENT_TRACE_DB=C:\Users\admin\.agent-trace-runtime\trace.sqlite3`.
+- The 32-file formal-memory tree remained byte-identical with aggregate SHA-256
+  `971ab1e70ad62dd25e0e46cd339e25a2a8650a1ebcc894b6bb63d45cbd9f84d9`.
+- A no-content, Capture-disabled synthetic root exercised the production
+  launcher without calling a model or reading historical Sessions. It returned
+  `trace_status: recorded`; Trace Doctor passed and Snapshot
+  `trc_agc_03988cfa23ca42b79f02214cd889ac6d` contains exactly the sanitized
+  `trace.root.started` and `trace.root.failed` events.
+- Re-enabling the existing task immediately launched its missed 09:41 trigger
+  through the new 0.4.3 Capture executable. It completed with Task Scheduler
+  result `0` and Trace
+  `trc_agc_33e59a8f25f44a65aea45da9a0e16e12`: exactly one started and one
+  completed event, no Trace errors, 10 attempted items, 2 completed items,
+  1 budget deferral, 7 item-level failures, 0 observations, and 0 silent loss.
+  The terminal payload contains only aggregate counters and status deltas.
+
 ## Remaining Human Gate
 
-Production installation, temporary scheduler quiescence, live Capture-cycle
-inspection, and GitHub push remain separately authorized actions.
+The current Codex task still holds its pre-install MCP process; a Codex restart
+is required before foreground Recall uses 0.4.3. The authorized GitHub push is
+the final operation after this closure record.

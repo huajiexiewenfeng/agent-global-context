@@ -19,11 +19,11 @@ to the stable Capture launcher. The default install remains Trace-free.
 
 - Source branch: `main`
 - Source version: 0.4.3
-- Production version: 0.4.2
+- Production version: 0.4.3
 - Production automatic Capture: unchanged and still active
-- Production Capture Trace: not enabled
-- Scheduled task and live launchers: unchanged
-- GitHub: not pushed by this flow
+- Production Capture Trace: enabled for the stable Capture launcher
+- Scheduled-task definition: unchanged; task restored after installation
+- GitHub: closure commits synchronized to `origin/main`
 
 ## Verification
 
@@ -42,8 +42,7 @@ privacy, and test-integrity evidence.
 
 ## Next Authorized Boundary
 
-With explicit approval, install 0.4.3 into production, temporarily quiesce and
-restore `AgentGlobalContext-Capture-25e9201ae2f5`, run one safe automatic
-Capture cycle, inspect the resulting Snapshot, and then push the commits to
-GitHub. Eval, Recall tracing, per-item spans, and content-bearing trace payloads
-remain out of scope.
+Restart Codex so foreground MCP Recall loads 0.4.3. Automatic Capture already
+completed one production cycle through the new Runtime and persisted a complete
+two-event aggregate Snapshot with zero silent loss. Eval, Recall tracing,
+per-item spans, and content-bearing trace payloads remain out of scope.

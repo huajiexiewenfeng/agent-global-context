@@ -142,5 +142,10 @@
 - Built AGC 0.4.3 and completed an isolated real cross-repository install under
   `D:\tmp_test`; Trace Doctor passed and a controlled failed Capture cycle
   persisted only a sanitized two-event root.
-- Production installation, live scheduled-cycle acceptance, and GitHub push
-  remain pending explicit authorization.
+- The user then authorized production activation. Runtime 0.4.3 was installed
+  into immutable deployment `13728135...eac8a`; package/import, launcher,
+  config-route, pip, Trace Doctor, safe Snapshot, and unchanged 32-file formal
+  memory gates passed. The existing task definition was restored; its missed
+  09:41 trigger then completed through 0.4.3 with result 0, a complete two-event
+  aggregate Trace, and zero silent loss. Closure commits were synchronized to
+  `origin/main` after this record.
