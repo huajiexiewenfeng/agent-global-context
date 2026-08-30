@@ -6,7 +6,6 @@ from collections.abc import Sequence
 from datetime import datetime, timezone
 import json
 from pathlib import Path
-import shlex
 import sys
 from typing import Any
 
@@ -222,17 +221,9 @@ def _activation(
 
 
 def _extractor_command(value: str) -> tuple[str, ...]:
-    if value == "codex-app":
-        from agc_runtime.codex_app_runtime import resolve_codex_app_command
+    from agc_runtime.codex_command import resolve_codex_command
 
-        return resolve_codex_app_command()
-    try:
-        command = tuple(shlex.split(value, posix=True))
-    except ValueError as error:
-        raise ValueError("capture extractor executable is invalid") from error
-    if not 1 <= len(command) <= 4:
-        raise ValueError("capture extractor executable is invalid")
-    return command
+    return resolve_codex_command(value)
 
 
 def _scan_mapping(report: Any) -> dict[str, Any]:

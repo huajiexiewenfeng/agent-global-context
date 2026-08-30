@@ -17,6 +17,7 @@ from agc_runtime.capture_eval_evidence import CaptureItemTraceReport
 from agc_runtime.capture_cli import _extractor_command, _run_runner
 from agc_runtime.capture_runner import RunnerReport
 from agc_runtime.capture_transaction import read_json
+from agc_runtime.codex_command import resolve_codex_command
 from agc_runtime.paths import MemoryPaths
 
 
@@ -33,6 +34,32 @@ def test_extractor_command_delegates_exact_codex_app_selector(
     )
 
     assert _extractor_command("codex-app") == (r"C:\app\codex.exe",)
+
+
+def test_capture_and_eval_share_exact_codex_app_resolution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected = (r"C:\OpenAI\Codex\bin\version\codex.exe",)
+    monkeypatch.setattr(
+        "agc_runtime.codex_app_runtime.resolve_codex_app_command",
+        lambda: expected,
+    )
+    assert resolve_codex_command("codex-app") == expected
+    assert _extractor_command("codex-app") == expected
+
+
+def test_codex_app_resolution_failure_has_no_literal_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail() -> tuple[str, ...]:
+        raise RuntimeError("capture_extractor_unavailable")
+
+    monkeypatch.setattr(
+        "agc_runtime.codex_app_runtime.resolve_codex_app_command",
+        fail,
+    )
+    with pytest.raises(RuntimeError, match="^capture_extractor_unavailable$"):
+        resolve_codex_command("codex-app")
 
 
 def test_extractor_command_does_not_treat_arguments_as_app_selector():

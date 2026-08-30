@@ -1,0 +1,48 @@
+{
+  "schema_version": "eval.profile.v0.1",
+  "profile_id": "agc.capture-quality",
+  "profile_version": "1",
+  "judge_mode": "llm",
+  "dimensions": [
+    {
+      "id": "faithfulness",
+      "description": "The collected observation or zero decision is supported by the safe source Capsule.",
+      "rubric": "Score 4 when every retained claim is directly supported, or when a zero decision correctly rejects a Capsule with no durable signal. Score 0 when a retained claim is contradicted or a clear durable signal is incorrectly discarded.",
+      "weight": 0.35,
+      "minimum_score": 3
+    },
+    {
+      "id": "durability",
+      "description": "The result captures stable user context rather than a one-off instruction or transient task state.",
+      "rubric": "Score 4 for a stable preference, principle, capability, interest, or long-term goal. Score 0 for a one-time command, temporary status, routine implementation step, or unsupported projection.",
+      "weight": 0.25,
+      "minimum_score": 3
+    },
+    {
+      "id": "noise_control",
+      "description": "The decision avoids irrelevant, redundant, or low-value observations without dropping durable signal.",
+      "rubric": "Score 4 when retained observations are useful and nonredundant, or when a zero result removes only noise. Score 0 for noise retention, repeated paraphrases, or a false zero that loses durable context.",
+      "weight": 0.20,
+      "minimum_score": 3
+    },
+    {
+      "id": "atomicity",
+      "description": "Each observation expresses one reusable proposition at an appropriate level of detail.",
+      "rubric": "Score 4 for one self-contained proposition per observation. Score 0 for compound, vague, fragmentary, or excessively compressed statements.",
+      "weight": 0.10,
+      "minimum_score": 2
+    },
+    {
+      "id": "classification",
+      "description": "Category, kind, scope, confidence, sensitivity, and signal type agree with the evidence.",
+      "rubric": "Score 4 when all labels are supported and useful. Score 0 when labels materially misrepresent the evidence or scope.",
+      "weight": 0.10,
+      "minimum_score": 2
+    }
+  ],
+  "pass_threshold": 0.75,
+  "evidence_requirements": [
+    {"provider": "agc", "kind": "capture-item", "min_count": 1}
+  ],
+  "max_attempts": 2
+}

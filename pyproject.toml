@@ -12,6 +12,10 @@ dependencies = ["PyYAML>=6.0.2,<7"]
 [project.optional-dependencies]
 mcp = ["mcp==2.0.0"]
 trace = ["agent-trace-runtime>=0.1,<0.2"]
+eval = [
+  "agent-eval-runtime>=0.1,<0.2",
+  "agent-eval-codex>=0.1,<0.2",
+]
 test = [
   "pytest==9.1.1",
   "build>=1.2,<2",
@@ -25,12 +29,13 @@ agc = "agc_runtime.cli:main"
 agc-mcp = "agc_runtime.mcp_server:main"
 agc-capture-hook = "agc_runtime.capture_hook:main"
 agc-capture = "agc_runtime.capture_cli:main"
+agc-eval = "agc_runtime.eval_cli:main"
 
 [tool.setuptools.packages.find]
 include = ["agc_runtime*"]
 
 [tool.setuptools.package-data]
-agc_runtime = ["default_config.yaml", "UNICODE-LICENSE.txt"]
+agc_runtime = ["default_config.yaml", "UNICODE-LICENSE.txt", "eval_profiles/*.json"]
 "*" = ["schemas/capture-extractor-v1.schema.json"]
 
 [tool.pytest.ini_options]
