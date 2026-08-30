@@ -23,6 +23,10 @@ from agc_runtime.capture_contracts import (
     observation_fingerprint_for,
     observation_id_for,
 )
+from agc_runtime.capture_eval_evidence import (
+    CaptureItemTraceReport,
+    capture_item_trace_report,
+)
 from agc_runtime.capture_store import CaptureStore, ReceiptTransitionPatch, root_fingerprint
 from agc_runtime.locking import capture_runner_lock
 from agc_runtime.paths import MemoryPaths
@@ -87,9 +91,14 @@ class RunnerReport:
     run_time_ms: int
     source_bytes_read: int | None
     peak_process_count: int
+    trace_items: tuple[CaptureItemTraceReport, ...] = ()
 
     def to_mapping(self) -> dict[str, Any]:
-        result = {name: getattr(self, name) for name in self.__dataclass_fields__}
+        result = {
+            name: getattr(self, name)
+            for name in self.__dataclass_fields__
+            if name != "trace_items"
+        }
         result["status_deltas"] = dict(self.status_deltas)
         return result
 
@@ -552,6 +561,7 @@ class CaptureRunner:
         before_charge = budget.snapshot().charged_tokens
         attempted = completed = failed = deferred = contention = 0
         reserved_count = extractor_calls = observation_count = 0
+        trace_items: list[CaptureItemTraceReport] = []
         maximum = TokenUsage(
             capture.capsule.max_tokens,
             capture.capsule.max_tokens,
@@ -597,6 +607,14 @@ class CaptureRunner:
                         }
                     )
                     store.commit_extraction(lease, (), terminal)
+                    trace_items.append(
+                        capture_item_trace_report(
+                            capsule=capsule_result.capsule,
+                            receipt=terminal,
+                            observations=(),
+                            occurred_at=now,
+                        )
+                    )
                     completed += 1
                     continue
                 try:
@@ -701,6 +719,14 @@ class CaptureRunner:
                     reservation=reservation,
                     settlement=settlement,
                 )
+                trace_items.append(
+                    capture_item_trace_report(
+                        capsule=capsule_result.capsule,
+                        receipt=terminal,
+                        observations=observations,
+                        occurred_at=now,
+                    )
+                )
                 completed += 1
                 observation_count += len(observations)
             except OSError:
@@ -803,6 +829,7 @@ class CaptureRunner:
             max(0, (time.monotonic_ns() - started_ns) // 1_000_000),
             None,
             1 if extractor_calls else 0,
+            trace_items=tuple(trace_items),
         )
 
 

@@ -246,6 +246,25 @@ def test_manual_runner_collects_one_observation_and_settles_actual_usage(tmp_pat
     assert extractor.extract_calls == 1
 
 
+def test_runner_returns_one_trace_item_for_one_completed_receipt(tmp_path: Path) -> None:
+    paths, adapter, extractor, preparation = _prepared(tmp_path)
+    runner = CaptureRunner(paths, (adapter,), extractor, preparation)
+    first = runner.run_manual_backfill(
+        authorization_digest=preparation.authorization_digest,
+        max_items=20,
+        now=RUN_AT,
+    )
+    second = runner.run_manual_backfill(
+        authorization_digest=preparation.authorization_digest,
+        max_items=20,
+        now=RUN_AT,
+    )
+    assert len(first.trace_items) == 1
+    assert first.trace_items[0].payload["outcome"] == "collected"
+    assert second.trace_items == ()
+    assert "trace_items" not in first.to_mapping()
+
+
 def test_empty_capsule_completes_without_reservation_or_extractor_call(tmp_path: Path):
     paths, adapter, extractor, preparation = _prepared(tmp_path)
     adapter.user_signals = ()
@@ -276,6 +295,19 @@ def test_empty_capsule_completes_without_reservation_or_extractor_call(tmp_path:
     }
 
 
+def test_zero_result_has_one_zero_trace_item(tmp_path: Path) -> None:
+    paths, adapter, extractor, preparation = _prepared(tmp_path)
+    adapter.user_signals = ()
+    report = CaptureRunner(paths, (adapter,), extractor, preparation).run_manual_backfill(
+        authorization_digest=preparation.authorization_digest,
+        max_items=20,
+        now=RUN_AT,
+    )
+    assert len(report.trace_items) == 1
+    assert report.trace_items[0].payload["outcome"] == "zero"
+    assert report.trace_items[0].payload["reason_code"] == "no_durable_signal"
+
+
 def test_stale_authorization_stops_before_model_call(tmp_path: Path) -> None:
     paths, adapter, extractor, preparation = _prepared(tmp_path)
 
@@ -303,6 +335,17 @@ def test_insufficient_budget_persists_deferred_status_without_model_call(tmp_pat
     receipt_files = tuple(paths.capture.receipts.glob("*.json"))
     assert len(receipt_files) == 1
     assert json.loads(receipt_files[0].read_text(encoding="utf-8"))["status"] == "deferred_budget"
+
+
+def test_budget_defer_has_no_completed_trace_item(tmp_path: Path) -> None:
+    paths, adapter, extractor, preparation = _prepared(tmp_path, total=1)
+    report = CaptureRunner(paths, (adapter,), extractor, preparation).run_manual_backfill(
+        authorization_digest=preparation.authorization_digest,
+        max_items=20,
+        now=RUN_AT,
+    )
+    assert report.deferred_budget_count == 1
+    assert report.trace_items == ()
 
 
 def test_backfill_cli_form_is_exact_and_preparation_is_durable(tmp_path: Path) -> None:
@@ -394,6 +437,18 @@ def test_retryable_receipt_waits_until_configured_backoff(tmp_path: Path) -> Non
     assert immediate.attempted_count == 0
     assert immediate.backlog_count == 1
     assert extractor.extract_calls == 1
+
+
+def test_extractor_failure_has_no_completed_trace_item(tmp_path: Path) -> None:
+    paths, adapter, extractor, preparation = _prepared(tmp_path)
+    extractor.always_fail = True
+    report = CaptureRunner(paths, (adapter,), extractor, preparation).run_manual_backfill(
+        authorization_digest=preparation.authorization_digest,
+        max_items=20,
+        now=RUN_AT,
+    )
+    assert report.failed_count == 1
+    assert report.trace_items == ()
 
 
 def test_fifth_automatic_failure_parks_receipt_as_failed(tmp_path: Path) -> None:
