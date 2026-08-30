@@ -59,13 +59,19 @@ $repository = (Resolve-Path "D:\src\agent-global-context").Path
   -InstallRoot "$env:USERPROFILE\.agent-global-context-runtime"
 ```
 
-Runtime 0.4.3 can also enable metadata-only tracing for automatic Capture by
+Runtime 0.4.4 can also enable metadata-only tracing for automatic Capture by
 adding `-EnableCaptureTrace -TraceRuntimeRoot "D:\src\agent-runtime-modules"`.
 The local source root is required until Trace Runtime packages are published.
 The default database is
 `$env:USERPROFILE\.agent-trace-runtime\trace.sqlite3`; add
 `-TraceDatabase "D:\path\trace.sqlite3"` only when an explicit override is
-needed. This option traces Capture batch health, not memory or Session content.
+needed. This option traces Capture batch health and content-free completed-item
+EvidenceRefs, not memory or Session content.
+
+Runtime 0.4.4 adds an optional manual Capture-quality Eval Pilot. Preparation
+returns a content-free authorization digest; evaluation requires that exact
+digest, is never scheduled automatically, and cannot mutate memory. See
+[Capture operations](docs/capture-operations.md).
 
 3. Restart Codex and start a new task.
 

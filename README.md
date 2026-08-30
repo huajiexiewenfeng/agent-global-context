@@ -79,20 +79,28 @@ $repository = (Resolve-Path "D:\src\agent-global-context").Path
   -InstallRoot "$env:USERPROFILE\.agent-global-context-runtime"
 ```
 
-Runtime 0.4.3 can also enable metadata-only tracing for automatic Capture by
+Runtime 0.4.4 can also enable metadata-only tracing for automatic Capture by
 adding `-EnableCaptureTrace -TraceRuntimeRoot "D:\src\agent-runtime-modules"`.
 The local source root is required until Trace Runtime packages are published.
 The default database is
 `$env:USERPROFILE\.agent-trace-runtime\trace.sqlite3`; add
 `-TraceDatabase "D:\path\trace.sqlite3"` only when an explicit override is
-needed. This option traces Capture batch health, not memory or Session content.
+needed. This option traces Capture batch health plus content-free completed-item
+EvidenceRefs, not memory or Session content.
+
+Runtime 0.4.4 also includes an optional, manual Capture-quality Eval Pilot.
+`agc-eval prepare-capture` creates a content-free authorization digest;
+`agc-eval capture` runs only when that exact digest is supplied. Eval is not
+scheduled automatically and never creates, merges, promotes, or deletes memory.
+See [Capture operations](docs/capture-operations.md) for the evidence boundary
+and commands.
 
 3. Restart Codex and start a new task.
 
 The installer leaves one public `agent-global-context` Skill and registers
 exactly three MCP tools through one server: `agc.read`, `agc.write`, and
 `agc.admin`. It keeps unique backups of replaced active files and is safe to
-rerun. The quality-first formalization Runtime release is `0.4.3`; the installer also
+rerun. The quality-first formalization Runtime release is `0.4.4`; the installer also
 publishes stable local `agc-capture.cmd` and `agc-capture-hook.cmd` launchers
 beside `agc-mcp.cmd`.
 

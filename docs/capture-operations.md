@@ -30,7 +30,7 @@ The public MCP surface remains exactly `agc.read`, `agc.write`, and
 Use a synthetic Memory Root first. Keep a backup and verify `capture_status`
 after every transition.
 
-1. Install the project-aware formalization Runtime 0.4.3; this still leaves Capture off and does not automatically promote observations.
+1. Install the project-aware formalization Runtime 0.4.4; this still leaves Capture off and does not automatically promote observations.
 2. Audit the active AGC route and write one content-free activation-evidence
    JSON file. It contains only schema version, route counts, hash-match facts,
    Recall Gate result, Extractor capability enum, and Hook/Scheduler/Census
@@ -74,7 +74,7 @@ observations are accepted; they are not a provider-side deletion mechanism.
 ### Optional Capture tracing
 
 Scheduled Capture Runner processes execute outside Codex Turns, so Codex Hooks
-cannot observe their batch health. In Runtime 0.4.3, add
+cannot observe their batch health. In Runtime 0.4.4, add
 `-EnableCaptureTrace -TraceRuntimeRoot <agent-runtime-modules-root>` to the
 normal `install-local.ps1` command. The local source root is required until
 Trace Runtime packages are published. The installer publishes a distinct
@@ -107,12 +107,45 @@ The CLI response reports one of four states:
 - `unavailable`: the optional package or store was unavailable, while Capture
   retained its original result and exit code.
 
-Trace stores only the stable action, aggregate counters, duration, and status
-deltas. It does not receive prompts, responses, task or project identifiers,
+Cycle events store only the stable action, aggregate counters, duration, and
+status deltas. Each immutable completed receipt may additionally emit one
+`agc.capture.item.completed` event with exactly: schema version, outcome,
+reason code, observation/filter/duplicate counts, structured Token usage,
+Extractor/Taxonomy versions, and an opaque Eval EvidenceRef. It does not receive
+prompts, responses, task or project identifiers,
 source paths, Capsules, observations, memory content, Extractor input/output,
 raw exceptions, credentials, or environment contents. Trace availability never
 controls whether Capture succeeds. The installer does not change the scheduled
 task definition; it keeps targeting the stable Capture launcher.
+
+### Manual Capture-quality Eval Pilot
+
+The first Eval Profile assesses collected observations and justified zero
+decisions: faithfulness, durability, noise control, atomicity, and
+classification. Formal-memory create/merge decisions happen later and are not
+claimed by this Pilot.
+
+AGC remains the evidence authority. The Trace item contains only an opaque
+EvidenceRef and digest. During an explicitly authorized run, AGC rebuilds the
+safe Capsule and terminal observations in memory, rejects unavailable or
+changed evidence, and requires the rebuilt canonical digest to match. The Eval
+Runtime stores scores, codes, opaque references, and structured usage, never the
+resolved evidence body.
+
+```powershell
+agc-eval prepare-capture --root MEMORY_ROOT --trace-db TRACE_DB --max-items 5
+agc-eval capture --root MEMORY_ROOT --trace-db TRACE_DB --eval-db EVAL_DB `
+  --max-items 5 --authorization-digest EXACT_PREPARED_DIGEST
+```
+
+This Pilot requires `capture.extractor.executable: codex-app`, its explicitly
+configured model, and provider `openai`; it never falls back to PATH, npm, a
+different model, or another provider. Preparation does not resolve evidence or
+invoke a model. There is no automatic Eval schedule and EvalResult never
+changes Capture, review, or formal memory. `insufficient_evidence` means the
+required evidence could not support an evaluation and therefore has no score;
+`evaluation_error` means the bounded Judge attempt failed and likewise has no
+fabricated score.
 
 ### Codex App Runtime on Windows
 
@@ -131,7 +164,7 @@ The exact `codex-app` selector searches only the bounded App Runtime location
 under `%LOCALAPPDATA%\OpenAI\Codex\bin`. It never falls back to PATH, an npm
 CLI, another model, the registry, or a network lookup. Missing, invalid, or
 ambiguous App Runtime candidates fail closed as Extractor unavailable. This
-selector remains Windows-only in Runtime 0.4.3; other platforms must keep an
+selector remains Windows-only in Runtime 0.4.4; other platforms must keep an
 explicit literal executable command.
 
 The resolved executable identity is included in backfill authorization. After
@@ -189,7 +222,7 @@ or several observations, and policy can suppress or quarantine them.
 
 ### Census catalog and task-aware batches
 
-Runtime 0.4.3 keeps immutable frozen Census runs as cold audit evidence and
+Runtime 0.4.4 keeps immutable frozen Census runs as cold audit evidence and
 derives a content-addressed `census-catalog` for normal reads. The first read
 after installation, restore, invalidation, or a missing catalog performs one
 strict cold rebuild. Later reads validate run manifests and load one canonical

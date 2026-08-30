@@ -146,3 +146,14 @@ Use TDD around a dependency-injected bridge backend. Observe failing tests befor
 - Two append operations are not transactionally atomic; partial persistence remains visible as an incomplete Trace rather than being hidden.
 - Setting `AGENT_TRACE_DB` without installing the optional package produces `unavailable`, but never blocks Capture.
 - This first bridge records batch-level health only; deeper per-stage spans should be justified by real Eval needs later.
+
+## 2026-08-30 approved extension
+
+The original 0.4.3 batch-only decision above remains its historical boundary.
+The approved 0.4.4 extension adds one content-free
+`agc.capture.item.completed` event per immutable completed receipt so a manual
+Capture-quality Eval Pilot can correlate a TraceSnapshot with an AGC-owned
+EvidenceRef. The confirmed cross-runtime ownership, authorization, privacy, and
+failure-open rules are defined in the Agent Runtime Modules specification
+`docs/superpowers/specs/2026-08-30-trace-eval-agc-hybrid-integration-design.zh-CN.md`;
+the extension does not add automatic Eval scheduling or memory mutation.

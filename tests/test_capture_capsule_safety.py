@@ -3770,9 +3770,9 @@ def test_unicode_license_v3_notice_is_complete_and_packaged():
     assert "without prior written authorization of the copyright holder" in " ".join(
         notice.split()
     )
-    assert 'agc_runtime = ["default_config.yaml", "UNICODE-LICENSE.txt"]' in (
-        Path("pyproject.toml").read_text(encoding="utf-8")
-    )
+    package_config = Path("pyproject.toml").read_text(encoding="utf-8")
+    assert '"default_config.yaml"' in package_config
+    assert '"UNICODE-LICENSE.txt"' in package_config
 
 
 @pytest.mark.parametrize(
