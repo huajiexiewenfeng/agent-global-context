@@ -44,6 +44,7 @@ Unknown filter names are rejected rather than ignored.
 | `capture_overview` | `{"action":"capture_overview"}` |
 | `capture_search` | `{"action":"capture_search","filters":{"project":["project-id"]},"limit":10,"include_reviewed":false}` |
 | `capture_get` | `{"action":"capture_get","observation_id":"co_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}` |
+| `capture_review_status` | `{"action":"capture_review_status"}` |
 
 Recall progressively: `overview → search → get → history/evidence`. Stop when
 the current task has enough context.
@@ -57,6 +58,13 @@ observations are hidden by default; set `include_reviewed: true` only for an
 explicit audit search. `capture_get` accepts exactly one `observation_id` or
 `receipt_id`; exact observation reads also return content-free review metadata
 when present.
+
+`capture_review_status` accepts no fields beyond `action`. It returns only
+content-safe queue metadata: readiness, unreviewed count, oldest timestamp, an
+oldest-first batch of at most 10 observation ids, category/kind aggregates, a
+batch digest, and notification cooldown state. It never returns observation
+statements, source locators, Session/Capsule content, preview text, or model
+output. Degraded Capture integrity fails closed.
 
 ## Reusable `agc.write` Schemas
 
@@ -446,6 +454,10 @@ deferred envelope because the migration adapter is outside this package.
 | `restore` | `{"action":"restore","backup_path":"D:/managed/agc-backup.zip"}` |
 | `migrate` | `{"action":"migrate"}` |
 | `capture_status` | `{"action":"capture_status"}` |
+| `capture_review_notice` | `{"action":"capture_review_notice","batch_digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}` |
 
 `agc.admin` is maintenance and migration, not a Recall shortcut.
 `capture_status` is content-free operational evidence for the Host-bound root.
+`capture_review_notice` contains exactly `action` and a lowercase SHA-256
+`batch_digest`. It stores only content-free local delivery state; it does not
+review an observation, create a preview, or mutate formal memory.

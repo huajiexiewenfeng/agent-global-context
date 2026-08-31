@@ -27,6 +27,8 @@ Capture observations are evidence, not formal memory. They are not automatically
 
 When the user asks to review, consolidate, classify, or formalize Capture observations, read [the quality-first formalization workflow](references/formalization-workflow.md) and follow it before any write.
 
+When a Codex App scheduled task checks whether accumulated Capture evidence is ready for review, read [the proactive review notification workflow](references/review-notification-workflow.md). The scheduled run may prepare previews and notify the user, but it never writes formal memory without a later explicit confirmation.
+
 ## Write, Admin, and Failure
 
 Explicit durable non-sensitive changes may call `agc.write`; sensitive persistence stays disabled. `agc.admin` is for maintenance and migration, not ordinary Recall. Read [the tool contract](references/tool-contract.md) only for write/admin or an exact schema. Read [the application policy](references/application-policy.md) only for `grow`, conflicts, or ambiguous boundaries.

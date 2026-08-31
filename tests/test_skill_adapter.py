@@ -21,6 +21,12 @@ TOOL_CONTRACT = (
     / "tool-contract.md"
 )
 CAPTURE_OPERATIONS = REPOSITORY_ROOT / "docs" / "capture-operations.md"
+REVIEW_NOTIFICATION_WORKFLOW = (
+    SKILLS_ROOT
+    / "agent-global-context"
+    / "references"
+    / "review-notification-workflow.md"
+)
 
 
 def _skill_text() -> str:
@@ -248,6 +254,7 @@ def test_tool_contract_has_a_request_example_for_every_action():
         "capture_overview": {"action"},
         "capture_search": {"action", "filters", "limit", "include_reviewed"},
         "capture_get": {"action", "observation_id"},
+        "capture_review_status": {"action"},
         "observe": {"action", "observation", "memory_markdown"},
         "observe_batch": {"action", "items"},
         "propose": {"action", "observation"},
@@ -272,6 +279,7 @@ def test_tool_contract_has_a_request_example_for_every_action():
         "restore": {"action", "backup_path"},
         "migrate": {"action"},
         "capture_status": {"action"},
+        "capture_review_notice": {"action", "batch_digest"},
     }
 
     assert set(examples) == set(expected_fields)
@@ -293,6 +301,29 @@ def test_quality_first_formalization_workflow_is_bounded_and_user_confirmed():
     assert "do not" in text
     assert "explicit user confirmation" in text
     assert "该 skill" in guidance
+
+
+def test_proactive_review_notification_workflow_is_bounded_and_non_mutating():
+    text = REVIEW_NOTIFICATION_WORKFLOW.read_text(encoding="utf-8")
+    normalized = " ".join(text.split()).casefold()
+
+    assert "review-notification-workflow.md" in _skill_text()
+    for required in (
+        "capture_review_status",
+        "capture_review_notice",
+        "should_notify",
+        "batch_observation_ids",
+        "capture_get",
+        "at most three",
+        "complete memory item",
+        "explicit user confirmation",
+        "never write formal memory",
+        "no user-facing result",
+    ):
+        assert required in normalized
+    assert "raw codex session" in normalized
+    assert "codex app owns scheduling" in normalized
+    assert "agc owns readiness" in normalized
 
 
 def test_formalization_groups_receipts_and_expands_exact_project_scope():

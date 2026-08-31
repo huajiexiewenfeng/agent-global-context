@@ -217,6 +217,27 @@ canonical IDs). Runtime publishes `draft` review receipts only after an
 accepted formal-memory mutation. After the user accepts a non-draft result,
 use `capture_review` for `needs_context` or `discard`.
 
+### Proactive Codex App review notification
+
+Runtime 0.4.5 can expose a content-safe `capture_review_status` for an opt-in
+Codex App scheduled task. Readiness becomes true when at least 10 unreviewed
+observations exist or the oldest unreviewed observation has waited at least 24
+hours. The status selects the oldest 10 ids first and fails closed when Capture
+integrity is degraded.
+
+Codex App owns the schedule, Activity/Scheduled inbox entry, desktop
+notification, preview rendering, and user interaction. AGC owns readiness,
+safe observation selection, quality-first formalization, and formal-memory
+write validation. A scheduled run may show at most three complete Memory Item
+previews, but it never writes formal memory, `needs_context`, or `discard`
+outcomes without later explicit user confirmation.
+
+After a preview is ready to show, `capture_review_notice` records only the
+batch digest and notification time in a local operational cache. The same
+queue is suppressed for 24 hours. Cache loss can cause a repeated reminder,
+but cannot lose or alter Capture evidence or formal memory. Installation alone
+does not create or enable the Codex App scheduled task.
+
 Do not claim that every task becomes memory. Capture may discover zero, one,
 or several observations, and policy can suppress or quarantine them.
 
