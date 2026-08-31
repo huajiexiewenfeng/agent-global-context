@@ -81,10 +81,10 @@
 | source | done | current Runtime/Skill source plus confirmed user request | 2026-08-31 |
 | design | done | confirmed AGC readiness plus Codex App notification boundary | 2026-08-31 |
 | plan | done | `.llm-wiki/working-context/agc-proactive-review-notification.md` | 2026-08-31 |
-| development | pending |  | 2026-08-31 |
-| testing | pending |  | 2026-08-31 |
+| development | done | commits `79c23a8`, `9762bc0`, and `b8bdce7` | 2026-08-31 |
+| testing | done | `.llm-wiki/verification/agc-proactive-review-notification.md` | 2026-08-31 |
 | archive | pending |  | 2026-08-31 |
 
 ## Open Questions
 
-- Production installation and scheduled-task creation remain a later explicit deployment gate after local verification.
+- Production installation, scheduled-task creation, first production preview, and GitHub push remain later explicit deployment gates.

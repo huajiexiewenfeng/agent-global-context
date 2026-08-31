@@ -1,5 +1,13 @@
 # LLM Wiki Log
 
+## 2026-08-31 — AGC proactive Capture review notification
+
+- Added deterministic `capture_review_status` readiness using a 10-observation or 24-hour threshold, oldest-first batches of 10, integrity fail-closed behavior, and content-safe aggregates.
+- Added a content-free 24-hour notification cache and strict `capture_review_notice` admin action without changing the three-tool MCP surface.
+- Added a Codex App scheduled-review Skill workflow that stays quiet when not ready, produces at most three complete previews, and preserves explicit confirmation as the only formal-memory write gate.
+- Prepared Runtime 0.4.5 and passed 1427 full-suite tests with one skip and one expected adversarial ZIP warning, plus compile, package, dependency, UTF-8/no-BOM, version, and diff gates.
+- No production installation, scheduled-task creation, preview model call, formal-memory mutation, or GitHub push was performed.
+
 ## 2026-08-25 — AGC project-aware Observation context
 
 - Added deterministic opaque project scopes derived from validated Session cwd metadata without persisting or exposing the source path.

@@ -8,6 +8,8 @@
 
 **Tech Stack:** Python 3.10+, existing Capture Store and MCP tools, SHA-256 canonical JSON, pytest, Markdown Skill contracts, Codex App Scheduled Tasks.
 
+**Execution Status:** Implemented and locally verified on `main` on 2026-08-31. Production installation, scheduled-task creation, first production preview, and GitHub push remain separate explicit gates.
+
 ## Global Constraints
 
 - Review readiness performs no model call and reads no raw Codex Session.

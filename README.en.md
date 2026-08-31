@@ -59,7 +59,7 @@ $repository = (Resolve-Path "D:\src\agent-global-context").Path
   -InstallRoot "$env:USERPROFILE\.agent-global-context-runtime"
 ```
 
-Runtime 0.4.4 can also enable metadata-only tracing for automatic Capture by
+Runtime 0.4.5 can also enable metadata-only tracing for automatic Capture by
 adding `-EnableCaptureTrace -TraceRuntimeRoot "D:\src\agent-runtime-modules"`.
 The local source root is required until Trace Runtime packages are published.
 The default database is
@@ -68,10 +68,17 @@ The default database is
 needed. This option traces Capture batch health and content-free completed-item
 EvidenceRefs, not memory or Session content.
 
-Runtime 0.4.4 adds an optional manual Capture-quality Eval Pilot. Preparation
+Runtime 0.4.5 adds an optional manual Capture-quality Eval Pilot. Preparation
 returns a content-free authorization digest; evaluation requires that exact
 digest, is never scheduled automatically, and cannot mutate memory. See
 [Capture operations](docs/capture-operations.md).
+
+Runtime 0.4.5 adds a content-safe Capture review-readiness view for an opt-in
+Codex App scheduled task. When 10 observations are waiting, or the oldest has
+waited 24 hours, the task can prepare up to three complete memory previews and
+notify the user. The scheduled run never writes formal memory; explicit user
+confirmation remains mandatory. Installation alone does not create or enable
+this scheduled task.
 
 3. Restart Codex and start a new task.
 

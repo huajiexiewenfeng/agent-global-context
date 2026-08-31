@@ -79,7 +79,7 @@ $repository = (Resolve-Path "D:\src\agent-global-context").Path
   -InstallRoot "$env:USERPROFILE\.agent-global-context-runtime"
 ```
 
-Runtime 0.4.4 可在上述命令中增加
+Runtime 0.4.5 可在上述命令中增加
 `-EnableCaptureTrace -TraceRuntimeRoot "D:\src\agent-runtime-modules"`，为自动
 Capture 启用仅含聚合元数据的 Trace。在 Trace Runtime 包正式发布前，本地源码
 Root 是必需参数。
@@ -88,17 +88,22 @@ Root 是必需参数。
 才增加 `-TraceDatabase "D:\path\trace.sqlite3"`。该选项记录 Capture 批次
 健康状态和无正文的完成项 EvidenceRef，不记录记忆或 Session 正文。
 
-Runtime 0.4.4 还提供可选的手动 Capture 质量 Eval Pilot。
+Runtime 0.4.5 还提供可选的手动 Capture 质量 Eval Pilot。
 `agc-eval prepare-capture` 只生成无正文授权摘要；只有提交该精确摘要后，
 `agc-eval capture` 才会运行。Eval 不会自动调度，也不能创建、合并、晋升或删除
 记忆。证据边界与命令见 [Capture operations](docs/capture-operations.md)。
+
+Runtime 0.4.5 新增无正文的 Capture 审查就绪状态，可供可选的 Codex App
+计划任务使用。当待审查 observation 达到 10 条，或最早一条已等待 24 小时，
+该任务可以生成最多三条完整记忆预览并通知用户。计划任务绝不写入正式记忆，
+仍然必须由用户明确确认。仅安装 Runtime 不会创建或启用该计划任务。
 
 3. 重启 Codex，并新建一个 task。
 
 安装器最终只保留一个公开 `agent-global-context` Skill，并通过一个 MCP Server
 注册且仅注册三个工具：`agc.read`、`agc.write` 和 `agc.admin`。被替换的当前
 文件会进入唯一备份；安装器可安全重复执行。质量优先记忆正式化 Runtime 版本为
-`0.4.4`；安装器还会在 `agc-mcp.cmd` 旁发布稳定的
+`0.4.5`；安装器还会在 `agc-mcp.cmd` 旁发布稳定的
 `agc-capture.cmd` 与 `agc-capture-hook.cmd` 本地入口。
 
 安装器不会迁移 Memory，不会启用 Codex 任务采集或 backfill，也不会自动晋升
