@@ -65,6 +65,50 @@ def test_init_creates_v2_layout_and_runtime_config(tmp_path: Path):
     assert len(paths.capture.cursor_hmac_key.read_bytes()) == 32
 
 
+def test_capture_review_notice_admin_action_records_only_exact_digest(tmp_path: Path):
+    paths = MemoryPaths.from_root(tmp_path / "memory")
+    digest = "f" * 64
+
+    accepted = dispatch_admin(
+        paths,
+        {"action": "capture_review_notice", "batch_digest": digest},
+    )
+
+    assert accepted.status == "accepted"
+    assert accepted.action == "capture_review_notice"
+    assert accepted.data["code"] == "capture_review_notice_recorded"
+    assert accepted.data["policy"] == "capture-review-notification-v1"
+    assert accepted.data["batch_digest"] == digest
+    assert set(accepted.data) == {
+        "code",
+        "policy",
+        "batch_digest",
+        "notified_at",
+    }
+    cache = json.loads(
+        (paths.cache / "capture-review-notice.json").read_text(encoding="utf-8")
+    )
+    assert set(cache) == {"schema_version", "policy", "batch_digest", "notified_at"}
+
+
+@pytest.mark.parametrize(
+    "payload",
+    (
+        {"action": "capture_review_notice"},
+        {"action": "capture_review_notice", "batch_digest": "A" * 64},
+        {"action": "capture_review_notice", "batch_digest": "f" * 64, "extra": True},
+    ),
+)
+def test_capture_review_notice_admin_action_rejects_invalid_requests(tmp_path: Path, payload):
+    response = dispatch_admin(MemoryPaths.from_root(tmp_path / "memory"), payload)
+
+    assert response.status == "failed"
+    assert response.error == {
+        "code": "invalid_request",
+        "message": "request is invalid",
+    }
+
+
 def test_validate_reports_invalid_memory_without_cataloging_it(tmp_path: Path):
     paths = MemoryPaths.from_root(tmp_path / "memory")
     dispatch_admin(paths, {"action": "init"})

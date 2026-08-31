@@ -3,6 +3,7 @@ from typing import Any
 
 from agc_runtime.catalog import catalog_counts, load_catalog
 from agc_runtime.capture_read_service import CaptureReadError, capture_get, capture_overview, capture_search
+from agc_runtime.capture_review_notification import capture_review_status
 from agc_runtime.capture_store import CaptureReadBusyError
 from agc_runtime.contracts import ToolResponse
 from agc_runtime.models import MemoryItem
@@ -249,6 +250,19 @@ def _handle_capture_get(paths: MemoryPaths, request: dict[str, Any]) -> ToolResp
     return ToolResponse(tool="agc.read", action="capture_get", status="accepted", data=capture_get(paths, request))
 
 
+def _handle_capture_review_status(
+    paths: MemoryPaths, request: dict[str, Any]
+) -> ToolResponse:
+    if set(request) != {"action"}:
+        raise ValueError("capture_review_status request must contain only action")
+    return ToolResponse(
+        tool="agc.read",
+        action="capture_review_status",
+        status="accepted",
+        data=capture_review_status(paths),
+    )
+
+
 _HANDLERS = {
     "overview": _handle_overview,
     "search": _handle_search,
@@ -258,8 +272,11 @@ _HANDLERS = {
     "capture_overview": _handle_capture_overview,
     "capture_search": _handle_capture_search,
     "capture_get": _handle_capture_get,
+    "capture_review_status": _handle_capture_review_status,
 }
-_CAPTURE_ACTIONS = frozenset({"capture_overview", "capture_search", "capture_get"})
+_CAPTURE_ACTIONS = frozenset(
+    {"capture_overview", "capture_search", "capture_get", "capture_review_status"}
+)
 
 
 def dispatch_read(paths: MemoryPaths, request: Any) -> ToolResponse:

@@ -80,6 +80,29 @@ def test_empty_capture_overview_marks_inspection_not_applicable(tmp_path):
     assert not MemoryPaths.from_root(tmp_path).capture.root.exists()
 
 
+def test_capture_review_status_dispatch_is_strict_and_content_safe(tmp_path):
+    paths = MemoryPaths.from_root(tmp_path / "memory")
+
+    accepted = dispatch_read(paths, {"action": "capture_review_status"})
+    rejected = dispatch_read(
+        paths,
+        {"action": "capture_review_status", "root": str(tmp_path / "rogue")},
+    )
+
+    assert accepted.status == "accepted"
+    assert accepted.action == "capture_review_status"
+    assert accepted.data["policy"] == "capture-review-notification-v1"
+    assert accepted.data["ready"] is False
+    assert accepted.data["should_notify"] is False
+    assert accepted.data["batch_observation_ids"] == []
+    assert rejected.status == "failed"
+    assert rejected.error == {
+        "code": "invalid_request",
+        "message": "request is invalid",
+    }
+    assert str(paths.root) not in str(accepted.to_dict()) + str(rejected.to_dict())
+
+
 @pytest.mark.parametrize(
     "read_request",
     [

@@ -21,6 +21,7 @@ from agc_runtime.capture_contracts import (
     SourceQuarantine,
 )
 from agc_runtime.capture_review import CaptureReviewReceipt
+from agc_runtime.capture_review_notification import record_capture_review_notice
 from agc_runtime.capture_status_service import capture_status
 from agc_runtime.capture_store import CaptureStore
 from agc_runtime.capture_transaction import safe_unlink
@@ -802,6 +803,20 @@ def _handle_capture_status(
     )
 
 
+def _handle_capture_review_notice(
+    paths: MemoryPaths, request: dict[str, Any]
+) -> ToolResponse:
+    if set(request) != {"action", "batch_digest"}:
+        raise ValueError("capture_review_notice request must contain exact fields")
+    result = record_capture_review_notice(paths, request["batch_digest"])
+    return ToolResponse(
+        tool="agc.admin",
+        action="capture_review_notice",
+        status="accepted",
+        data={"code": "capture_review_notice_recorded", **result},
+    )
+
+
 _HANDLERS = {
     "init": _handle_init,
     "validate": _handle_validate,
@@ -810,6 +825,7 @@ _HANDLERS = {
     "restore": _handle_restore,
     "migrate": _handle_migrate,
     "capture_status": _handle_capture_status,
+    "capture_review_notice": _handle_capture_review_notice,
 }
 
 

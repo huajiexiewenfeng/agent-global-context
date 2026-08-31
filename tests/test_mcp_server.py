@@ -262,6 +262,38 @@ def test_capture_actions_use_existing_three_tool_envelope(tmp_path):
     assert {tool.name for tool in _list_tools(server)} == {"agc.read", "agc.write", "agc.admin"}
 
 
+def test_mcp_capture_review_notification_actions_use_bound_root(tmp_path):
+    mcp_server_module = _mcp_server_module()
+    memory_root = tmp_path / "bound-memory"
+    rogue_root = tmp_path / "rogue-memory"
+    server = mcp_server_module.create_server(memory_root)
+
+    status = _call(server, "agc.read", {"action": "capture_review_status"})
+    rejected = _call(
+        server,
+        "agc.read",
+        {"action": "capture_review_status", "root": str(rogue_root)},
+    )
+    notice = _call(
+        server,
+        "agc.admin",
+        {"action": "capture_review_notice", "batch_digest": "f" * 64},
+    )
+
+    assert status["status"] == "accepted"
+    assert status["data"]["policy"] == "capture-review-notification-v1"
+    assert rejected["status"] == "failed"
+    assert rejected["error"]["code"] == "invalid_request"
+    assert notice["status"] == "accepted"
+    assert notice["data"]["code"] == "capture_review_notice_recorded"
+    assert not rogue_root.exists()
+    assert {tool.name for tool in _list_tools(server)} == {
+        "agc.read",
+        "agc.write",
+        "agc.admin",
+    }
+
+
 def test_mcp_capture_status_proves_only_the_bound_memory_root(tmp_path):
     mcp_server_module = _mcp_server_module()
     memory_root = tmp_path / "bound-memory"
