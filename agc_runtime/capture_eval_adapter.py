@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from typing import Any, Protocol
 
 from agc_runtime.capture_capsule import CapsulePolicy
@@ -162,6 +162,68 @@ def _event_reference(event: object) -> Mapping[str, Any] | None:
     return dict(reference)
 
 
+def _capture_events(
+    trace_reader: TraceReader, page_size: int
+) -> Iterator[tuple[str, object]]:
+    """Prefer event pages; legacy readers remain usable without a new dependency floor."""
+    try:
+        query = getattr(trace_reader, "query_events", None)
+        if callable(query):
+            from agent_trace_runtime import PrincipalRef
+
+            cursor: str | None = None
+            seen_cursors: set[str] = set()
+            while True:
+                page = query(
+                    principal_ref=PrincipalRef(
+                        "agent-global-context.capture", "runtime"
+                    ),
+                    event_type="agc.capture.item.completed",
+                    limit=page_size,
+                    cursor=cursor,
+                )
+                events = _attribute(page, "events")
+                next_cursor = _attribute(page, "next_cursor")
+                if (
+                    not isinstance(events, Sequence)
+                    or isinstance(events, (str, bytes))
+                    or len(events) > page_size
+                    or (
+                        next_cursor is not None
+                        and (
+                            not isinstance(next_cursor, str)
+                            or not 1 <= len(next_cursor) <= 2048
+                            or next_cursor in seen_cursors
+                        )
+                    )
+                ):
+                    raise ValueError
+                for event in events:
+                    trace_id = _attribute(event, "trace_id")
+                    if not isinstance(trace_id, str) or not trace_id:
+                        raise ValueError
+                    yield trace_id, event
+                if next_cursor is None:
+                    return
+                seen_cursors.add(next_cursor)
+                cursor = next_cursor
+        else:
+            summaries = tuple(trace_reader.list_traces(limit=1000))
+            ordered = sorted(
+                summaries,
+                key=lambda item: str(_attribute(item, "last_timestamp") or ""),
+                reverse=True,
+            )
+            for summary in ordered:
+                trace_id = _attribute(summary, "trace_id")
+                if not isinstance(trace_id, str) or not trace_id:
+                    raise ValueError
+                for event in trace_reader.events(trace_id):
+                    yield trace_id, event
+    except Exception as error:
+        raise ValueError("capture_eval_trace_invalid") from error
+
+
 def capture_eval_cases(
     trace_reader: TraceReader,
     profile_ref: Mapping[str, str],
@@ -185,59 +247,42 @@ def capture_eval_cases(
         "implementation_version": implementation_version,
     }
     checked_profile = dict(profile_ref)
-    try:
-        summaries = tuple(trace_reader.list_traces(limit=1000))
-        ordered = sorted(
-            summaries,
-            key=lambda item: str(_attribute(item, "last_timestamp") or ""),
-            reverse=True,
-        )
-    except Exception as error:
-        raise ValueError("capture_eval_trace_invalid") from error
     cases: list[dict[str, Any]] = []
     seen: set[str] = set()
     snapshots: dict[str, Mapping[str, Any]] = {}
-    for summary in ordered:
-        trace_id = _attribute(summary, "trace_id")
-        if not isinstance(trace_id, str) or not trace_id:
-            raise ValueError("capture_eval_trace_invalid")
-        try:
-            events = trace_reader.events(trace_id)
-        except Exception as error:
-            raise ValueError("capture_eval_trace_invalid") from error
-        for event in events:
-            reference = _event_reference(event)
-            if reference is None:
-                continue
-            case_id = "evc_" + canonical_sha256(
-                {
-                    "subject": subject,
-                    "profile_ref": checked_profile,
-                    "evidence_ref": reference,
-                }
-            ).removeprefix("sha256:")
-            if case_id in seen:
-                continue
-            if trace_id not in snapshots:
-                try:
-                    snapshots[trace_id] = trace_reader.snapshot(trace_id)
-                except Exception as error:
-                    raise ValueError("capture_eval_trace_invalid") from error
-            cases.append(
-                {
-                    "schema_version": "eval.case.v0.1",
-                    "case_id": case_id,
-                    "subject": subject,
-                    "profile_ref": checked_profile,
-                    "evidence_refs": [reference],
-                    "trace_snapshot": snapshots[trace_id],
-                    "reference": None,
-                    "metadata": {"sample_reason": "latest-completed-capture-item"},
-                }
-            )
-            seen.add(case_id)
-            if len(cases) == max_items:
-                return tuple(cases)
+    for trace_id, event in _capture_events(trace_reader, max(20, max_items)):
+        reference = _event_reference(event)
+        if reference is None:
+            continue
+        case_id = "evc_" + canonical_sha256(
+            {
+                "subject": subject,
+                "profile_ref": checked_profile,
+                "evidence_ref": reference,
+            }
+        ).removeprefix("sha256:")
+        if case_id in seen:
+            continue
+        if trace_id not in snapshots:
+            try:
+                snapshots[trace_id] = trace_reader.snapshot(trace_id)
+            except Exception as error:
+                raise ValueError("capture_eval_trace_invalid") from error
+        cases.append(
+            {
+                "schema_version": "eval.case.v0.1",
+                "case_id": case_id,
+                "subject": subject,
+                "profile_ref": checked_profile,
+                "evidence_refs": [reference],
+                "trace_snapshot": snapshots[trace_id],
+                "reference": None,
+                "metadata": {"sample_reason": "latest-completed-capture-item"},
+            }
+        )
+        seen.add(case_id)
+        if len(cases) == max_items:
+            return tuple(cases)
     return tuple(cases)
 
 

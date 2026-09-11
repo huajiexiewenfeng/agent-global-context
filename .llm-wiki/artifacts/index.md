@@ -2,6 +2,9 @@
 
 | id | type | path | owner | related_session | status | last_checked | notes |
 |---|---|---|---|---|---|---|---|
+| capture-review-read-contention | bug | `.llm-wiki/bugs/2026-09-07-capture-review-read-contention.md` | project | 2026-09-07-capture-review-read-contention | bounded-read-verified-awaiting-rollout | 2026-09-07 | Exact-read latency repaired; 118 safety tests passed; global Census contention and production rollout remain. |
+| agc-capture-supervised-improvement-loop | requirement | `.llm-wiki/requirements/agc-capture-supervised-improvement-loop.md` | project | agc-capture-supervised-improvement-loop | executing | 2026-09-07 | Offline core, real provider stores and source preflight verified; real-model quality loop pending. |
+| agc-capture-supervised-improvement-loop-plan | plan | `.llm-wiki/working-context/agc-capture-supervised-improvement-loop-plan.md` | project | agc-capture-supervised-improvement-loop | active | 2026-09-07 | Latest adjacent regression 64 passed; real request binding and separately authorized two rounds remain. |
 | agc-v2-design | design | `docs/superpowers/specs/2026-07-28-agent-global-context-v2-design.md` | project | agc-v2-runtime-foundation | active | 2026-07-29 | Approved v2 design and delivery boundaries. |
 | agc-v2-runtime-plan | plan | `docs/superpowers/plans/2026-07-29-agent-global-context-v2-runtime-foundation.md` | project | agc-v2-runtime-foundation | complete | 2026-07-29 | Ten-task Runtime Foundation implementation plan. |
 | agc-v2-runtime-verification | verification | `.llm-wiki/verification/agc-v2-runtime-foundation.md` | agent-local | agc-v2-runtime-foundation | passed-agent-local | 2026-07-29 | 94 tests, package build, CLI, encoding, and diff gates. |
@@ -42,3 +45,6 @@
 | agc-capture-trace-activation-plan | plan | `docs/superpowers/plans/2026-08-29-agc-capture-trace-production-activation.md` | project | agc-capture-trace-production-activation | complete | 2026-08-30 | TDD installer, version, documentation, package, and isolated smoke plan. |
 | agc-capture-trace-activation-verification | verification | `.llm-wiki/verification/agc-capture-trace-production-activation.md` | agent-local | agc-capture-trace-production-activation | passed-agent-local | 2026-08-30 | Focused regressions, full-suite accounting, build, real local-source install, Doctor, and Snapshot evidence. |
 | agc-capture-trace-activation-handoff | handoff | `.llm-wiki/handoff/agc-capture-trace-production-activation-handoff.md` | project | agc-capture-trace-production-activation | complete | 2026-08-30 | Installed 0.4.3 state, complete automatic Snapshot, and restart handoff. |
+
+| agc-trace-event-query | requirement | `.llm-wiki/requirements/agc-trace-event-query.md` | agent-local | agc-trace-event-query | implemented-agent-local | 2026-09-08 | Query API adaptation; not installed. |
+| agc-trace-event-query-handoff | handoff | `.llm-wiki/handoff/agc-trace-event-query-handoff.md` | agent-local | agc-trace-event-query | implemented-agent-local | 2026-09-08 | 42 relevant tests passed; existing lint warning preserved. |

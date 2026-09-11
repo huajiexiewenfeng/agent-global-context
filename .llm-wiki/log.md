@@ -1,5 +1,45 @@
 # LLM Wiki Log
 
+## 2026-09-07 — Exact-read repair installed, restart pending
+
+- User authorized production installation and will restart Codex. Immutable local 0.4.5 repair deployment `3345a0e8...` installed successfully; prior environment and installer backup retained.
+- Installed source hashes and dependency checks pass; no RSI experiment modules. All 36 formal memory file hashes and Memory Root config are unchanged; Trace path and enabled automatic task preserved.
+- Host MCP acceptance awaits restart. This is not closure of global Census/status contention and was not pushed to GitHub.
+
+## 2026-09-07 — Bounded Capture exact-read repair
+
+- Diagnosed repeated Census validation under the global Capture lock; 981 run manifests contained 1,028,000 memberships for 3,303 unique revisions.
+- Exact observation/receipt reads now validate only the committed receipt and at most eight members, with ledger/review checks and unchanged transaction locking. No production installation or formal-memory writes.
+- New and adjacent read/forget/notification tests: 118 passed in 57.59 seconds. One content-hidden production-data read using the patched source took 0.0561 seconds.
+- See `bugs/2026-09-07-capture-review-read-contention.md`. Global status/search/Runner Census work remains unchanged; rollout and broader contention acceptance pending.
+
+## 2026-09-07 — Capture experiment source preflight
+
+- Continued the existing supervised loop without production or external repository changes.
+- Added read-only source/Prompt/Schema/Profile fingerprints and candidate Prompt isolation; snapshots explicitly do not attest execution or authorize models.
+- Nine new tests plus existing core/provider/adjacent regression: 64 passed. No model calls, dependency installs, formal memory writes, commit or push.
+- Next: real safe-Capsule request binding, independently reviewed labels, and a concrete first-round authorization summary. The RSI quality loop remains incomplete.
+
+## 2026-09-05 — AGC supervised improvement loop specification
+
+- Recorded the user-confirmed AGC-first direction in `requirements/agc-capture-supervised-improvement-loop.md` and the artifact registry.
+- Proposed 24 synthetic cases split by task family, two supervised iterations, explicit baseline comparisons and persistent rejected-attempt evidence.
+- Specification remains draft; implementation, model execution, production changes and publication have not started.
+
+### Follow-up: specification confirmed and offline skeleton
+
+- User confirmed continuation into implementation planning and offline development; branch `codex/agc-capture-loop`.
+- Added pure synthetic experiment execution, evidence-bound comparison and linked round receipts; 24 exposed development fixtures are not a sealed acceptance dataset.
+- New unit tests: 26 passed; combined targeted regressions: 49 passed, 1 optional-dependency skip. Full offline regression: 1453 passed, 1 skipped, 1 expected duplicate-ZIP-name warning in 593.20 seconds.
+- No real model calls, production mutation, installation, commit or push. Trace/Eval/Wiki integration and two real improvement rounds remain pending.
+
+### Follow-up: isolated real-provider integration
+
+- Added AGC-owned Eval/Trace/Wiki bridge and a create-only experiment Wiki profile. Related tests: 55 passed with actual provider stores and only simulated model boundaries.
+- Verified invalid-citation rejection, dataset mismatch before writes, complete reference coverage, Wiki readback, and duplicate-write idempotency.
+- Preserved unrelated pre-existing LLM Wiki Runtime changes; local-source fingerprint and release limitation recorded in the implementation plan.
+- Real Capsule/model identity integration, human-reviewed labels, independent holdouts, and two semantic improvement rounds remain pending. No production configuration, formal memory, dependency installation, commit or push.
+
 ## 2026-08-31 — AGC proactive Capture review notification
 
 - Added deterministic `capture_review_status` readiness using a 10-observation or 24-hour threshold, oldest-first batches of 10, integrity fail-closed behavior, and content-safe aggregates.
@@ -157,3 +197,9 @@
   09:41 trigger then completed through 0.4.3 with result 0, a complete two-event
   aggregate Trace, and zero silent loss. Closure commits were synchronized to
   `origin/main` after this record.
+
+## 2026-09-08 — AGC Trace Event Query
+
+- Implemented event-page adaptation with old Runtime fallback only when the API is absent. Retained domain checks, Case IDs and selected-Trace Snapshot caching.
+- 8 RED tests; 42 related tests passing with synthetic evidence and fake Judge. One pre-existing lint finding unchanged; no production/model/installation/GitHub actions.
+- Flow and handoff: `agc-trace-event-query`. Existing RSI and exact-read edits preserved.

@@ -237,7 +237,12 @@ def capture_get(value: MemoryPaths | Path, request: dict[str, Any]) -> dict[str,
     receipt_id = request.get("receipt_id")
     if (observation_id is None) == (receipt_id is None) or any(not isinstance(item, str) or not item for item in (observation_id, receipt_id) if item is not None):
         raise ValueError("provide exactly one non-empty observation_id or receipt_id")
-    snapshot = CaptureStore(_paths(value)).read_snapshot()
+    try:
+        snapshot = CaptureStore(_paths(value)).read_committed_receipt(
+            observation_id=observation_id, receipt_id=receipt_id
+        )
+    except LookupError as error:
+        raise CaptureReadError(str(error)) from None
     if observation_id is not None:
         reviews = {item.observation_id: item for item in snapshot.review_receipts}
         for item in snapshot.observations:

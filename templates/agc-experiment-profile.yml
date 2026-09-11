@@ -1,0 +1,22 @@
+profile:
+  id: agc-improvement-experiment
+  version: v0.1
+  privacy_default: private
+layout:
+  directories:
+    - domains/agc-improvement/rounds
+write_rules:
+  records:
+    experiment_round:
+      path: domains/agc-improvement/rounds/{receipt_id}.json
+      mode: create_only
+      required_vars: [receipt_id]
+      required_refs: []
+read_rules:
+  context_pack:
+    include: [domains/agc-improvement/rounds/**]
+    exclude: [.meta/**]
+    max_files: 10
+    max_chars_per_file: 40000
+artifacts:
+  types: []

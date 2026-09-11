@@ -1031,6 +1031,61 @@ class CaptureStore:
             for path in sorted(self.capture.receipts.glob("*.json"))
         )
 
+    def read_committed_receipt(
+        self, *, observation_id: str | None = None, receipt_id: str | None = None
+    ) -> CaptureSnapshot:
+        """Read at most one receipt and its eight members, without Census work.
+
+        Retain the transaction/Hard Forget lock; never cache observation content.
+        This validates the requested commit, not global source accounting health.
+        """
+        if (observation_id is None) == (receipt_id is None):
+            raise ValueError("provide exactly one Capture identifier")
+        identifier = observation_id if observation_id is not None else receipt_id
+        pattern = _OBSERVATION_ID if observation_id is not None else _RECEIPT_ID
+        if not isinstance(identifier, str) or not pattern.fullmatch(identifier):
+            raise LookupError("capture_not_found")
+        if not self.capture.root.exists():
+            raise LookupError("capture_not_found")
+        with self._capture_read_lock():
+            requested = self._observation_path(identifier) if observation_id else self._receipt_path(identifier)
+            if not requested.exists():
+                raise LookupError("capture_not_found")
+            try:
+                if observation_id is not None:
+                    selected = CollectedObservation.from_mapping(read_json(requested))
+                    if selected.observation_id != observation_id:
+                        raise ValueError
+                    receipt_id = selected.receipt_id
+                receipt = self._read_receipt(receipt_id)
+                if receipt.receipt_id != receipt_id:
+                    raise ValueError
+                if receipt.status != "complete":
+                    raise LookupError("capture_not_found")
+                ids = self._read_manifest(receipt_id)
+                if receipt.observation_count != len(ids) or (observation_id is not None and observation_id not in ids):
+                    raise ValueError
+                ledger = LedgerEntry.from_mapping(read_json(self._ledger_path(receipt_id)))
+                if (ledger.receipt_id != receipt_id or ledger.capture_key != receipt.key
+                    or ledger.status != receipt.status or ledger.discovered_at != receipt.discovered_at
+                    or ledger.processed_at != receipt.updated_at):
+                    raise ValueError
+                observations, reviews = [], []
+                for member_id in ids:
+                    item = CollectedObservation.from_mapping(read_json(self._observation_path(member_id)))
+                    if item.observation_id != member_id or item.receipt_id != receipt_id:
+                        raise ValueError
+                    observations.append(item)
+                    review_path = self._review_path(member_id)
+                    if review_path.exists():
+                        review = CaptureReviewReceipt.from_mapping(read_json(review_path))
+                        if review.observation_id != member_id:
+                            raise ValueError
+                        reviews.append(review)
+            except (OSError, ValueError, TypeError, KeyError) as error:
+                raise LookupError("capture_integrity_degraded") from error
+            return CaptureSnapshot(receipts=(receipt,), observations=tuple(observations), review_receipts=tuple(reviews))
+
     def read_snapshot(self) -> CaptureSnapshot:
         """Decode one content-safe Capture view while holding the root lock.
 

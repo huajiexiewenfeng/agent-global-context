@@ -95,6 +95,14 @@ scheduled automatically and never creates, merges, promotes, or deletes memory.
 See [Capture operations](docs/capture-operations.md) for the evidence boundary
 and commands.
 
+The source-tree Capture Eval adapter prefers Trace `query_events` when available:
+it filters by the Capture principal and completed-item type, paginates newest
+ingestion first, deduplicates Cases across pages, and loads full snapshots only
+for selected Cases (cached per Trace). Older Trace versions without this API
+retain the legacy newest-Trace scan. A failing new query does not fall back to a
+broad scan. This does not change evidence validation, automatic Capture, memory
+review, or promotion; installation of both updated components is a separate step.
+
 Runtime 0.4.5 adds a content-safe Capture review-readiness view for an opt-in
 Codex App scheduled task. When 10 observations are waiting, or the oldest has
 waited 24 hours, the task can prepare up to three complete memory previews and
