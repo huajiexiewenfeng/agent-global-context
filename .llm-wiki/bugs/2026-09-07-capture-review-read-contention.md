@@ -1,7 +1,7 @@
 # Capture review read contention
 
 - bug_id / flow_id: 2026-09-07-capture-review-read-contention
-- status: installed-awaiting-codex-restart
+- status: follow-up-verified-awaiting-install
 - documentation_mode: new Bug Brief; preserve unrelated active RSI changes
 - routing: project-develop-copilot -> project-fix -> systematic-debugging
 
@@ -62,3 +62,11 @@ User requested implementation. First replace exact `capture_get` full-snapshot d
 - Read-only timing against the explicitly identified production observation through the new source path: 0.0561 seconds, observation present. No content printed and no production files installed. This is one fresh timing sample, not a concurrency benchmark or complete rollout acceptance.
 - Background writers can still cause legitimate busy responses. `capture_review_status`, search and Runner full Census accounting have not changed; this slice does not solve their growth cost. Do not report the entire incident permanently resolved.
 - Next gate: review scoped diff, approved production rollout/restart and live review acceptance; separately scope Census critical-section optimization if status latency remains unacceptable. Do not overwrite the running installation or delete its locks.
+
+## Follow-up — 2026-09-19
+
+- New evidence: scheduled review checks still returned `capture_read_busy` while successful status reads repeatedly surfaced the same zero-proposal batch.
+- Root causes: status still used the global Census-bearing snapshot under the writer lock; scheduled review left `discard` and `needs_context` outcomes unrecorded even when a batch produced no formal-memory proposal.
+- Implemented repair: status uses a lock-free, committed-receipt review snapshot that validates receipt, ledger, manifest, observation, and review bindings while omitting Census. Exact content reads remain writer-locked. A zero-proposal scheduled review records only `discard` / `needs_context` review receipts, never formal memory.
+- Verification: the writer-lock regression failed before the change and passed afterward; 67 adjacent Capture/Skill tests and 12 MCP tests passed. A read-only production-root sample returned healthy status in 1.296 seconds without exposing observation content; the prior first implementation scanned all receipts and took 32.042 seconds, so it was narrowed to observation-referenced receipts before acceptance.
+- Remaining gate: immutable local Runtime/Skill installation and post-restart live MCP acceptance. No formal memory or review receipt was changed during verification.
