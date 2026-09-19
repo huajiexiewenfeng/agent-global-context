@@ -9,7 +9,7 @@ Use this workflow only when the user asks to review or formalize Capture observa
 5. Recall only relevant active formal memories with `overview → search → get`.
 6. Assign every observation exactly one outcome: `draft`, `needs_context`, or `discard`.
 7. A draft must be grounded, self-contained, decision-relevant, deduplicated, bounded, and policy-valid. Never guess a referent for `该 skill`, `该技能`, `这个方案`, `上述方案`, or `上面的设置`.
-8. Show the complete Memory Item, the new/update/reinforce disposition, and all contributing observation IDs. Preview writes nothing.
+8. When the installed Runtime supports `capture_preview`, submit the complete Memory Item to `agc.admin` with `action: capture_preview`, `memory_markdown`, the new/update/reinforce `disposition`, and `capture_observation_ids`. Show the complete returned preview and all contributing IDs. This validates structure and records optional content-free metrics; it writes no formal memory or review outcome. It does not verify grounding, user visibility or confirmation. If unavailable, show the complete preview directly and disclose missing runtime evidence; do not install or block review just for metrics. A metrics warning does not discard a successfully returned preview.
 9. After explicit user confirmation, call `confirm`, `update`, or `observe` with `reinforce` and include `capture_observation_ids`.
 10. After the user accepts a non-draft classification, call `capture_review` with only `needs_context` or `discard`.
 11. If a write fails, state that it was not saved. If `capture_review_receipt_failed` is returned, state that formal memory succeeded but review bookkeeping needs repair.

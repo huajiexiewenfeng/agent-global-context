@@ -8,6 +8,7 @@ from agc_runtime.capture_store import CaptureReadBusyError
 from agc_runtime.contracts import ToolResponse
 from agc_runtime.models import MemoryItem
 from agc_runtime.paths import MemoryPaths
+from agc_runtime.metrics_business import measured_dispatch
 from agc_runtime.response_budget import _with_estimate, fit_overview_response
 from agc_runtime.runtime_config import load_runtime_config
 from agc_runtime.store import MemoryStore
@@ -279,6 +280,7 @@ _CAPTURE_ACTIONS = frozenset(
 )
 
 
+@measured_dispatch('agc.read')
 def dispatch_read(paths: MemoryPaths, request: Any) -> ToolResponse:
     if not isinstance(request, dict):
         return _failed("", "invalid_request", "request must be a mapping")

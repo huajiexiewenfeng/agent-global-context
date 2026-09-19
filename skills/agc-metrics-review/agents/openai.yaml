@@ -1,0 +1,5 @@
+interface:
+  display_name: "AGC 指标审阅"
+  short_description: "显式审阅 AGC 冻结指标、离线图表与方法，并追加人工反馈修订"
+policy:
+  allow_implicit_invocation: false

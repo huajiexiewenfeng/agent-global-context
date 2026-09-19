@@ -7,7 +7,7 @@ name = "agent-global-context-runtime"
 version = "0.4.5"
 description = "Deterministic local runtime for Agent Global Context."
 requires-python = ">=3.10"
-dependencies = ["PyYAML>=6.0.2,<7"]
+dependencies = ["PyYAML>=6.0.2,<7", "jsonschema>=4.23,<5"]
 
 [project.optional-dependencies]
 mcp = ["mcp==2.0.0"]
@@ -30,6 +30,7 @@ agc-mcp = "agc_runtime.mcp_server:main"
 agc-capture-hook = "agc_runtime.capture_hook:main"
 agc-capture = "agc_runtime.capture_cli:main"
 agc-eval = "agc_runtime.eval_cli:main"
+agc-metrics = "agc_runtime.metrics_cli:main"
 
 [tool.setuptools.packages.find]
 include = ["agc_runtime*"]

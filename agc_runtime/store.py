@@ -34,6 +34,7 @@ class MutationResult:
     created: bool
     object_id: str
     independent_evidence_count: int
+    written_content_digest: str | None = None
 
 
 def _utc_now() -> str:
@@ -270,7 +271,8 @@ class MemoryStore:
         new_lifecycle: str | None,
         timestamp: str,
         receipts: dict[str, Any],
-    ) -> None:
+    ) -> str:
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
         transaction_id = self._transaction_id(source)
         event_id = transaction_id
         target_existed = target.exists()
@@ -310,6 +312,7 @@ class MemoryStore:
             )
             raise
         self._cleanup_transaction(journal, backup)
+        return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
     def create_memory(
         self,
@@ -343,7 +346,7 @@ class MemoryStore:
                     independent_evidence_count=count,
                 )
             timestamp = _utc_now()
-            self._apply_mutation(
+            written_version = self._apply_mutation(
                 target=target,
                 text=item.to_markdown(),
                 source=source,
@@ -360,6 +363,7 @@ class MemoryStore:
                 created=True,
                 object_id=item.id,
                 independent_evidence_count=count + 1,
+                written_content_digest=written_version,
             )
 
     def add_evidence(
@@ -394,7 +398,7 @@ class MemoryStore:
                 ),
             )
             validate_memory_item(updated)
-            self._apply_mutation(
+            written_version = self._apply_mutation(
                 target=target,
                 text=updated.to_markdown(),
                 source=source,
@@ -411,6 +415,7 @@ class MemoryStore:
                 created=True,
                 object_id=memory_id,
                 independent_evidence_count=count + 1,
+                written_content_digest=written_version,
             )
 
     def replace_memory(
@@ -443,7 +448,7 @@ class MemoryStore:
             if current.kind != updated.kind:
                 raise ValueError("updated memory kind cannot change")
             validate_transition(current.lifecycle.status, updated.lifecycle.status)
-            self._apply_mutation(
+            written_version = self._apply_mutation(
                 target=target,
                 text=updated.to_markdown(),
                 source=source,
@@ -460,6 +465,7 @@ class MemoryStore:
                 created=True,
                 object_id=memory_id,
                 independent_evidence_count=count + 1,
+                written_content_digest=written_version,
             )
 
     def transition_memory(
@@ -498,7 +504,7 @@ class MemoryStore:
                 ),
             )
             validate_memory_item(updated)
-            self._apply_mutation(
+            written_version = self._apply_mutation(
                 target=target,
                 text=updated.to_markdown(),
                 source=source,
@@ -515,6 +521,7 @@ class MemoryStore:
                 created=True,
                 object_id=memory_id,
                 independent_evidence_count=count + 1,
+                written_content_digest=written_version,
             )
 
     def read_all_events_text(self) -> str:

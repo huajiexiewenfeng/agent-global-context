@@ -1086,7 +1086,7 @@ class CaptureStore:
                 raise LookupError("capture_integrity_degraded") from error
             return CaptureSnapshot(receipts=(receipt,), observations=tuple(observations), review_receipts=tuple(reviews))
 
-    def read_snapshot(self) -> CaptureSnapshot:
+    def read_snapshot(self, *, read_workers: int = 1) -> CaptureSnapshot:
         """Decode one content-safe Capture view while holding the root lock.
 
         The snapshot never treats a corrupt complete receipt as visible and
@@ -1095,7 +1095,9 @@ class CaptureStore:
         """
         if not self.capture.root.exists():
             return CaptureSnapshot()
-        with self._capture_read_lock():
+        from agc_runtime.capture_snapshot_io import SnapshotJsonReader
+
+        with self._capture_read_lock(), SnapshotJsonReader(read_json, read_workers) as reader:
             diagnostics: list[CaptureIntegrityDiagnostic] = []
             unavailable_ids: set[str] = set()
 
@@ -1112,6 +1114,9 @@ class CaptureStore:
                         degraded(code, kind)
                         continue
                     objects.append(path)
+                pattern = (_OBSERVATION_ID if kind in ('observation', 'review_receipt')
+                           else _RECEIPT_ID if kind in ('receipt', 'manifest', 'ledger') else None)
+                reader.prime(path for path in objects if pattern is not None and pattern.fullmatch(path.stem))
                 return tuple(objects)
 
             observations_by_id: dict[str, CollectedObservation] = {}
@@ -1119,7 +1124,7 @@ class CaptureStore:
                 try:
                     if not _OBSERVATION_ID.fullmatch(path.stem):
                         raise ValueError
-                    item = CollectedObservation.from_mapping(read_json(path))
+                    item = CollectedObservation.from_mapping(reader.read(path))
                     if item.observation_id != path.stem or item.observation_id in observations_by_id:
                         raise ValueError
                     observations_by_id[item.observation_id] = item
@@ -1133,7 +1138,7 @@ class CaptureStore:
                 try:
                     if not _RECEIPT_ID.fullmatch(path.stem):
                         raise ValueError
-                    manifests[path.stem] = self._read_manifest(path.stem)
+                    manifests[path.stem] = self._read_manifest(path.stem, _reader=reader.read)
                 except (OSError, TypeError, ValueError):
                     degraded("invalid_manifest", "manifest")
                     if _RECEIPT_ID.fullmatch(path.stem):
@@ -1149,7 +1154,7 @@ class CaptureStore:
                 try:
                     if not _RECEIPT_ID.fullmatch(path.stem):
                         raise ValueError
-                    receipt = CaptureReceipt.from_mapping(read_json(path))
+                    receipt = CaptureReceipt.from_mapping(reader.read(path))
                     if receipt.receipt_id != path.stem:
                         raise ValueError
                 except (OSError, TypeError, ValueError):
@@ -1199,7 +1204,7 @@ class CaptureStore:
                 try:
                     if not _RECEIPT_ID.fullmatch(path.stem):
                         raise ValueError
-                    entry = LedgerEntry.from_mapping(read_json(path))
+                    entry = LedgerEntry.from_mapping(reader.read(path))
                     if entry.receipt_id != path.stem or entry.receipt_id in ledgers_by_id:
                         raise ValueError
                     ledgers_by_id[entry.receipt_id] = entry
@@ -1408,7 +1413,7 @@ class CaptureStore:
                 try:
                     if not _OBSERVATION_ID.fullmatch(path.stem):
                         raise ValueError
-                    review = CaptureReviewReceipt.from_mapping(read_json(path))
+                    review = CaptureReviewReceipt.from_mapping(reader.read(path))
                     if (
                         review.observation_id != path.stem
                         or review.observation_id not in visible_observation_ids
@@ -1763,8 +1768,8 @@ class CaptureStore:
             raise ValueError("invalid Capture immutable manifest")
         return {"schema_version": CAPTURE_SCHEMA_VERSION, "receipt_id": receipt_id, "observation_ids": list(ids)}
 
-    def _read_manifest(self, receipt_id: str) -> tuple[str, ...]:
-        value = read_json(self._manifest_path(receipt_id))
+    def _read_manifest(self, receipt_id: str, *, _reader=None) -> tuple[str, ...]:
+        value = (_reader or read_json)(self._manifest_path(receipt_id))
         if set(value) != {"schema_version", "receipt_id", "observation_ids"} or value.get("schema_version") != CAPTURE_SCHEMA_VERSION or value.get("receipt_id") != receipt_id or not isinstance(value.get("observation_ids"), list):
             raise ValueError("invalid Capture immutable manifest")
         ids = value["observation_ids"]

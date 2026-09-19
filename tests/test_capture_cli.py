@@ -701,3 +701,48 @@ def test_runner_passes_timezone_aware_datetime_to_trace_bridge(
     assert observed["items"] == (item,)
     assert "trace_items" not in payload["data"]
     assert "evidence_ref" not in repr(payload["data"])
+
+
+@pytest.mark.parametrize('outcome', ['completed', 'failed', 'idle'])
+def test_runner_business_record_exists_before_run_and_survives_missing_trace(tmp_path, monkeypatch, capsys, outcome):
+    from agc_runtime.metrics_evidence import read_capture_attempts
+    memory_root, source_root = tmp_path / 'memory', tmp_path / 'source'
+    source_root.mkdir()
+    _write_config(memory_root, source_root, mode='runner')
+    directory = tmp_path / 'evidence'
+    directory.mkdir()
+    monkeypatch.setenv('AGC_METRICS_EVIDENCE_DIR', str(directory))
+    monkeypatch.delenv('AGENT_TRACE_DB', raising=False)
+
+    def run(*args, **kwargs):
+        row, = read_capture_attempts(directory)['attempts']
+        assert row['state'] == 'terminal_unobserved'
+        if outcome == 'failed':
+            raise RuntimeError('private failure text')
+        return _runner_report(completed_count=0 if outcome == 'idle' else 1)
+
+    monkeypatch.setattr('agc_runtime.capture_runner.CaptureRunner.run_once', run)
+    code = _run_runner(MemoryPaths.from_root(memory_root), action='cycle', maximum=1, scan_first=False)
+    payload = json.loads(capsys.readouterr().out)
+    assert code == (1 if outcome == 'failed' else 0)
+    assert payload['data']['metrics_evidence']['finish_status'] == 'recorded'
+    row, = read_capture_attempts(directory)['attempts']
+    assert row['state'] == ('failed' if outcome == 'failed' else 'completed')
+    assert row['finished']['trace_status'] == 'disabled'
+    assert 'private failure text' not in repr(row)
+
+
+def test_runner_evidence_failure_does_not_change_business_result(tmp_path, monkeypatch, capsys):
+    memory_root, source_root = tmp_path / 'memory', tmp_path / 'source'
+    source_root.mkdir()
+    _write_config(memory_root, source_root, mode='runner')
+    monkeypatch.setenv('AGC_METRICS_EVIDENCE_DIR', str(tmp_path / 'missing'))
+    monkeypatch.delenv('AGENT_TRACE_DB', raising=False)
+    monkeypatch.setattr('agc_runtime.capture_runner.CaptureRunner.run_once',
+                        lambda *args, **kwargs: _runner_report(completed_count=1))
+    code = _run_runner(MemoryPaths.from_root(memory_root), action='cycle', maximum=1, scan_first=False)
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert payload['data']['completed_count'] == 1
+    assert payload['data']['metrics_evidence']['start_status'] == 'unavailable'
+    assert payload['data']['metrics_evidence']['finish_status'] == 'unavailable'

@@ -280,6 +280,7 @@ def test_tool_contract_has_a_request_example_for_every_action():
         "migrate": {"action"},
         "capture_status": {"action"},
         "capture_review_notice": {"action", "batch_digest"},
+        "capture_preview": {"action", "memory_markdown", "disposition", "capture_observation_ids"},
     }
 
     assert set(examples) == set(expected_fields)

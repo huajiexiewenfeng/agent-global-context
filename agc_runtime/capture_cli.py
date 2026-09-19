@@ -14,6 +14,7 @@ from agc_runtime.capture_store import CaptureStore, root_fingerprint
 from agc_runtime.capture_trace import record_capture_failure, record_capture_success
 from agc_runtime.contracts import ToolResponse
 from agc_runtime.paths import MemoryPaths
+from agc_runtime.metrics_evidence import CaptureAttempt
 from agc_runtime.runtime_config import load_runtime_config
 
 
@@ -586,6 +587,7 @@ def _run_runner(
     paths: MemoryPaths, *, action: str, maximum: int, scan_first: bool
 ) -> int:
     trace_started_at = datetime.now(timezone.utc)
+    attempt = CaptureAttempt.start(action=action, started_at=trace_started_at)
 
     def failed(code: str, message: str, *, exit_code: int = 2) -> int:
         trace_status = record_capture_failure(
@@ -593,13 +595,15 @@ def _run_runner(
             started_at=trace_started_at,
             code=code,
             message=message,
+            **attempt.trace_kwargs,
         )
+        evidence = attempt.finish(outcome="failed", trace_status=trace_status, error_code=code)
         return _failed(
             action,
             code,
             message,
             exit_code=exit_code,
-            data={"trace_status": trace_status},
+            data={"trace_status": trace_status, **evidence},
         )
 
     try:
@@ -665,11 +669,14 @@ def _run_runner(
         started_at=trace_started_at,
         report=report_mapping,
         items=report.trace_items,
+        **attempt.trace_kwargs,
     )
+    evidence = attempt.finish(outcome="completed", trace_status=trace_status, report=report_mapping)
     data: dict[str, Any] = {
         "once": True,
         **report_mapping,
         "trace_status": trace_status,
+        **evidence,
     }
     if scan is not None:
         data["scan"] = _scan_mapping(scan)

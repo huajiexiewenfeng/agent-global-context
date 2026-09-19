@@ -817,6 +817,31 @@ def _handle_capture_review_notice(
     )
 
 
+def _handle_capture_preview(paths: MemoryPaths, request: dict[str, Any]) -> ToolResponse:
+    from agc_runtime.capture_review import parse_capture_observation_ids, validate_formalization_item
+    from agc_runtime.models import MemoryItem
+    from agc_runtime.schema import validate_memory_item
+    from agc_runtime.metrics_models import digest
+    if set(request)!={'action','memory_markdown','disposition','capture_observation_ids'}:
+        raise ValueError('capture_preview_fields_invalid')
+    markdown=request['memory_markdown']
+    if not isinstance(markdown,str) or not markdown or len(markdown.encode('utf-8'))>65536:
+        raise ValueError('capture_preview_size_invalid')
+    if request['disposition'] not in ('new','update','reinforce'):
+        raise ValueError('capture_preview_disposition_invalid')
+    ids=parse_capture_observation_ids(request['capture_observation_ids'])
+    item=MemoryItem.from_markdown(markdown)
+    validate_memory_item(item)
+    validate_formalization_item(item)
+    normalized=item.to_markdown()
+    # This boundary validates and returns the actual complete preview, not its
+    # grounding or user visibility. No store initialization or memory mutation.
+    return ToolResponse(tool='agc.admin',action='capture_preview',status='accepted',data=dict(
+        preview=dict(memory_id=item.id,memory_markdown=normalized,version=digest(normalized),
+                     disposition=request['disposition'],capture_observation_ids=list(ids)),
+        source_verification='unchecked',user_confirmation='unknown'))
+
+
 _HANDLERS = {
     "init": _handle_init,
     "validate": _handle_validate,
@@ -826,9 +851,14 @@ _HANDLERS = {
     "migrate": _handle_migrate,
     "capture_status": _handle_capture_status,
     "capture_review_notice": _handle_capture_review_notice,
+    "capture_preview": _handle_capture_preview,
 }
 
 
+from agc_runtime.metrics_business import measured_dispatch
+
+
+@measured_dispatch('agc.admin')
 def dispatch_admin(paths: MemoryPaths, request: Any) -> ToolResponse:
     if not isinstance(request, dict):
         return _failed("admin", "invalid_request", "request must be a mapping")

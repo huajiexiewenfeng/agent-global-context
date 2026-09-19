@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 from collections import Counter
 from dataclasses import replace
 from datetime import datetime
@@ -21,6 +22,7 @@ from agc_runtime.contracts import (
 from agc_runtime.locking import root_write_lock
 from agc_runtime.models import MemoryItem
 from agc_runtime.paths import MemoryPaths
+from agc_runtime.metrics_business import measured_dispatch
 from agc_runtime.policy import PolicyDecision, evaluate_observation
 from agc_runtime.schema import validate_memory_item
 from agc_runtime.store import MemoryStore, MutationResult
@@ -167,6 +169,8 @@ def _mutation_response(
         "created": result.created,
         "independent_evidence_count": result.independent_evidence_count,
     }
+    if 'AGC_METRICS_EVIDENCE_DIR' in os.environ and result.written_content_digest is not None:
+        data['memory_version'] = result.written_content_digest
     if item is not None:
         data.update(
             {
@@ -578,6 +582,7 @@ _HANDLERS: dict[str, Handler] = {
 }
 
 
+@measured_dispatch('agc.write')
 def dispatch_write(paths: MemoryPaths, request: Any) -> ToolResponse:
     if not isinstance(request, dict):
         return ToolResponse(

@@ -41,6 +41,13 @@ def _failed(code: str, message: str) -> ToolResponse:
     return ToolResponse(tool="agc.write", action="capture_forget", status="failed", error={"code": code, "message": message})
 
 
+def _metrics_pending(*,committed: bool) -> ToolResponse:
+    return ToolResponse(tool='agc.write',action='capture_forget',status='deferred',
+        data={'code':'capture_metrics_cleanup_pending','source_forget_committed':committed,
+              'current_request_applied':committed,'metrics_cleanup_status':'pending'},
+        warnings=('Derived metrics cleanup is incomplete; no full forget success is claimed.',))
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
@@ -511,11 +518,20 @@ def capture_forget(paths: MemoryPaths, request: dict[str, Any]) -> ToolResponse:
                     CaptureForgetTransaction.recover(paths)
                 except ValueError:
                     return _failed("invalid_capture_forget_journal", "Capture hard forget recovery journal is invalid")
+                from agc_runtime.metrics_forget import prepare_intent,recover_pending
+                try:
+                    if not recover_pending(paths): return _metrics_pending(committed=False)
+                except (OSError,ValueError,KeyError,TypeError):
+                    return _metrics_pending(committed=False)
                 try:
                     before = _read_primary(paths)
                     after, receipt_id = _rewrite_backup(before, kind, target)
                 except (KeyError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
                     return _failed("capture_forget_target_not_found", "exact Capture target is unavailable")
+                try:
+                    cleanup_intent=prepare_intent(paths,receipt_id)
+                except (OSError,ValueError,KeyError,TypeError):
+                    return _failed('metrics_cleanup_binding_unavailable','Metrics cleanup binding is unavailable; source was not changed')
                 backup_updates: list[tuple[Path, bytes]] = []
                 try:
                     for backup in sorted(
@@ -537,8 +553,11 @@ def capture_forget(paths: MemoryPaths, request: dict[str, Any]) -> ToolResponse:
                         before.get(name) != after.get(name)
                         for name in set(before) | set(after)
                     )
-                    tx.begin(primary_change_count + len(backup_updates))
+                    tx.begin(primary_change_count + len(backup_updates) + int(cleanup_intent is not None))
                     _apply_files(tx, paths, before, after)
+                    if cleanup_intent is not None:
+                        intent_path,intent=cleanup_intent
+                        tx.write(intent_path,canonical_json_bytes(intent),boundary='metrics-cleanup-intent')
                     for backup, data in backup_updates:
                         tx.write(backup, data, boundary="backup")
                     # Runtime-only artifacts are intentionally outside backup
@@ -552,6 +571,12 @@ def capture_forget(paths: MemoryPaths, request: dict[str, Any]) -> ToolResponse:
                 except Exception:
                     tx.rollback()
                     return _failed("capture_forget_failed", "Capture hard forget did not complete")
+                # This is after the source transaction's commit boundary. Never
+                # roll source invalidation back because external cleanup failed.
+                try:
+                    if not recover_pending(paths): return _metrics_pending(committed=True)
+                except (OSError,ValueError,KeyError,TypeError):
+                    return _metrics_pending(committed=True)
     except RuntimeError:
         return _failed("capture_forget_busy", "Capture hard forget is busy")
     data: dict[str, Any] = {"code": "capture_forgotten", "source_task_deleted": False}

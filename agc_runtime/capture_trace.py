@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -10,6 +11,7 @@ from typing import Any, Literal
 from uuid import uuid4
 
 from agc_runtime.capture_contracts import CAPTURE_STATUSES
+from agc_runtime import __version__
 from agc_runtime.capture_eval_evidence import CaptureItemTraceReport
 
 TraceStatus = Literal["disabled", "suppressed", "recorded", "unavailable"]
@@ -124,10 +126,19 @@ def _emit_root(
     terminal_event_type: str,
     terminal_payload: Mapping[str, Any],
     items: Sequence[CaptureItemTraceReport] = (),
+    trace_id: str | None = None,
+    span_id: str | None = None,
 ) -> TraceStatus:
     if not database_value:
         return "unavailable"
     try:
+        if (trace_id is None) != (span_id is None):
+            return "unavailable"
+        if trace_id is not None and (
+            not isinstance(trace_id, str) or not re.fullmatch(r"trc_agc_[a-f0-9]{32}", trace_id)
+            or not isinstance(span_id, str) or not re.fullmatch(r"spn_agc_[a-f0-9]{32}", span_id)
+        ):
+            return "unavailable"
         from agent_trace_runtime import (
             EventStore,
             PrincipalRef,
@@ -141,8 +152,8 @@ def _emit_root(
         if not service.preflight("optional").ok:
             return "unavailable"
         principal = PrincipalRef(_PRINCIPAL_ID, "runtime")
-        trace_id = "trc_agc_" + uuid4().hex
-        span_id = "spn_agc_" + uuid4().hex
+        trace_id = trace_id or "trc_agc_" + uuid4().hex
+        span_id = span_id or "spn_agc_" + uuid4().hex
         service.emit(
             create_event(
                 trace_id=trace_id,
@@ -151,7 +162,7 @@ def _emit_root(
                 event_type="trace.root.started",
                 source="runtime",
                 principal_ref=principal,
-                payload={"name": _ROOT_NAME, "span_kind": "workflow"},
+                payload={"name": _ROOT_NAME, "span_kind": "workflow", "implementation_version": __version__},
                 clock=lambda: started_at,
             )
         )
@@ -193,6 +204,8 @@ def record_capture_success(
     report: Mapping[str, Any],
     items: Sequence[CaptureItemTraceReport] = (),
     finished_at: datetime | None = None,
+    trace_id: str | None = None,
+    span_id: str | None = None,
 ) -> TraceStatus:
     """Record one useful successful cycle without exposing Capture content."""
 
@@ -212,6 +225,8 @@ def record_capture_success(
         terminal_event_type="trace.root.completed",
         terminal_payload=terminal_payload,
         items=checked_items,
+        trace_id=trace_id,
+        span_id=span_id,
     )
 
 
@@ -222,6 +237,8 @@ def record_capture_failure(
     code: str,
     message: str,
     finished_at: datetime | None = None,
+    trace_id: str | None = None,
+    span_id: str | None = None,
 ) -> TraceStatus:
     """Record one sanitized failed cycle without affecting Capture failure."""
 
@@ -232,6 +249,8 @@ def record_capture_failure(
         started_at=started_at,
         finished_at=finished_at or _now(),
         terminal_event_type="trace.root.failed",
+        trace_id=trace_id,
+        span_id=span_id,
         terminal_payload={
             "action": action,
             "error": {"type": code, "message": message},

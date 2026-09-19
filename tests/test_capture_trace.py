@@ -210,6 +210,7 @@ def test_significant_success_records_one_allowlisted_root(
     assert events[0]["payload"] == {
         "name": "agc.capture.cycle",
         "span_kind": "workflow",
+        "implementation_version": __import__('agc_runtime').__version__,
     }
     assert events[0]["timestamp"] == STARTED_AT
     assert events[1]["timestamp"] == FINISHED_AT
@@ -416,3 +417,17 @@ def test_trace_runtime_is_an_optional_bounded_dependency() -> None:
         "agent-trace-runtime>=0.1,<0.2"
     ]
     assert all("agent-trace-runtime" not in item for item in project["dependencies"])
+
+
+def test_trace_reuses_preallocated_business_identity(monkeypatch):
+    monkeypatch.setenv('AGENT_TRACE_DB', 'unused.sqlite3')
+    events, _ = _install_fake_runtime(monkeypatch)
+    identity = dict(trace_id='trc_agc_' + 'a' * 32, span_id='spn_agc_' + 'b' * 32)
+    assert record_capture_success(action='cycle', started_at=STARTED_AT,
+        report=_report(completed_count=1), **identity) == 'recorded'
+    assert all(event['trace_id'] == identity['trace_id'] for event in events)
+    assert all(event['span_id'] == identity['span_id'] for event in events)
+    events.clear()
+    assert record_capture_failure(action='cycle', started_at=STARTED_AT,
+        code='capture_busy', message='Capture unavailable', **identity) == 'recorded'
+    assert all(event['trace_id'] == identity['trace_id'] for event in events)

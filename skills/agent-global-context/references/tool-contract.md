@@ -454,10 +454,19 @@ deferred envelope because the migration adapter is outside this package.
 | `restore` | `{"action":"restore","backup_path":"D:/managed/agc-backup.zip"}` |
 | `migrate` | `{"action":"migrate"}` |
 | `capture_status` | `{"action":"capture_status"}` |
+| `capture_preview` | `{"action":"capture_preview","memory_markdown":"<v2 Memory Item Markdown>","disposition":"new","capture_observation_ids":["co_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]}` |
 | `capture_review_notice` | `{"action":"capture_review_notice","batch_digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}` |
 
 `agc.admin` is maintenance and migration, not a Recall shortcut.
 `capture_status` is content-free operational evidence for the Host-bound root.
+`capture_preview` accepts exactly the fields shown, 1–20 unique observation IDs,
+new/update/reinforce disposition and at most 64 KiB UTF-8 complete Markdown.
+It validates schema and dangling references and returns the normalized complete
+preview with a representation digest. It does not read source observations or
+write memory/review state; source verification is unchecked and user confirmation
+unknown. Opt-in metrics record only IDs/digest and runtime_returned, not human
+visibility. A failed preview is not accepted; a metrics warning alone does not
+invalidate a returned preview. Source grounding remains the caller's review task.
 `capture_review_notice` contains exactly `action` and a lowercase SHA-256
 `batch_digest`. It stores only content-free local delivery state; it does not
 review an observation, create a preview, or mutate formal memory.
