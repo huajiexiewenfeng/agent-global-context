@@ -176,6 +176,16 @@ def test_skill_makes_recall_and_application_llm_choices_explicit():
     assert re.search(r"current instructions.*(?:win|outrank)", text)
 
 
+def test_skill_names_high_value_recall_candidates_without_making_them_mandatory():
+    text = _normalized_skill_text()
+
+    assert "high-value recall candidates" in text
+    assert "global collaboration" in text
+    assert "multi-session" in text
+    assert "personal workflow" in text
+    assert re.search(r"candidates.*not.*mandatory", text)
+
+
 def test_skill_is_failure_open_and_separates_write_from_admin():
     text = _normalized_skill_text()
 
@@ -304,7 +314,7 @@ def test_quality_first_formalization_workflow_is_bounded_and_user_confirmed():
     assert "该 skill" in guidance
 
 
-def test_proactive_review_notification_workflow_is_bounded_and_non_mutating():
+def test_proactive_review_notification_workflow_is_bounded_and_never_promotes_without_confirmation():
     text = REVIEW_NOTIFICATION_WORKFLOW.read_text(encoding="utf-8")
     normalized = " ".join(text.split()).casefold()
 
@@ -325,6 +335,19 @@ def test_proactive_review_notification_workflow_is_bounded_and_non_mutating():
     assert "raw codex session" in normalized
     assert "codex app owns scheduling" in normalized
     assert "agc owns readiness" in normalized
+
+
+def test_zero_proposal_review_records_only_non_memory_outcomes():
+    normalized = " ".join(
+        REVIEW_NOTIFICATION_WORKFLOW.read_text(encoding="utf-8").split()
+    ).casefold()
+
+    assert "zero proposals" in normalized
+    assert "capture_review" in normalized
+    assert "discard" in normalized
+    assert "needs_context" in normalized
+    assert re.search(r"zero proposals.*(?:record|write).*(?:discard|needs_context)", normalized)
+    assert re.search(r"(?:does not|never).*formal memory", normalized)
 
 
 def test_formalization_groups_receipts_and_expands_exact_project_scope():

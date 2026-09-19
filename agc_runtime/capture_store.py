@@ -1086,6 +1086,136 @@ class CaptureStore:
                 raise LookupError("capture_integrity_degraded") from error
             return CaptureSnapshot(receipts=(receipt,), observations=tuple(observations), review_receipts=tuple(reviews))
 
+    def read_review_snapshot(self) -> CaptureSnapshot:
+        """Read committed review inputs without taking the Capture writer lock.
+
+        A complete receipt is Capture's commit marker and is written only after
+        its manifest, observations, ledger, and budget settlement.  This reader
+        validates those committed members but ignores valid artifacts belonging
+        to an in-flight, non-complete receipt.  It never reads Census state.
+
+        The method exists only for metadata-only review readiness.  Content
+        reads still use ``read_committed_receipt`` and remain serialized with
+        Hard Forget through the writer lock.
+        """
+        if not self.capture.root.exists():
+            return CaptureSnapshot()
+
+        diagnostics: list[CaptureIntegrityDiagnostic] = []
+        unavailable_ids: set[str] = set()
+
+        def degraded(code: str, kind: str, identifier: str | None = None) -> None:
+            diagnostics.append(CaptureIntegrityDiagnostic(code, kind))
+            if identifier is not None:
+                unavailable_ids.add(identifier)
+
+        def json_objects(directory: Path, code: str, kind: str) -> tuple[Path, ...]:
+            if not directory.exists() or not directory.is_dir():
+                degraded("missing_capture_namespace", kind)
+                return ()
+            objects: list[Path] = []
+            for path in sorted(directory.iterdir()):
+                if not path.is_file() or path.suffix.lower() != ".json":
+                    degraded(code, kind)
+                    continue
+                objects.append(path)
+            return tuple(objects)
+
+        observations_by_receipt: dict[str, dict[str, CollectedObservation]] = {}
+        for path in json_objects(
+            self.capture.observations,
+            "invalid_observation",
+            "observation",
+        ):
+            try:
+                if not _OBSERVATION_ID.fullmatch(path.stem):
+                    raise ValueError
+                observation = CollectedObservation.from_mapping(read_json(path))
+                if observation.observation_id != path.stem:
+                    raise ValueError
+                bucket = observations_by_receipt.setdefault(
+                    observation.receipt_id,
+                    {},
+                )
+                if observation.observation_id in bucket:
+                    raise ValueError
+                bucket[observation.observation_id] = observation
+            except (OSError, TypeError, ValueError):
+                degraded(
+                    "invalid_observation",
+                    "observation",
+                    path.stem if _OBSERVATION_ID.fullmatch(path.stem) else None,
+                )
+
+        visible: list[CollectedObservation] = []
+        complete_receipts: list[CaptureReceipt] = []
+        for receipt_id, observations in observations_by_receipt.items():
+            try:
+                receipt = self._read_receipt(receipt_id)
+                if receipt.receipt_id != receipt_id:
+                    raise ValueError
+            except (FileNotFoundError, OSError, TypeError, ValueError):
+                degraded("invalid_receipt", "receipt", receipt_id)
+                continue
+            if receipt.status != "complete":
+                continue
+            try:
+                entry = LedgerEntry.from_mapping(read_json(self._ledger_path(receipt_id)))
+                if (
+                    entry.receipt_id != receipt_id
+                    or entry.capture_key != receipt.key
+                    or entry.status != receipt.status
+                    or entry.discovered_at != receipt.discovered_at
+                    or entry.processed_at != receipt.updated_at
+                ):
+                    degraded("ledger_receipt_mismatch", "ledger", receipt_id)
+                    continue
+            except FileNotFoundError:
+                degraded("missing_ledger", "ledger", receipt_id)
+                continue
+            except (OSError, TypeError, ValueError):
+                degraded("invalid_ledger", "ledger", receipt_id)
+                continue
+            try:
+                observation_ids = self._read_manifest(receipt_id)
+                if receipt.observation_count != len(observation_ids):
+                    raise ValueError
+                bound = [observations[observation_id] for observation_id in observation_ids]
+            except (KeyError, OSError, TypeError, ValueError):
+                degraded("invalid_manifest", "manifest", receipt_id)
+                continue
+            complete_receipts.append(receipt)
+            visible.extend(bound)
+
+        visible_ids = {item.observation_id for item in visible}
+        reviews: list[CaptureReviewReceipt] = []
+        for path in json_objects(
+            self.capture.reviews,
+            "invalid_review_receipt",
+            "review_receipt",
+        ):
+            try:
+                if not _OBSERVATION_ID.fullmatch(path.stem):
+                    raise ValueError
+                review = CaptureReviewReceipt.from_mapping(read_json(path))
+                if review.observation_id != path.stem or review.observation_id not in visible_ids:
+                    raise ValueError
+                reviews.append(review)
+            except (OSError, TypeError, ValueError):
+                degraded(
+                    "invalid_review_receipt",
+                    "review_receipt",
+                    path.stem if _OBSERVATION_ID.fullmatch(path.stem) else None,
+                )
+
+        return CaptureSnapshot(
+            receipts=tuple(complete_receipts),
+            observations=tuple(visible),
+            review_receipts=tuple(reviews),
+            diagnostics=tuple(diagnostics),
+            unavailable_ids=frozenset(unavailable_ids),
+        )
+
     def read_snapshot(self, *, read_workers: int = 1) -> CaptureSnapshot:
         """Decode one content-safe Capture view while holding the root lock.
 

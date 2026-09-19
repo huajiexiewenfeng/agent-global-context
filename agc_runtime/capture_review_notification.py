@@ -82,7 +82,7 @@ def capture_review_status(
     paths: MemoryPaths, *, now: str | None = None
 ) -> dict[str, Any]:
     current = _utc(now)
-    snapshot = CaptureStore(paths).read_snapshot()
+    snapshot = CaptureStore(paths).read_review_snapshot()
     reviewed = {item.observation_id for item in snapshot.review_receipts}
     eligible = [
         item for item in snapshot.observations if item.observation_id not in reviewed

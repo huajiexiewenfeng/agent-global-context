@@ -103,6 +103,27 @@ def test_capture_review_status_dispatch_is_strict_and_content_safe(tmp_path):
     assert str(paths.root) not in str(accepted.to_dict()) + str(rejected.to_dict())
 
 
+def test_capture_review_status_uses_lock_free_review_snapshot(tmp_path):
+    paths = MemoryPaths.from_root(tmp_path / "memory")
+    store = CaptureStore(paths, clock=lambda: UTC)
+    receipt = _receipt(_key("task-1", "r1"))
+    observation = _observation(
+        receipt,
+        "Review queue observation.",
+        0,
+        captured_at="2026-08-13T12:02:00Z",
+    )
+    _complete(store, receipt.key, (observation,))
+
+    with capture_write_lock(paths):
+        response = dispatch_read(paths, {"action": "capture_review_status"})
+
+    assert response.status == "accepted"
+    assert response.data["unreviewed_count"] == 1
+    assert response.data["batch_observation_ids"] == [observation.observation_id]
+    assert "Review queue observation." not in str(response.to_dict())
+
+
 @pytest.mark.parametrize(
     "read_request",
     [

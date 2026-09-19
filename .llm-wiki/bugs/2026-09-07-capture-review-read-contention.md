@@ -1,7 +1,7 @@
 # Capture review read contention
 
 - bug_id / flow_id: 2026-09-07-capture-review-read-contention
-- status: installed-awaiting-codex-restart
+- status: follow-up-installed-awaiting-restart
 - documentation_mode: new Bug Brief; preserve unrelated active RSI changes
 - routing: project-develop-copilot -> project-fix -> systematic-debugging
 
@@ -62,3 +62,14 @@ User requested implementation. First replace exact `capture_get` full-snapshot d
 - Read-only timing against the explicitly identified production observation through the new source path: 0.0561 seconds, observation present. No content printed and no production files installed. This is one fresh timing sample, not a concurrency benchmark or complete rollout acceptance.
 - Background writers can still cause legitimate busy responses. `capture_review_status`, search and Runner full Census accounting have not changed; this slice does not solve their growth cost. Do not report the entire incident permanently resolved.
 - Next gate: review scoped diff, approved production rollout/restart and live review acceptance; separately scope Census critical-section optimization if status latency remains unacceptable. Do not overwrite the running installation or delete its locks.
+
+## Follow-up — 2026-09-19
+
+- New evidence: scheduled review checks still returned `capture_read_busy` while successful status reads repeatedly surfaced the same zero-proposal batch.
+- Root causes: status still used the global Census-bearing snapshot under the writer lock; scheduled review left `discard` and `needs_context` outcomes unrecorded even when a batch produced no formal-memory proposal.
+- Implemented repair: status uses a lock-free, committed-receipt review snapshot that validates receipt, ledger, manifest, observation, and review bindings while omitting Census. Exact content reads remain writer-locked. A zero-proposal scheduled review records only `discard` / `needs_context` review receipts, never formal memory.
+- Verification: the writer-lock regression failed before the change and passed afterward; 67 adjacent Capture/Skill tests and 12 MCP tests passed. A read-only production-root sample returned healthy status in 1.296 seconds without exposing observation content; the prior first implementation scanned all receipts and took 32.042 seconds, so it was narrowed to observation-referenced receipts before acceptance.
+- Installed deployment: immutable Runtime `84498f12cbf8f7691b0ece5533cb1cbacb0193e1eabe1e454e2fd481d0bd5479`; source/installed hashes match for both changed Runtime files and both Skill workflow files. `agc-mcp --version` reports 0.4.5 and `pip check` reports no broken requirements. The Capture launcher retains `C:\Users\admin\.agent-trace-runtime\trace.sqlite3`.
+- The installer initially refused the existing unmarked MCP table. The unchanged table was wrapped in the installer's two management comments after a byte-for-byte backup at `backups/20260919-managed-config-marker/config.toml`; the rerun then completed and created its normal backup batch `20260919-200036-697-e8cddd92796d4b6b9df2b43b61d987dd`.
+- Installed read-only acceptance is healthy; after the cold first run, two consecutive production-root status reads completed in 1.341 and 1.316 seconds. No formal memory or review receipt was changed during verification.
+- Remaining gate: restart Codex and verify the newly loaded MCP process. The prior immutable Runtime remains available for rollback.

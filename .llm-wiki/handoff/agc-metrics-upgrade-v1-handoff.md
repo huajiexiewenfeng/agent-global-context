@@ -1,5 +1,20 @@
 # AGC metrics P1 handoff
 
+## Integration verified: 2026-09-19 (local only)
+
+- Integrated codex/agc-minimal-fixes (2721666) with the Metrics checkpoint
+  bc68b95 on the existing main branch. Resolved two textual conflicts without
+  replacing either full-snapshot access checks or the readiness-only reader.
+- Both Skill test additions survived the merge. The workflow keeps zero-proposal
+  non-memory outcomes and Metrics preview/notice semantics. Scheduler configuration
+  was not changed; its explicit restrictions still take precedence.
+- Cross-regression: 124 passed in 30.42s, exit 0 (71fdd4). Scope:
+  capture_read_service, skill_adapter, capture_snapshot_read_ahead,
+  metrics_research_access/source, metrics_acceptance/preview/forget_integration,
+  and capture_trace. Synthetic fixtures only; no real Judge or installation.
+- This does not resolve or revalidate the two real-case preflight timeouts,
+  private evidence-view authorization, visual acceptance or production pilot.
+
 ## Current checkpoint: 2026-09-19 (not a release)
 
 - Preserve the existing Metrics implementation and its tests as a local WIP

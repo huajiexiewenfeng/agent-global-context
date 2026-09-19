@@ -13,6 +13,8 @@ Read only when missing personal context could materially worsen decision, expres
 
 Treat requests that evaluate whether a project, repository, tool, or technology fits the user's research, learning, or long-term goals as Recall cases. For a generic explanation or overview with no personal relevance, do not call `agc.read`.
 
+High-value Recall candidates include global collaboration or writing rules that can change the deliverable, multi-session work or content series whose continuity matters, and personal workflow or system design where earlier goals and tradeoffs affect the choice. These are candidates, not mandatory calls: skip Recall when current instructions and evidence are already sufficient.
+
 ## Recall and Apply
 
 Use `overview → search → get → history/evidence`; stop as soon as enough context is available.
