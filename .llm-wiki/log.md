@@ -1,5 +1,404 @@
 # LLM Wiki Log
 
+## 2026-09-12 — M3 matrix and implementation-version evidence
+
+- Added readable M3 six-field matrix and real implementation-version comparison
+  between independent business start and the unique same-time Trace start.
+  AGC adds version metadata to its own root payload; no Trace Runtime schema edit.
+- Frozen transforms add .trace-version1; old field sets/versions stay readable.
+  Missing labels remain unchecked; configuration/result references do not acquire
+  fabricated verification. Labels prove metadata consistency, not binary identity.
+- Red: three missing behaviors (9e6fc8). Initial regression found expected root
+  payload needed its new version field (2fcff5); updated exact contract assertion.
+  Focused regression: 68 passed in 5.72 s (fbd1e2). All metrics plus Capture Trace:
+  474 passed in 168.82 s (74ab60), exit 0. Default host isolated, fake models only.
+  Scoped independent static review: no Critical/Important findings. Diff check
+  passed (f1b4f1), existing line-ending warnings.
+- Single-case evidence-response patch rejected by safety approval before writing:
+  private source/Judge text may persist in Codex conversation history. No bypass,
+  no private reads, no implementation landed; discarded only this turn's draft
+  tests for the unapproved command. Await explicit destination authorization.
+- No production install, real Judge, commit or push. Overall acceptance remains
+  open, including that entry point and policy-blocked visual check.
+
+## 2026-09-12 — Original-spec acceptance checkpoint
+
+- Added synthetic CLI journey through fake Judge, managed report, evidence index,
+  fixture human correction and byte-identical no-host offline render. Original
+  assessment retained; no real feedback/memory changes. 58 tests passed in 8.62 s
+  (ded74c, exit 0); files under D:/tmp_test/metrics-acceptance-0912.
+- Specification audit found remaining M3 verification/matrix and single-case
+  evidence-view gaps. Local HTML navigation was blocked by Browser safety policy;
+  no workaround attempted, no visual acceptance claimed. Checklist is recorded in
+  docs/metrics-acceptance-2026-09-12.md. Runtime source unchanged this turn.
+- No production install/config mutation, real Judge, commit or push. Next close
+  those original-scope gaps before proposing installation; full flow remains open.
+
+## 2026-09-11 — Attempt ownership and managed report cleanup
+
+- Completed OS attempt locks (including real abrupt child-process exit test),
+  inactive unfinished-attempt cleanup, and active/unknown fail-closed handling.
+- Registered quality reports, classification exports and evidence exports with
+  fixed files, source bindings, directory identity and hashes. Source checks and
+  publication share Capture forget's root lock. Committed cleanup intents now
+  include these report bundles; externally copied/offline reports are unmanaged.
+- TDD report tests initially failed for missing module (74689a); fixed absent
+  path probing during implementation. Reviewed P2 partial-write recovery defect
+  was reproduced (b54bc3) and fixed with registered internal staging + exclusive
+  hard-link publication; independent read-only review closed the finding.
+- Full metrics/Capture Eval/Capture forget regression: 505 passed, 147.73 s
+  (755aa7). Afterwards, reproduced CLI busy-lock traceback (a500b4) and sanitized
+  RuntimeError at the CLI boundary. Final affected evidence CLI/attempt lock/report
+  suite: 23 passed, 26.25 s (6d360e). No need to rerun unrelated suites for that
+  exception-list-only change. Diff check passed (68a2fa), existing LF/CRLF warnings.
+- All files and model data synthetic under D:/tmp_test; only test-owned artifacts
+  removed. No production install/config changes, private sessions, real Judge,
+  commit or push. Full original metrics goal remains open: P1–P4 end-to-end/visual
+  acceptance and explicit P5 production authorization, not more cleanup redesign.
+
+## 2026-09-11 — Connect Capture forget and recover cleanup intents
+
+- Source invalidation and metadata-only cleanup intent now share the original
+  Capture transaction; external result deletion follows commit under existing
+  locks. Partial failures defer and preserve intent for the next explicit forget.
+- Fixed read-lock reentry in recovery and a reviewed fail-open when metrics host
+  configuration disappeared. Host sends now preserve ledger binding metadata;
+  missing/replaced host or ledger cannot silently skip cleanup.
+- Full metrics/Capture Eval/Capture forget suite: 491 passed in 173.66 s (f83f55).
+  Independent read-only review finding closed; diff check passed. Only synthetic
+  test data and fake models used; no production install or publication.
+- Remaining: pending attempts, report dependencies and original-scope final
+  acceptance/authorized production rollout. Full metrics goal remains open.
+
+## 2026-09-11 — Restricted artifact cleanup executor
+
+- Added internal exact-snapshot cleanup under the shared commit guard, with
+  preflight rejection, immediate fixed-file verification and final absence check.
+  Partial unlink progress is explicit; there is no rollback or durable recovery.
+- Reproduced and fixed status-only terminal binding and recreated-file success
+  reporting. Candidate snapshots now include full terminal digests.
+- Final affected suite: 57 passed, 55.29 s (256e83). Read-only review findings
+  closed. Only synthetic test-owned files deleted; no production/model/push.
+- Production forget integration and recovery remain unfinished; no new CLI added.
+
+## 2026-09-11 — Cleanup candidate selection and result commit coordination
+
+- Added read-only exact receipt/subject candidate selection with fixed artifacts,
+  directory identities, bounded hashes and separate pending/unbound states.
+- Host Eval/classification now share the existing Memory Root lock only during
+  final source/config/registration checks and result persistence, not model calls.
+- Reproduced and fixed reviewed final-source/registration ordering gap (0e5ef7).
+  Final affected suite: 59 passed, 23.60 s (be6453); review finding closed.
+  Earlier broader suite: 427 passed (b40d64), before the ordering correction.
+- No production, real model, non-test deletion or publication. Exact invalidation,
+  actual managed cleanup and forget integration remain unfinished.
+
+## 2026-09-11 — Bind source inventory to managed directory identity
+
+- Added directory registration v2 source-binding identity/membership checks.
+  Missing/changed source inventory invalidates registered results. Host sending
+  cannot fall back to null-binding standalone behavior.
+- Reproduced and fixed host exports accepting legitimate unbound v2 results;
+  strict source binding now propagates through all host reader paths and recursion.
+- 86 affected tests passed in 55.60 s (683b54), independent review finding closed.
+  No production/model/non-test deletion or publication. Cleanup candidate selection,
+  in-flight writer coordination and existing forget integration remain outstanding.
+
+## 2026-09-11 — Exact source receipt bindings
+
+- Added per-plan controlled source joins for Capture, research and ready-only
+  classification inputs, persisted before host model execution. No text/locators;
+  immutable exact reuse, no inverse hash guessing or keyword-based matching.
+- Fixed a reviewed regression where ignored duplicate references blocked a ready
+  classification input; exact manifest multiplicities retained, only ready bound.
+- 60 affected tests passed in 32.51 s (2f9791), read-only review finding closed.
+  No production/model/deletion/push actions. Directory identity linkage and
+  existing forget cleanup integration remain necessary before retention acceptance.
+
+## 2026-09-11 — Close host consumer registration bypass
+
+- Reproduced and fixed CLI refreeze/export accepting output whose host registry
+  was corrupt. Explicit ledger binding now reaches summary, review/evidence and
+  recursive step verification. Offline HTML remains a frozen view, not live proof.
+- Independent review found a later source-read window; reproduced with two source
+  call positions and fixed final per-entry registration verification before export.
+- 53 affected tests passed in 25.25 s (cfded7); review finding closed. Production,
+  real models, deletion and publication were not exercised. Cleanup remains open.
+
+## 2026-09-11 — Exact external execution directory inventory
+
+- Added host-ledger artifact registration before model calls and bounded reuse
+  checks in Runner/classification reader. Directory substitution and changed
+  local/host records reject verification. No source bodies, deletion rules or
+  actual cleanup are added; exact source-to-forget integration remains open.
+- Final affected suite: 60 passed in 23.28 s (28c73a); independent scoped review
+  passed. Tests use synthetic data only. No production/model/publication actions.
+- Audit lower-level freeze/export readers' host binding next; do not describe
+  this increment as complete global retention enforcement.
+
+## 2026-09-11 — Human review triage, bounded normal spotchecks
+
+- Added the original-design review queue, using controlled metadata and shared
+  validated human feedback. All flagged/unknown/disputed cases remain visible;
+  unflagged spotchecks are capped at two across scenarios, not metric denominators.
+- TDD: 23 expected missing-queue failures; 48 affected tests passed. Full metrics
+  and Capture Eval adapter regression: 380 passed in 76.22 s (636f49). Independent
+  read-only review passed for this increment. Model execution was simulated.
+- External managed retention, on-demand evidence and original full acceptance
+  remain unfinished. No production, real model, commit or push actions.
+
+## 2026-09-11 — Local result dependencies
+
+- Eval and classification executions register exact source/config/result dependencies
+  before sending; readers reject missing/changed records and recheck before return.
+- 55 related tests passed (f3bc68), independent review passed. No files deleted or
+  production configuration changed. Global output discovery/forget cleanup remains
+  incomplete; local dependency records alone do not satisfy managed retention.
+
+## 2026-09-11 — Correct bulk evidence export to original privacy scope
+
+- Original design section 10 disallows bulk source-body HTML and unmanaged derived
+  content persistence. Removed raw annex file/body HTML export introduced earlier;
+  only controlled reference index and content-free HTML are generated now.
+- 19 related tests passed (012d5b), independent review confirmed. Existing files
+  not deleted. Execution-result dependency registration/invalidation still open;
+  do not equate this correction with full retention or original goal completion.
+
+## 2026-09-11 — Private evidence export CLI
+
+- Connected explicit Capture/research evidence export to fixed host and live source
+  verification, producing private annex/HTML without rerunning Judge.
+- Reproduced and fixed reviewer finding for empty research plans. Latest related
+  tests: 24 passed (c09a10), including zero-call empty-plan export. Full original
+  source/retention/visual/production acceptance requirements remain open.
+
+## 2026-09-11 — Private evidence HTML drilldown
+
+- Explicit matching evidence annex renders original model assessments and safe
+  documents as escaped text; default reports do not include this private content.
+- Latest related tests: 24 passed (429407), independent review passed. Generation
+  CLI, managed invalidation, visual and full original acceptance remain pending.
+
+## 2026-09-11 — Explicit private evidence annex
+
+- Added full assessment/safe-document annex with exact review binding and live
+  source checks at generation; unavailable cases contain no private content.
+- Latest related tests: 27 passed (8842a4); independent review passed. CLI/HTML,
+  managed invalidation and full original acceptance remain pending. No production
+  source reads, model calls, installed configuration changes or publication.
+
+## 2026-09-11 — Preparation-state report coverage
+
+- Added content-free preparation status chart and reference details with methods;
+  preserved complete input validation for classification/model-call paths.
+- Latest affected tests: 31 passed (cc1a91). No live data or model calls. Broader
+  original report/evidence and production acceptance requirements remain active.
+
+## 2026-09-11 — Research cohort report coverage
+
+- Optional frozen cohort section displays selection states, reasons and methods
+  separately from M5 judgments; does not equate counts with benefit or population.
+- Affected reports and Skill tests: 17 passed (8e1628). Complete preparation-state
+  display and other original report/evidence requirements remain unfinished.
+
+## 2026-09-11 — Verified classification export and M5 handoff
+
+- Added host-bound export command with point-in-time verification metadata and
+  complete preparation coverage, then tested exported cohort feeding M5 planning.
+- Complete metrics/Capture Eval regression: 326 passed, no skips (70d973); local
+  Runtime loaded, model process simulated. Independent review and Skill checks pass.
+- Original scope remains active; no production changes or real model calls.
+
+## 2026-09-11 — Classification result verification
+
+- Added read-only classification artifact/ledger and live-source verification;
+  rejects stale, incomplete or inconsistent results without calling a model.
+- Latest affected tests: 26 passed (c365a1), independent review passed. Verification
+  is consistency, not authenticity. CLI handoff and full acceptance remain pending.
+
+## 2026-09-11 — Classification CLI host integration
+
+- Connected classification preparation/execution to fixed host and ledger;
+  preparation persists no input bodies, execution reports real call attempts.
+- Synthetic native-source CLI integration and affected tests: 19 passed (71d371).
+  Independent review passed. Result verification/handoff and full scope remain.
+
+## 2026-09-11 — Bounded classification execution
+
+- Implemented digest-bound single-send classification plans, live pre/post source
+  and configuration checks, exclusive shared reservations and controlled artifacts.
+- Latest affected tests: 34 passed (16be3a); independent review passed. No real
+  model calls or production changes. Host CLI and full original acceptance pending.
+
+## 2026-09-11 — Structured classification contract
+
+- Projected input-only classification into the existing MetricsGateway payload;
+  validated structured output before exact label/cohort binding.
+- Latest affected tests: 25 passed (3ed72e), including fake-adapter integration.
+  No live classifier, production changes or automatic publication.
+
+## 2026-09-11 — Bounded research classification inputs
+
+- Added explicit research-inputs using native references and live access checks,
+  preserving ambiguity/unavailable states without model calls or file writes.
+- Reproduced and fixed cumulative-budget manifest loss found in independent
+  review; oversized entries now retain input_budget_exceeded without body.
+- Latest affected regression: 35 passed (b29ed3). Reviewer confirmed closure.
+  Classification execution and full original acceptance remain unfinished.
+
+## 2026-09-11 — Research CLI host integration
+
+- Connected research plan/evaluate commands to fixed host roots and shared ledger,
+  actual historical input/final source and live Capture access checks. Bound native
+  delivery timestamps to the selected cohort after reproducing a missing check.
+- Updated explicit Skill guidance; independent bounded review found no new bug.
+- Full metrics + Capture Eval adapter suite with local Runtime: 282 passed, no
+  skips. Skill validation and diff check pass. No production/model/Git publication.
+
+## 2026-09-11 — Research access policy and reviewed evidence boundaries
+
+- Mandatory live Capture exclusion/forget checks now wrap historical source reads.
+  Uncaptured tasks remain eligible; missing control configuration fails closed.
+- Independently reviewed and reproduced three message-projection bugs plus a
+  missing-config race, then fixed them with targeted regressions.
+- Broad intermediate run 77 passed; latest affected run 38 passed. All source,
+  config and forget operations used isolated synthetic data. No live Judge or
+  production installation, configuration change, commit or push.
+
+## 2026-09-11 — Native research input/final evidence
+
+- Added scoped CodexResearchSource and live source revision checks; no background
+  inference, current memory substitution or hidden/tool message projection.
+- Fixed native subagent mapping-key exclusion in the new adapter after a failing
+  test. Final 47 related tests passed using synthetic JSONL only.
+- Production source authorization/forget gates, richer historical evidence and
+  research CLI remain pending. No production configuration or model call.
+
+## 2026-09-11 — Research plan execution binding
+
+- Added selected-task research plan/source map and live resolver contract. Rejects
+  source changes, mismatched cohort membership and current-memory substitution.
+- 35 related tests passed, including mock Judge runner/review/HTML integration.
+  Historical production source and CLI integration remain pending; no live calls.
+
+## 2026-09-11 — Independent research cohort
+
+- Added bounded, deterministic M5 task metadata cohort and explicit research-cohort
+  CLI. Retains unknown/excluded cases and unverified classification provenance;
+  no Recall-derived denominator or quality/causality claim.
+- 59 related tests passed. Historical source resolution and M5 execution remain
+  pending. No production data/configuration, live model call or Git publication.
+
+## 2026-09-11 — Complete preview return evidence
+
+- capture_preview validates/returns complete Markdown without memory or receipt
+  writes. Optional metadata records runtime_returned, not human confirmation.
+- Updated repository formalization guidance; installed production Skill unchanged.
+- Combined regression: 289 passed, 1 optional adapter import skipped. Fixed short
+  test IDs after reproducing Windows environment variable length errors.
+- No real Judge, production install/configuration, commit or push.
+
+## 2026-09-11 — Caller-supplied source provenance
+
+- Business evidence v2 preserves opaque request source/revision/digest, explicitly
+  unverified; old v1 records remain readable. No source plaintext recorded.
+- 40 business/report/write tests passed. Preview delivery and confirmation are
+  still unknown; no production changes or model calls.
+
+## 2026-09-11 — Write-time version evidence and scope audit
+
+- Added committed content digests to mutation results and opt-in business metrics;
+  duplicate sources do not claim a new version. Disabled response shape unchanged.
+- 49 related store/write/business tests passed using temporary memories.
+- Removed general retry-grant development from required scope after checking the
+  original design. Full original P1–P5 acceptance remains incomplete.
+
+## 2026-09-11 — Frozen M4 attempt history
+
+- Added strict content-free history projection and M4 first/latest/unfinished
+  table with scope and method caveats. Retained older review schema reads.
+- 30 relevant synthetic tests passed. Full development remains active; no
+  production writes, model call or installation.
+
+## 2026-09-11 — Metrics host and Capture evaluate CLI
+
+- Added fixed per-user host binding, reference-only Capture plan preparation,
+  authorized execution/reuse and unique frozen report outputs.
+- 28 relevant tests passed with temporary host config and simulated gateway.
+  Missing ledger stays missing; output relocation cannot reset reservations.
+- No production installation or real model calls. Full design remains active.
+
+## 2026-09-11 — Capture plan source map and Eval cutoff
+
+- Added reference-only Capture plan preparation and fresh identity resolution.
+- Separated source and evaluation observation cutoffs in review v2, retaining v1
+  reads. Methods and human feedback timing use the distinct observation times.
+- 34 related synthetic tests passed; complete host/CLI execution remains open.
+
+## 2026-09-11 — Bounded metrics plan runner
+
+- Composed verified reuse, live source identity checks, dependency execution and
+  shared pre-send reservations; failures do not auto-retry or refund slots.
+- 35 relevant tests passed, including concurrent roots using the same ledger.
+  Host-stable ledger/consent binding and evaluate CLI still pending; no production
+  call or installation performed.
+
+## 2026-09-11 — Explicit metrics review Skill source
+
+- Added explicit-only Skill and runnable command reference; tests exercise
+  documented human feedback and rerender against synthetic artifacts.
+- Fixed CLI relative revisions-dir handling without bypassing linked-root checks.
+- 22 relevant tests passed; Skill structure valid. Not installed; complete
+  evaluate orchestration and real acceptance remain pending.
+
+## 2026-09-11 — Human metrics review revisions
+
+- Added explicit append-only feedback CLI and separate HTML human state/corrected
+  arithmetic. Original Judge results and formal memories remain unchanged.
+- Related 26 tests passed; simulated feedback only, real review and visual
+  acceptance pending. Full metrics development remains active.
+
+## 2026-09-11 — Frozen metrics review report
+
+- Connected validated review annexes to offline HTML and explicit render CLI.
+- M2 fractions/uncertainty, M4 planned-case coverage and M5 independent axes
+  retain methods and unreviewed boundaries. No live source/model calls.
+- Tests: 186 passed, 1 optional adapter integration skipped. Full design and
+  production acceptance remain incomplete; no installation or push performed.
+
+## 2026-09-11 — Metrics service evidence
+
+- Added opt-in read/write/notice metadata and explicit v3 batch collection;
+  separate service states do not imply use, new mutations or preview delivery.
+- 77 service regression tests and 76 metrics tests passed in overlapping runs.
+  Real temporary memory writes/reads verified; no production or model calls.
+- P3 adapter inspected read-only; effort/structured output missing. Full metrics
+  goal remains active, including remaining P2 bindings and P3—P5 work.
+
+## 2026-09-11 — Independent Capture attempts consumed by metrics
+
+- Added explicit attempts-dir collector, v2 frozen batches and business-based
+  M1/M3 accounting; v1 remains supported. Missing input is not event absence.
+- 63 metric/evidence tests passed, agent-local; no production/model/install actions.
+- Full metrics-development goal remains active; downstream business evidence and
+  Judge/review workflow are not complete.
+
+## 2026-09-11 — Metrics P2 Capture attempt evidence
+
+- Added opt-in independent started/finished receipts at Runner run/cycle boundary,
+  with shared Trace IDs, content-free projection and visible recording failures.
+- First regression 89 passed; after boundary fixes 45 directly related tests passed.
+  Agent-local synthetic checks, not production acceptance.
+- No installation, production configuration changes, Judge, commit or push.
+  Frozen-report ingestion and review/save/Recall evidence are still pending.
+
+## 2026-09-11 — AGC metrics P1 offline implementation
+
+- Added explicit read-only metadata collectors, reproducible frozen batches, limited deterministic M1/M3/M4 accounting, and offline HTML with per-metric methods. M2/M5 remain unmeasured.
+- New and adjacent regression: 64 passed. Synthetic report checked at desktop and 375px widths; no horizontal overflow, page errors or remote requests.
+- No production reads, Judge calls, installation, configuration changes, commit or push. Full metrics upgrade and production acceptance remain pending.
+- See `handoff/agc-metrics-upgrade-v1-handoff.md` and `../docs/metrics-review.md` (repository documentation).
+
 ## 2026-09-07 — Exact-read repair installed, restart pending
 
 - User authorized production installation and will restart Codex. Immutable local 0.4.5 repair deployment `3345a0e8...` installed successfully; prior environment and installer backup retained.

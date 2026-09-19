@@ -2,6 +2,8 @@
 
 | id | type | path | owner | related_session | status | last_checked | notes |
 |---|---|---|---|---|---|---|---|
+| agc-metrics-upgrade-v1 | requirement | `.llm-wiki/requirements/agc-metrics-upgrade-v1.md` | project | agc-metrics-upgrade-v1 | P1-agent-local | 2026-09-11 | Metadata-only implementation; production and later phases pending. |
+| agc-metrics-p1-handoff | handoff | `.llm-wiki/handoff/agc-metrics-upgrade-v1-handoff.md` | project | agc-metrics-upgrade-v1 | needs-review | 2026-09-11 | 64 tests; synthetic report; no model or installation. |
 | capture-review-read-contention | bug | `.llm-wiki/bugs/2026-09-07-capture-review-read-contention.md` | project | 2026-09-07-capture-review-read-contention | bounded-read-verified-awaiting-rollout | 2026-09-07 | Exact-read latency repaired; 118 safety tests passed; global Census contention and production rollout remain. |
 | agc-capture-supervised-improvement-loop | requirement | `.llm-wiki/requirements/agc-capture-supervised-improvement-loop.md` | project | agc-capture-supervised-improvement-loop | executing | 2026-09-07 | Offline core, real provider stores and source preflight verified; real-model quality loop pending. |
 | agc-capture-supervised-improvement-loop-plan | plan | `.llm-wiki/working-context/agc-capture-supervised-improvement-loop-plan.md` | project | agc-capture-supervised-improvement-loop | active | 2026-09-07 | Latest adjacent regression 64 passed; real request binding and separately authorized two rounds remain. |
