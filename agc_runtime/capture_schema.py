@@ -72,6 +72,11 @@ def _nfc_string(
 
 
 def _identifier(value: Any, name: str, *, nullable: bool = False) -> str | None:
+    # This grammar already guarantees non-empty NFC ASCII, length <= 128 and
+    # absence of controls. Keep the original diagnostic path for all failures
+    # and str subclasses; no validation result is retained between calls.
+    if type(value) is str and _IDENTIFIER.fullmatch(value):
+        return value
     value = _nfc_string(value, name, maximum=128, nullable=nullable)
     if value is None:
         return None

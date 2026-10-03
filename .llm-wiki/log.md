@@ -597,6 +597,14 @@
   aggregate Trace, and zero silent loss. Closure commits were synchronized to
   `origin/main` after this record.
 
+## 2026-10-03 — Capture reliability and review closeout
+
+- Synced deployed fixes, live pending-review queue behavior, focused regression
+  evidence and user-confirmed report opening; retained item-timeout and real
+  Eval/benefit gaps. Production model selection remains local-only configuration.
+- Authority and handoff: `bugs/2026-09-23-capture-system-proxy-timeout.md` and
+  `handoff/agc-metrics-upgrade-v1-handoff.md`. No formal-memory or Judge write.
+
 ## 2026-09-08 — AGC Trace Event Query
 
 - Implemented event-page adaptation with old Runtime fallback only when the API is absent. Retained domain checks, Case IDs and selected-Trace Snapshot caching.

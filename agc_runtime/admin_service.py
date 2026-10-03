@@ -806,9 +806,12 @@ def _handle_capture_status(
 def _handle_capture_review_notice(
     paths: MemoryPaths, request: dict[str, Any]
 ) -> ToolResponse:
-    if set(request) != {"action", "batch_digest"}:
+    if set(request) not in ({"action", "batch_digest"}, {"action", "batch_digest", "batch_observation_ids"}):
         raise ValueError("capture_review_notice request must contain exact fields")
-    result = record_capture_review_notice(paths, request["batch_digest"])
+    if 'batch_observation_ids' in request and not isinstance(request['batch_observation_ids'], list):
+        raise ValueError('capture_review_batch_binding_invalid')
+    result = record_capture_review_notice(paths, request["batch_digest"],
+                                         batch_observation_ids=request.get('batch_observation_ids'))
     return ToolResponse(
         tool="agc.admin",
         action="capture_review_notice",

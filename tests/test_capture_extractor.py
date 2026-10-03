@@ -415,6 +415,46 @@ def test_real_child_preserves_existing_absolute_codex_home_for_cli_auth(
     assert environment["CODEX_HOME"] == str(codex_home.resolve())
 
 
+def test_child_inherits_windows_system_proxy_when_no_proxy_env_is_set(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from agc_runtime import codex_extractor
+
+    for name in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(
+        codex_extractor,
+        "_system_proxies",
+        lambda: {"http": "http://127.0.0.1:7897", "https": "http://127.0.0.1:7897"},
+        raising=False,
+    )
+
+    environment = codex_extractor.CodexExtractor._environment()
+
+    assert environment["HTTP_PROXY"] == "http://127.0.0.1:7897"
+    assert environment["HTTPS_PROXY"] == "http://127.0.0.1:7897"
+
+
+def test_explicit_proxy_env_takes_priority_over_windows_system_proxy(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from agc_runtime import codex_extractor
+
+    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:8888")
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:8888")
+    monkeypatch.setattr(
+        codex_extractor,
+        "_system_proxies",
+        lambda: {"http": "http://127.0.0.1:7897", "https": "http://127.0.0.1:7897"},
+        raising=False,
+    )
+
+    environment = codex_extractor.CodexExtractor._environment()
+
+    assert environment["HTTP_PROXY"] == "http://127.0.0.1:8888"
+    assert environment["HTTPS_PROXY"] == "http://127.0.0.1:8888"
+
+
 def test_argv_is_a_list_boundary_and_optional_model_is_explicitly_appended():
     *_unused, CodexExtractor = _extractor_api()
     without_model = CodexExtractor(executable=_command())
@@ -549,9 +589,14 @@ def test_any_missing_capability_prevents_activation_with_content_free_failure(
     probe = CodexExtractor(executable=_command(executable)).probe_capabilities()
 
     assert not probe.available
+    expected = {
+        'fake_codex_version_fail.py': ('probe_version', 'process_nonzero'),
+        'fake_codex_smoke_fail.py': ('probe_smoke', 'process_nonzero'),
+        'fake_codex_missing_metadata.py': ('probe_smoke', 'boundary_invalid'),
+    }.get(name, ('capability_probe', 'capability_unavailable'))
     assert probe.error.to_mapping() == {
-        "stage": "capability_probe",
-        "code": "capability_unavailable",
+        "stage": expected[0],
+        "code": expected[1],
         "retryable": True,
     }
     assert RAW_SENTINEL not in repr(probe)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from contextlib import ExitStack
 from datetime import datetime, timedelta, timezone
 import hashlib
 from pathlib import Path
@@ -210,47 +211,52 @@ class CaptureScanner:
                     eligible_by_key[revision.key] = revision
             accounting_truth.update(eligible_by_key)
 
-            for revision in eligible_by_key.values():
-                if revision.key in conflict_keys:
-                    replay += 1
-                    continue
-                self.store._point("before:census:receipt")
-                excluded = (
-                    revision.key in self._excluded_keys
-                    or revision.key.task_id in self._excluded_task_ids
-                )
-                try:
-                    result = self.store.register_census_receipt(
-                        receipt_for_revision(
-                            revision,
-                            discovered_at=started_at,
-                            status="excluded" if excluded else "discovered",
-                            exclusion_reason=(
-                                "configured_task_exclusion" if excluded else None
+            with ExitStack() as registrations:
+                for index, revision in enumerate(eligible_by_key.values()):
+                    if index % 32 == 0:
+                        registrations.close()
+                        registrations.enter_context(self.store.registration_batch())
+                    if revision.key in conflict_keys:
+                        replay += 1
+                        continue
+                    self.store._point("before:census:receipt")
+                    excluded = (
+                        revision.key in self._excluded_keys
+                        or revision.key.task_id in self._excluded_task_ids
+                    )
+                    try:
+                        result = self.store.register_census_receipt(
+                            receipt_for_revision(
+                                revision,
+                                discovered_at=started_at,
+                                status="excluded" if excluded else "discovered",
+                                exclusion_reason=(
+                                    "configured_task_exclusion" if excluded else None
+                                ),
                             ),
-                        ),
-                        revision=revision,
-                    )
-                except ValueError as error:
-                    if str(error) not in {
-                        "receipt_revision_truth_conflict",
-                        "untruthful_census_receipt",
-                    }:
-                        raise
-                    self.store.record_source_quarantine(
-                        binding,
-                        created_at=started_at,
-                        code="receipt_revision_truth_conflict",
-                    )
-                    binding_failed_closed = True
-                    replay += 1
-                    continue
-                self.store._point("after:census:receipt")
-                if result.created:
-                    created += 1
-                else:
-                    replay += 1
-
+                            revision=revision,
+                        )
+                    except ValueError as error:
+                        if str(error) not in {
+                            "receipt_revision_truth_conflict",
+                            "untruthful_census_receipt",
+                        }:
+                            raise
+                        registrations.close()
+                        self.store.record_source_quarantine(
+                            binding,
+                            created_at=started_at,
+                            code="receipt_revision_truth_conflict",
+                        )
+                        registrations.enter_context(self.store.registration_batch())
+                        binding_failed_closed = True
+                        replay += 1
+                        continue
+                    self.store._point("after:census:receipt")
+                    if result.created:
+                        created += 1
+                    else:
+                        replay += 1
             if (
                 not binding_failed_closed
                 and all(

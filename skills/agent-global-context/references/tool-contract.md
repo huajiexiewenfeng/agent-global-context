@@ -66,6 +66,12 @@ batch digest, and notification cooldown state. It never returns observation
 statements, source locators, Session/Capsule content, preview text, or model
 output. Degraded Capture integrity fails closed.
 
+`unreviewed_count` includes both pending-confirmation and not-yet-dispatched
+observations. `pending_confirmation_count` and `undispatched_count` distinguish
+them; they are null when pending metadata is invalid. Only undispatched IDs
+are selected. A pending preview is not an accepted review or formal memory.
+Invalid pending state suppresses dispatch with `pending_state_invalid`.
+
 ## Reusable `agc.write` Schemas
 
 ### Observation Envelope
@@ -467,6 +473,11 @@ write memory/review state; source verification is unchecked and user confirmatio
 unknown. Opt-in metrics record only IDs/digest and runtime_returned, not human
 visibility. A failed preview is not accepted; a metrics warning alone does not
 invalidate a returned preview. Source grounding remains the caller's review task.
-`capture_review_notice` contains exactly `action` and a lowercase SHA-256
-`batch_digest`. It stores only content-free local delivery state; it does not
-review an observation, create a preview, or mutate formal memory.
+`capture_review_notice` requires `action` and a lowercase SHA-256 `batch_digest`.
+After a complete preview, also pass `batch_observation_ids`: the original ordered
+list of 1–10 unique observation IDs returned for that digest. Runtime validates
+the digest and current observation availability, then idempotently records the
+batch as pending confirmation so later batches can proceed. Legacy digest-only
+calls remain cooldown-only. These records contain no observation text and do
+not review an observation, create a preview, or mutate formal memory. Do not
+use this call to skip an unperformed review.

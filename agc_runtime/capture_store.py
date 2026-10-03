@@ -5,7 +5,7 @@ from __future__ import annotations
 import base64
 import binascii
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 import hashlib
@@ -15,6 +15,7 @@ import os
 import re
 import secrets
 import shutil
+import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Mapping, Sequence
 
@@ -141,6 +142,18 @@ class CaptureStore:
         self.capture = paths.capture
         self._crash_at = crash_at
         self._clock = clock or _utc_now
+        self._registration_owner: int | None = None
+
+    @contextmanager
+    def registration_batch(self):
+        """Amortize lock/layout I/O within one small scanner batch."""
+        with capture_write_lock(self.paths):
+            self._ensure_layout_locked()
+            self._registration_owner = threading.get_ident()
+            try:
+                yield
+            finally:
+                self._registration_owner = None
 
     def _ensure_layout_locked(self) -> None:
         self.capture.root.mkdir(parents=True, exist_ok=True)
@@ -248,7 +261,10 @@ class CaptureStore:
         if not pattern.fullmatch(identifier):
             raise ValueError("invalid Capture object identifier")
         path = directory / f"{identifier}.json"
-        if path.parent.resolve() != directory.resolve():
+        # Identifiers are restricted leaf names. Both parents above are the
+        # very same path; resolving them twice adds Windows I/O per object
+        # without checking the target file or adding a containment guarantee.
+        if path.parent != directory:
             raise ValueError("Capture object path escapes its directory")
         return path
 
@@ -444,15 +460,23 @@ class CaptureStore:
             raise ValueError("frozen Census run binding mismatch")
         return census
 
-    def _read_census_run_manifests(self) -> tuple[CensusRun, ...]:
+    def _read_census_run_manifests(self, *, read_workers: int = 1) -> tuple[CensusRun, ...]:
         root = self.capture.root / "census-runs"
         if not root.exists():
             return ()
-        return tuple(
-            self._read_census_run_manifest(path)
+        paths = tuple(
+            path
             for path in sorted(root.iterdir())
             if not path.name.startswith(".")
         )
+        # Keep the full manifest validator and deterministic result/error order.
+        # This reader lives only within the current Capture lock: no approval
+        # cache and no worker outlives the lock, including on interruption.
+        from agc_runtime.capture_snapshot_io import SnapshotJsonReader
+
+        with SnapshotJsonReader(self._read_census_run_manifest, read_workers) as reader:
+            reader.prime(paths)
+            return tuple(reader.read(path) for path in paths)
 
     @staticmethod
     def _catalog_digest(value: Mapping[str, object]) -> str:
@@ -643,16 +667,16 @@ class CaptureStore:
         return tuple(revisions)
 
     def _ensure_census_catalog_locked(
-        self,
+        self, *, read_workers: int = 1,
     ) -> tuple[tuple[CensusRun, ...], tuple[RevisionRef, ...]]:
-        runs = self._read_census_run_manifests()
+        runs = self._read_census_run_manifests(read_workers=read_workers)
         if not runs and not self._read_legacy_census():
             return (), ()
         try:
             revisions = self._read_census_catalog(runs)
         except (FileNotFoundError, OSError, TypeError, ValueError):
             revisions = self._rebuild_census_catalog_locked()
-            runs = self._read_census_run_manifests()
+            runs = self._read_census_run_manifests(read_workers=read_workers)
             revisions = self._read_census_catalog(runs)
         return runs, revisions
 
@@ -670,11 +694,11 @@ class CaptureStore:
             return self._rebuild_census_catalog_locked()
 
     def frozen_revisions(
-        self, *, binding: SourceBindingKey | None = None
+        self, *, binding: SourceBindingKey | None = None, read_workers: int = 1,
     ) -> tuple[RevisionRef, ...]:
         with capture_write_lock(self.paths):
             self._ensure_layout_locked()
-            _runs, revisions = self._ensure_census_catalog_locked()
+            _runs, revisions = self._ensure_census_catalog_locked(read_workers=read_workers)
             if binding is None:
                 return revisions
             return tuple(
@@ -1371,7 +1395,9 @@ class CaptureStore:
             census_keys: set[tuple[str, str, str, str]] = set()
             census_runs: list[CensusRun] = []
             try:
-                catalog_runs, catalog_revisions = self._ensure_census_catalog_locked()
+                catalog_runs, catalog_revisions = self._ensure_census_catalog_locked(
+                    read_workers=read_workers
+                )
                 census_runs.extend(catalog_runs)
                 for revision in catalog_revisions:
                     key = revision.key
@@ -1703,8 +1729,10 @@ class CaptureStore:
     def _register_receipt(
         self, receipt: CaptureReceipt, *, revision: RevisionRef | None = None
     ) -> ReconcileResult:
-        with capture_write_lock(self.paths):
-            self._ensure_layout_locked()
+        batched = self._registration_owner == threading.get_ident()
+        with nullcontext() if batched else capture_write_lock(self.paths):
+            if not batched:
+                self._ensure_layout_locked()
             tombstone_path = self._path(
                 self.capture.tombstones,
                 tombstone_id_for(receipt.key),

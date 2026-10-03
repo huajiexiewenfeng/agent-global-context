@@ -229,6 +229,41 @@ def _prepared(tmp_path: Path, *, total: int = 100_000):
     return paths, adapter, extractor, preparation
 
 
+@pytest.mark.parametrize("background", [False, True])
+def test_runner_snapshot_io_is_bounded_without_changing_manual_mode(tmp_path, monkeypatch, background):
+    from agc_runtime.capture_store import CaptureStore
+
+    paths, adapter, extractor, preparation = _prepared(tmp_path)
+    if background:
+        config = paths.root / "config.yaml"
+        config.write_text(config.read_text(encoding="utf-8").replace(
+            "mode: scanner_only", "mode: runner"
+        ).replace("incremental_total_tokens: null", "incremental_total_tokens: 100000"), encoding="utf-8")
+    original = CaptureStore.read_snapshot
+    original_frozen = CaptureStore.frozen_revisions
+    workers = []
+    frozen_workers = []
+
+    def measured(self, **kwargs):
+        workers.append(kwargs.get("read_workers", 1))
+        return original(self, **kwargs)
+
+    monkeypatch.setattr(CaptureStore, "read_snapshot", measured)
+
+    def measured_frozen(self, **kwargs):
+        frozen_workers.append(kwargs.get("read_workers", 1))
+        return original_frozen(self, **kwargs)
+
+    monkeypatch.setattr(CaptureStore, "frozen_revisions", measured_frozen)
+    runner = CaptureRunner(paths, (adapter,), extractor, None if background else preparation)
+    report = (runner.run_once(max_items=1, now=RUN_AT) if background else
+              runner.run_manual_backfill(authorization_digest=preparation.authorization_digest,
+                                         max_items=1, now=RUN_AT))
+    assert report.completed_count == report.observation_count == 1
+    assert workers and set(workers) == ({4} if background else {1})
+    assert frozen_workers and set(frozen_workers) == ({4} if background else {1})
+
+
 def test_manual_runner_collects_one_observation_and_settles_actual_usage(tmp_path: Path) -> None:
     paths, adapter, extractor, preparation = _prepared(tmp_path)
     report = CaptureRunner(paths, (adapter,), extractor, preparation).run_manual_backfill(

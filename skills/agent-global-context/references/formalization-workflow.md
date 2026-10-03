@@ -1,6 +1,6 @@
 # Quality-First Capture Formalization
 
-Use this workflow only when the user asks to review or formalize Capture observations. The active Codex App model boundary for this rollout is `gpt-5.6-sol`; do not launch Codex CLI, an extractor subprocess, or reopen a raw Codex Session.
+Use this workflow only when the user asks to review or formalize Capture observations. The active Codex App model boundary for this rollout is `gpt-6-sol`; do not launch Codex CLI, an extractor subprocess, or reopen a raw Codex Session.
 
 1. Call `capture_search` with `limit` at most `10` and omit `include_reviewed` so terminal observations stay hidden.
 2. Group selected observations from the same receipt. For every exact non-null project_scope, call `capture_search` again with `filters.project` and gather unreviewed related observations, bounded to at most 20 unique IDs in one review. Paginate explicitly when more exist.

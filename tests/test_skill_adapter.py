@@ -303,7 +303,7 @@ def test_quality_first_formalization_workflow_is_bounded_and_user_confirmed():
     guidance = _guidance_text()
     text = guidance.casefold()
     assert "formalization-workflow.md" in _skill_text()
-    assert "gpt-5.6-sol" in text
+    assert "gpt-6-sol" in text
     assert "include_reviewed" in text
     assert "capture_observation_ids" in text
     assert "needs_context" in text and "discard" in text and "draft" in text
@@ -346,7 +346,10 @@ def test_zero_proposal_review_records_only_non_memory_outcomes():
     assert "capture_review" in normalized
     assert "discard" in normalized
     assert "needs_context" in normalized
-    assert re.search(r"zero proposals.*(?:record|write).*(?:discard|needs_context)", normalized)
+    assert "zero proposals" in normalized
+    assert "do not automatically record" in normalized
+    assert "batch_observation_ids" in normalized
+    assert "pending" in normalized
     assert re.search(r"(?:does not|never).*formal memory", normalized)
 
 

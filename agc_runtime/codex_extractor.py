@@ -113,7 +113,8 @@ def _failure(stage: str, code: str) -> ExtractionResult:
     )
 
 
-def _probe_failure(identity: str, version: str = "") -> CapabilityProbe:
+def _probe_failure(identity: str, version: str = "", *, stage: str = "capability_probe",
+                   code: str = "capability_unavailable") -> CapabilityProbe:
     return CapabilityProbe.from_mapping(
         {
             "available": False,
@@ -124,11 +125,20 @@ def _probe_failure(identity: str, version: str = "") -> CapabilityProbe:
             "auth_available": False,
             "sandbox_read_only": False,
             "usage_available": False,
-            "error": _error(
-                "capability_probe", "capability_unavailable"
-            ).to_mapping(),
+            "error": _error(stage, code).to_mapping(),
         }
     )
+
+
+def _system_proxies() -> dict[str, str]:
+    if os.name != "nt":
+        return {}
+    try:
+        from urllib.request import getproxies_registry
+
+        return getproxies_registry()
+    except (OSError, ValueError):
+        return {}
 
 
 def _no_duplicate_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -286,6 +296,11 @@ class CodexExtractor:
             for key, value in os.environ.items()
             if key.upper() in _ENVIRONMENT_ALLOWLIST
         }
+        explicit = {key.upper() for key in environment}
+        for scheme, proxy in _system_proxies().items():
+            name = f"{scheme.upper()}_PROXY"
+            if scheme in {"http", "https"} and name not in explicit and proxy:
+                environment[name] = proxy
         codex_home = os.environ.get("CODEX_HOME")
         if codex_home:
             path = Path(codex_home)
@@ -630,14 +645,21 @@ class CodexExtractor:
 
     def probe_capabilities(self) -> CapabilityProbe:
         identity = self._executable_identity(self._executable)
+
+        def process_failure(outcome: _ProcessOutcome, stage: str, version: str = '') -> CapabilityProbe | None:
+            code = ('process_spawn_failed' if outcome.spawn_failed else
+                    'process_timeout' if outcome.timed_out else
+                    'process_output_limit' if outcome.over_limit else
+                    'process_nonzero' if outcome.returncode != 0 else None)
+            if code is None:
+                return None
+            outcome.stdout = outcome.stderr = b''
+            return _probe_failure(identity, version, stage=stage, code=code)
+
         version_outcome = self._run((*self._executable, "--version"), b"")
-        if (
-            version_outcome.spawn_failed
-            or version_outcome.timed_out
-            or version_outcome.over_limit
-            or version_outcome.returncode != 0
-        ):
-            return _probe_failure(identity)
+        failure = process_failure(version_outcome, 'probe_version')
+        if failure is not None:
+            return failure
         try:
             version_text = version_outcome.stdout.decode("utf-8", errors="strict")
             version_match = _VERSION.search(version_text)
@@ -651,13 +673,9 @@ class CodexExtractor:
             version_outcome.stderr = b""
 
         help_outcome = self._run((*self._executable, "exec", "--help"), b"")
-        if (
-            help_outcome.spawn_failed
-            or help_outcome.timed_out
-            or help_outcome.over_limit
-            or help_outcome.returncode != 0
-        ):
-            return _probe_failure(identity, version)
+        failure = process_failure(help_outcome, 'probe_help', version)
+        if failure is not None:
+            return failure
         try:
             help_text = help_outcome.stdout.decode("utf-8", errors="strict")
             if not self._help_has_required_flags(help_text):
@@ -670,24 +688,28 @@ class CodexExtractor:
 
         try:
             with self._schema_path() as schema_path:
-                smoke = self._run(
-                    self._build_argv(schema_path),
-                    _CAPABILITY_PROBE_STDIN,
-                )
+                # Retry only the content-free probe, never a Capsule extraction.
+                # Keep each attempt bounded and fail closed after one retry.
+                for attempt in range(2):
+                    smoke = self._run(
+                        self._build_argv(schema_path),
+                        _CAPABILITY_PROBE_STDIN,
+                    )
+                    if (not smoke.timed_out or smoke.over_limit
+                            or smoke.spawn_failed or smoke.returncode is None
+                            or attempt == 1):
+                        break
+                    smoke.stdout = smoke.stderr = b""
         except (TypeError, ValueError, UnicodeError):
             return _probe_failure(identity, version)
         try:
-            if (
-                smoke.spawn_failed
-                or smoke.timed_out
-                or smoke.over_limit
-                or smoke.returncode != 0
-            ):
-                return _probe_failure(identity, version)
+            failure = process_failure(smoke, 'probe_smoke', version)
+            if failure is not None:
+                return failure
             try:
                 drafts, usage, metadata = self._parse_events(smoke.stdout)
             except (KeyError, TypeError, ValueError, UnicodeError):
-                return _probe_failure(identity, version)
+                return _probe_failure(identity, version, stage='probe_smoke', code='invalid_output')
             if not metadata:
                 metadata = {
                     "model": self._explicit_model,
@@ -702,7 +724,7 @@ class CodexExtractor:
                 or metadata.get("auth_available") is not True
                 or metadata.get("sandbox_read_only") is not True
             ):
-                return _probe_failure(identity, version)
+                return _probe_failure(identity, version, stage='probe_smoke', code='boundary_invalid')
             return CapabilityProbe.from_mapping(
                 {
                     "available": True,

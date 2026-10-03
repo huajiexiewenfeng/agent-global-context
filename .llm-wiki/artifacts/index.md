@@ -50,3 +50,5 @@
 
 | agc-trace-event-query | requirement | `.llm-wiki/requirements/agc-trace-event-query.md` | agent-local | agc-trace-event-query | implemented-agent-local | 2026-09-08 | Query API adaptation; not installed. |
 | agc-trace-event-query-handoff | handoff | `.llm-wiki/handoff/agc-trace-event-query-handoff.md` | agent-local | agc-trace-event-query | implemented-agent-local | 2026-09-08 | 42 relevant tests passed; existing lint warning preserved. |
+| agc-capture-reliability-closeout | bug | `.llm-wiki/bugs/2026-09-23-capture-system-proxy-timeout.md` | project | agc-capture-reliability-closeout | installed-partially-verified | 2026-10-03 | Deployed recovery and pending-review fixes; residual timeouts and new model validation tracked. |
+| agc-capture-reliability-handoff | handoff | `.llm-wiki/handoff/agc-metrics-upgrade-v1-handoff.md` | project | agc-capture-reliability-closeout | delivery-preparation | 2026-10-03 | Metadata report opens; real Eval/benefit acceptance remains separate. |

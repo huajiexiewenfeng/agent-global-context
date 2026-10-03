@@ -1,5 +1,84 @@
 # AGC metrics P1 handoff
 
+## Current closeout: 2026-10-03
+
+- Scope is the deployed Capture reliability/performance and pending-review fixes,
+  plus the metadata-only report; not completion of all Metrics/Eval work.
+- Current deployed 0.4.5 artifact is `51e474b1ae39db746d3f00f29584dd7d204c7e3f900bb4f5d3e7ba3c779c1476`.
+  All ten modified runtime modules match installed bytes. Existing memory,
+  Trace database, schedule and human confirmation gates are retained.
+- Automatic cycles now complete and reduce backlog, but individual extraction
+  timeouts remain. A completed cycle does not imply all items succeeded, and
+  no end-to-end performance gain or long-term reliability claim is made.
+- Two delivered preview batches are pending confirmation; actual App reads
+  select a later batch without writing review outcomes or formal memory.
+- User confirmed the real metadata report can be opened. Computation/re-render
+  checks passed previously; this is not a screenshot-based cross-browser audit.
+  Frozen baseline data is separate from subsequent operational observations.
+- Capture model was changed by explicit user request to `gpt-6.1-sol` in local
+  production configuration only. Independent review stays `gpt-6-sol`.
+- Remaining: verify the new model's actual automatic cycle, observe residual
+  item timeouts, and separately authorize/accept real Judge and benefit trials.
+  No Judge was called and no production content/configuration is included here.
+- Verification and current flow state: [Capture closeout](../bugs/2026-09-23-capture-system-proxy-timeout.md#2026-10-03-delivery-closeout).
+
+## Latest: 2026-09-22 authorized production performance-patch installation
+
+- User approved installing the two existing performance patches and backing up /
+  clearing the single old Source quarantine. No model/Judge run authorized here.
+- Installed 0.4.5 patched artifact in immutable deployment
+  `dea2c3afe5fdfbdf0d6d141977de8b30773ae11a2ff0df3adf81c7e5dc5e4b3d`.
+  Both changed installed Python files hash-match tested repository source.
+  Targeted regression: 26 passed in 7.21s; new environment `pip check` passed;
+  independent installed MCP handler overview accepted with 37 formal memories.
+- Installer rollback backup:
+  `C:/Users/admin/.agent-global-context-runtime/backups/20260922-223712-611-ed3cc59a101c48748246ccc109e3e0ef`.
+  Prior immutable environment retained; configured Memory Root and Trace DB kept.
+- Exact old locator_escape record was backed up, hash-verified and removed under
+  native runner/write locks. Backup and before/after evidence live under
+  `D:/tmp_test/agc-performance-install-20260922`. Formal files and Capture config
+  are byte-identical to the pre-clear snapshot; zero source quarantines after clear.
+- Production Metrics acceptance FAILED: same two cases, installed package,
+  no Census repair, unchanged 30s ceiling: 30.080s / 30.862s timeout in first
+  live access check. First stopped at snapshot JSON read, second at Census catalog
+  digest serialization. Ready 0/2, no source text export, no model or Judge calls.
+- Do not equate installation or old quarantine removal with fixing latency,
+  scheduler descendant containment, or the 3 pending accounting records seen
+  before maintenance. No commit/push; host MCP reload still requires restart.
+  Scheduler restoration / final path audit are recorded in the linked bug below.
+- Final check: installed-adapter path audit 5,662 files / zero diagnostics
+  (not a full scan); scheduler restored enabled/Ready, next run 22:56:44 local,
+  both locks absent, formal/config hashes unchanged, source quarantine count 0.
+
+## Latest: 2026-09-22 identifier hotspot follow-up
+
+- Scheduler was restored by the user and verified enabled. A later real patched
+  preflight still timed out in both first access checks (30.155s/30.061s), so the
+  earlier parallel Census change alone does not resolve the production issue.
+- Read-only profiling identified repeated per-character Unicode classification
+  for ASCII Census identifiers. Added an equivalent valid-ASCII fast path in
+  capture_schema._identifier, retaining the original diagnostic fallback.
+- Regression: 144 passed in 8.70s (567c00), after the expected profile assertion
+  failed on the original implementation. Same 32-manifest pure-validation A/B
+  comparison returned identical mappings and a 3.05x median local-stage ratio.
+- This is not end-to-end acceptance. Production writer lock remained present;
+  no new full preflight, model call, source export, install, commit or push.
+  Next: same two cases through unchanged safety checks within the 30-second
+  ceiling when lock-free. Do not infer success from reboot, unit tests or this
+  local-stage benchmark. See the existing snapshot-timeout bug for full evidence.
+
+## Latest: 2026-09-22 preflight performance follow-up
+
+- Installed baseline reproduced both 30-second first-check timeouts after the
+  production lock naturally released (30.175s ledger, 30.144s Census manifests).
+- Local uncommitted patch extends bounded snapshot read-ahead to Census manifests,
+  preserving full validation and lock lifetime. Related 84 tests passed (20b6ae).
+- New-version real preflight was blocked by an existing live Capture lock after
+  a bounded 30-second wait. Performance benefit is NOT yet verified; do not
+  install or declare Metrics accepted based on synthetic regression alone.
+- See ../bugs/2026-09-22-metrics-preflight-snapshot-timeout.md. No production
+  configuration, scheduled task, formal memory or Judge changes in this work.
+
 ## Integration verified: 2026-09-19 (local only)
 
 - Integrated codex/agc-minimal-fixes (2721666) with the Metrics checkpoint

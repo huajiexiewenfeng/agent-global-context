@@ -24,6 +24,19 @@ _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _SENSITIVITY = frozenset({"normal", "personal", "sensitive", "secret"})
 
 
+class CapabilityUnavailable(RuntimeError):
+    """Retain only allowlisted diagnostics across the Runner/CLI boundary."""
+
+    def __init__(self, error: SanitizedError | None) -> None:
+        super().__init__('capture_extractor_unavailable')
+        stages = {'capability_probe', 'probe_version', 'probe_help', 'probe_smoke'}
+        codes = {'capability_unavailable', 'process_timeout', 'process_output_limit',
+                 'process_spawn_failed', 'process_nonzero', 'invalid_output', 'boundary_invalid'}
+        stage = error.stage if error is not None and error.stage in stages else 'unknown'
+        code = error.code if error is not None and error.code in codes else 'unknown'
+        self.safe_message = f'Capture capability probe failed: {stage}/{code}'
+
+
 def _contract_error() -> ValueError:
     return ValueError("capture_extractor_contract_invalid")
 

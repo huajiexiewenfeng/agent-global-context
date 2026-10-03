@@ -650,7 +650,9 @@ def _run_runner(
             if str(error) in {"capture_extractor_unavailable"}
             else "capture_busy"
         )
-        return failed(code, "Capture Runner did not start", exit_code=1)
+        from agc_runtime.capture_extractor import CapabilityUnavailable
+        message = error.safe_message if isinstance(error, CapabilityUnavailable) else "Capture Runner did not start"
+        return failed(code, message, exit_code=1)
     except OSError:
         return failed(
             "capture_source_failed",
@@ -719,6 +721,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _run_retry(paths, mode)
     if action in {"run", "runner-cycle"}:
         assert mode is not None
+        if action == "runner-cycle":
+            from agc_runtime.capture_deadline import cycle_deadline
+            try:
+                with cycle_deadline():
+                    return _run_runner(
+                        paths, action="cycle", maximum=int(mode), scan_first=True,
+                    )
+            except OSError:
+                return _failed("cycle", "capture_deadline_unavailable", "Capture cycle deadline could not be established", exit_code=1)
         return _run_runner(
             paths,
             action="cycle" if action == "runner-cycle" else action,

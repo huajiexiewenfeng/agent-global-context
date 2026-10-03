@@ -276,7 +276,27 @@ class CaptureRunner:
         policy: object,
         *,
         max_items: int,
+        candidate_limit: int | None = None,
     ) -> tuple[_RankedReceipt, ...]:
+        if candidate_limit is not None and len(ready) > candidate_limit:
+            # Background cycles must not load every pending transcript before
+            # extracting even one item. Bound lookahead, keeping old receipts
+            # first and spreading candidates across tasks. Unselected receipts
+            # remain pending; explicit manual backfills retain full ranking.
+            pending: dict[tuple[str, str, str], list[CaptureReceipt]] = {}
+            for receipt in sorted(ready, key=lambda r: (r.discovered_at, r.receipt_id)):
+                key = (receipt.adapter_id, receipt.source_root_id, receipt.task_id)
+                pending.setdefault(key, []).append(receipt)
+            candidates: list[CaptureReceipt] = []
+            index = 0
+            while len(candidates) < candidate_limit:
+                for items in pending.values():
+                    if index < len(items):
+                        candidates.append(items[index])
+                        if len(candidates) == candidate_limit:
+                            break
+                index += 1
+            ready = tuple(candidates)
         groups: dict[tuple[str, str, str], list[_RankedReceipt]] = {}
         for receipt in ready:
             capsule_result = None
@@ -460,7 +480,10 @@ class CaptureRunner:
         started_ns = time.monotonic_ns()
         current_config = load_runtime_config(self.paths).capture
         store = CaptureStore(self.paths, clock=lambda: now)
-        snapshot = store.read_snapshot()
+        # Background cycles must fit the scheduled worker deadline. Reuse the
+        # bounded per-call reader; validation and lock ownership stay unchanged.
+        read_workers = 4 if _background else 1
+        snapshot = store.read_snapshot(read_workers=read_workers)
         if _background:
             run = max(
                 snapshot.census_runs,
@@ -494,7 +517,8 @@ class CaptureRunner:
             extractor_descriptor = self.extractor.describe()
             probe = self.extractor.probe_capabilities()
             if not probe.available:
-                raise RuntimeError("capture_extractor_unavailable")
+                from agc_runtime.capture_extractor import CapabilityUnavailable
+                raise CapabilityUnavailable(probe.error)
             pool = "incremental"
             budget_census_id = None
             ceiling = capture.budgets.incremental_total_tokens
@@ -521,13 +545,13 @@ class CaptureRunner:
             hard_token_limit=capture.capsule.max_tokens,
         )
         store.recover_transactions(now=now)
-        snapshot = store.read_snapshot()
+        snapshot = store.read_snapshot(read_workers=read_workers)
         run = next(
             item for item in snapshot.census_runs if item.census_id == run.census_id
         )
         revisions = {
             item.key: item
-            for item in store.frozen_revisions()
+            for item in store.frozen_revisions(read_workers=read_workers)
             if item.key in frozenset(run.revision_keys)
         }
         ready = tuple(
@@ -550,6 +574,7 @@ class CaptureRunner:
             adapter_by_binding,
             policy,
             max_items=max_items,
+            candidate_limit=min(128, max(32, max_items * 4)) if _background else None,
         )
         budget = CaptureTokenBudget(
             self.paths,
@@ -803,7 +828,7 @@ class CaptureRunner:
                 except (FileNotFoundError, OSError, ValueError):
                     pass
         charged = budget.snapshot().charged_tokens - before_charge
-        final_snapshot = store.read_snapshot()
+        final_snapshot = store.read_snapshot(read_workers=read_workers)
         attempt_delta, status_deltas = self._attempt_and_status_deltas(
             snapshot.receipts,
             final_snapshot.receipts,
