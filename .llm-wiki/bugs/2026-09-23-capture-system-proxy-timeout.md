@@ -32,7 +32,15 @@
   20 pending confirmation + 376 undispatched; cooldown retained.
 - model: local Capture configured for `gpt-6.1-sol` at explicit user request;
   actual automatic-cycle validation is pending. Independent review unchanged.
-- archive: delivery preparation; see [handoff](../handoff/agc-metrics-upgrade-v1-handoff.md).
+- latest production gate: the 20:26 local cycle after the model switch reached
+  its 25-minute worker deadline; at 20:52 its verified process tree was absent
+  and Scheduler returned 124. No new terminal Trace or completed receipts were
+  observed for this cycle. Sampled process metadata did not establish a model
+  invocation, so this is not proof of model incompatibility or model latency.
+  New-model acceptance failed to complete; stage-level diagnosis remains open.
+  The scheduler remains enabled; no duplicate/manual cycle or timeout increase.
+- archive: code/tests/docs delivered in `069a200`, remote main SHA verified;
+  runtime acceptance is partial. See [handoff](../handoff/agc-metrics-upgrade-v1-handoff.md).
 - residual risks: item timeouts, long cycles, real Eval/preflight acceptance
   and evidence-backed task benefit remain open; not self-accepted limitations.
 

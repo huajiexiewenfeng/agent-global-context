@@ -20,6 +20,10 @@
 - Remaining: verify the new model's actual automatic cycle, observe residual
   item timeouts, and separately authorize/accept real Judge and benefit trials.
   No Judge was called and no production content/configuration is included here.
+- Delivery: `069a200` pushed to main and verified against the remote SHA;
+  416 selected regression tests passed. At 20:52 the first observed post-switch
+  cycle exited 124 at the worker deadline without a terminal Trace, so new-model
+  production acceptance remains incomplete. No model cause is established.
 - Verification and current flow state: [Capture closeout](../bugs/2026-09-23-capture-system-proxy-timeout.md#2026-10-03-delivery-closeout).
 
 ## Latest: 2026-09-22 authorized production performance-patch installation
