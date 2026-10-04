@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from agc_runtime.capture_contracts import CAPTURE_SCHEMA_VERSION, CaptureKey, RevisionRef
+from agc_runtime.capture_source_cache import CACHE_VERSION, read_snapshot, snapshot_digest
 from agc_runtime.capture_project_scope import project_scope_from_cwd
 from agc_runtime.capture_source import (
     AdapterDescriptor,
@@ -97,9 +98,29 @@ class CodexSourceAdapter(SourceAdapter):
     adapter_version = ADAPTER_VERSION
     source_schema_version = SOURCE_SCHEMA_VERSION
 
-    def __init__(self, source_root: Path):
+    def __init__(self, source_root: Path, *, metadata_cache_root: Path | None = None):
         self._source_root = canonical_source_root(source_root)
         self._source_root_id = source_root_id_for(self._source_root)
+        self._metadata_cache_root = metadata_cache_root
+        self._pending_snapshot: dict[str, Any] | None = None
+        self._dirty_locators: frozenset[str] = frozenset()
+
+    def configure_metadata_cache(self, root: Path) -> None:
+        self._metadata_cache_root = root
+
+    def discover_with_dirty(
+        self, hint: ScanHint | None, window: TimeWindow, dirty_locators: frozenset[str]
+    ) -> DiscoveryBatch:
+        self._dirty_locators = dirty_locators
+        try:
+            return self.discover(hint, window)
+        finally:
+            self._dirty_locators = frozenset()
+
+    def pending_metadata_snapshot(self, hint: ScanHint | None) -> dict[str, Any] | None:
+        if hint is None or self._pending_snapshot is None:
+            return None
+        return self._pending_snapshot if snapshot_digest(self._pending_snapshot) == hint.opaque_value else None
 
     def describe(self) -> AdapterDescriptor:
         return AdapterDescriptor.from_mapping(
@@ -139,6 +160,7 @@ class CodexSourceAdapter(SourceAdapter):
 
     def discover(self, hint: ScanHint | None, window: TimeWindow) -> DiscoveryBatch:
         self._validate_hint(hint)
+        self._pending_snapshot = None
         window = TimeWindow.from_mapping(window.to_mapping())
         revisions: dict[tuple[str, str], RevisionRef] = {}
         conflicting_revisions: set[tuple[str, str]] = set()
@@ -147,8 +169,39 @@ class CodexSourceAdapter(SourceAdapter):
         end = _utc(window.end_at)
         assert start is not None and end is not None
 
+        prior_entries: dict[str, Any] = {}
+        if hint is not None and self._metadata_cache_root is not None:
+            prior = read_snapshot(
+                self._metadata_cache_root, hint, self._source_root_id,
+                adapter_version=self.adapter_version,
+                source_schema_version=self.source_schema_version,
+            )
+            if prior is not None:
+                prior_entries = prior["entries"]
+        entries: dict[str, Any] = {}
+
         for locator, path in self._source_files(diagnostics):
-            scan = self._scan_file(path)
+            try:
+                before = path.stat()
+                signature = [before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns]
+            except OSError:
+                diagnostics.add("source_unreadable")
+                continue
+            cached = prior_entries.get(locator)
+            if cached is not None and cached["signature"] == signature and locator not in self._dirty_locators:
+                scan = _FileScan(tuple(cached["identity"]), tuple(tuple(item) for item in cached["completions"]), None)
+            else:
+                scan = self._scan_file(path)
+            try:
+                after = path.stat()
+                stable = signature == [after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns]
+            except OSError:
+                stable = False
+            if not stable:
+                diagnostics.add("source_changed_during_scan")
+                continue
+            if scan.diagnostic_code is None and scan.identity is not None:
+                entries[locator] = {"signature": signature, "identity": list(scan.identity), "completions": [list(item) for item in scan.completions]}
             if scan.diagnostic_code is not None:
                 try:
                     modified_at = datetime.fromtimestamp(
@@ -207,13 +260,23 @@ class CodexSourceAdapter(SourceAdapter):
             if start <= completed < end:
                 ordered_list.append(revision)
         ordered = tuple(ordered_list)
+        next_hint = None
+        if self._metadata_cache_root is not None:
+            snapshot = {"version": CACHE_VERSION, "source_root_id": self._source_root_id, "adapter_version": self.adapter_version, "source_schema_version": self.source_schema_version, "entries": entries}
+            try:
+                digest = snapshot_digest(snapshot)
+            except ValueError:
+                pass  # An unencodable locator cannot poison source discovery.
+            else:
+                next_hint = ScanHint.from_mapping({"schema_version": CAPTURE_SCHEMA_VERSION, "adapter_id": self.adapter_id, "source_root_id": self._source_root_id, "hint_schema_version": CACHE_VERSION, "opaque_value": digest})
+                self._pending_snapshot = snapshot
         return DiscoveryBatch.from_mapping(
             {
                 "schema_version": CAPTURE_SCHEMA_VERSION,
                 "binding": self._binding().to_mapping(),
                 "window": window.to_mapping(),
                 "revisions": [revision.to_mapping() for revision in ordered],
-                "next_hint": None,
+                "next_hint": next_hint.to_mapping() if next_hint else None,
                 "diagnostic_codes": sorted(diagnostics),
             }
         )

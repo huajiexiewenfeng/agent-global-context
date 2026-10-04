@@ -199,6 +199,23 @@ def test_restore_into_fresh_root_recreates_empty_capture_layout(tmp_path: Path):
     assert not target_paths.capture.cursor_hmac_key.exists()
 
 
+def test_restore_never_reuses_pre_restore_source_cache_or_scan_state(tmp_path: Path):
+    paths, _store, _observation = _populated(tmp_path)
+    backup = dispatch_admin(paths, {"action": "backup"})
+    assert backup.status == "accepted"
+    cache = paths.capture.root / "source-cache" / "binding" / "snapshot.json"
+    cache.parent.mkdir(parents=True)
+    cache.write_text('{"metadata":"derived"}', encoding="utf-8")
+    checkpoint = paths.capture.scan_state / "state-derived.json"
+    checkpoint.write_text('{"hint":"derived"}', encoding="utf-8")
+
+    restored = dispatch_admin(paths, {"action": "restore", "backup_path": backup.data["backup_path"]})
+
+    assert restored.status == "accepted", restored
+    assert not cache.exists()
+    assert not checkpoint.exists()
+
+
 def test_backup_compacts_repeated_frozen_census_runs_before_file_limit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):

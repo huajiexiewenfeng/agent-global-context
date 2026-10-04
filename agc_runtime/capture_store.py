@@ -89,6 +89,30 @@ class RecoveryReport:
 
 
 @dataclass(frozen=True)
+class ActiveRecoveryResult:
+    status: str
+    scope: str = "active_workset"
+    report: RecoveryReport = RecoveryReport()
+    audit_completed_at: str | None = None
+    input_generation: str | None = None
+
+
+@dataclass(frozen=True)
+class BackgroundSchedulingView:
+    """Audit-bound metadata only; never a complete integrity snapshot."""
+
+    scope: str
+    audit_status: str
+    audit_completed_at: str
+    runs: tuple[CensusRun, ...]
+    revisions: tuple[RevisionRef, ...]
+    receipts: tuple[CaptureReceipt, ...]
+    accounted_receipt_ids: frozenset[str]
+    excluded_receipt_ids: frozenset[str]
+    active_receipt_ids: frozenset[str]
+
+
+@dataclass(frozen=True)
 class ReceiptTransitionPatch:
     """Only status-local, non-semantic Receipt fields may be patched."""
     updated_at: str | None = None
@@ -747,6 +771,87 @@ class CaptureStore:
     def read_receipt(self, receipt_id: str) -> CaptureReceipt:
         return self._read_receipt(receipt_id)
 
+    def read_background_scheduling_view(self, *, now: str) -> BackgroundSchedulingView:
+        """Read bounded scheduling metadata without reconstructing history."""
+        from agc_runtime.capture_maintenance import load_workset_locked
+        from agc_runtime.capture_schedule import load_locked as load_schedule_locked
+        from agc_runtime.capture_source import CensusRun
+
+        with capture_write_lock(self.paths):
+            workset = load_workset_locked(self)
+            if workset is None or workset["baseline_status"] != "healthy":
+                raise RuntimeError("capture_bootstrap_required")
+            view = load_schedule_locked(self, workset)
+            if view is None:
+                raise RuntimeError("capture_bootstrap_required")
+            audit_due = _parse_utc(now) > _parse_utc(workset["completed_at"]) + timedelta(hours=24)
+            return BackgroundSchedulingView(
+                scope="bounded_scheduling_not_full_audit",
+                audit_status="audit_due" if audit_due else "ok",
+                audit_completed_at=workset["completed_at"],
+                runs=tuple(CensusRun.from_mapping(item) for item in view["runs"]),
+                revisions=tuple(RevisionRef.from_mapping(item) for item in view["revisions"]),
+                receipts=tuple(CaptureReceipt.from_mapping(item) for item in view["receipts"].values()),
+                accounted_receipt_ids=frozenset(view["accounted"]),
+                excluded_receipt_ids=frozenset(view["excluded"]),
+                active_receipt_ids=frozenset(workset["active"]),
+            )
+
+    def complete_background_census(self, census_id: str) -> None:
+        """Retire a pending freeze only after Scanner has accounted its keys."""
+        from agc_runtime.capture_maintenance import load_workset_locked
+        from agc_runtime.capture_schedule import complete_census_locked
+
+        with capture_write_lock(self.paths):
+            workset = load_workset_locked(self)
+            if workset is not None:
+                complete_census_locked(self, workset, census_id)
+
+    def validate_background_selected(
+        self, *, run_id: str, revision: RevisionRef,
+        expected: CaptureReceipt, lease: CaptureLease,
+        excluded_task_ids: frozenset[str],
+    ) -> CaptureReceipt:
+        """Re-read one selected item's primary bindings before model egress."""
+        from agc_runtime.capture_contracts import CaptureSuppressionTombstone, LedgerEntry
+        from agc_runtime.capture_ledger import same_revision_metadata, validate_receipt_revision_truth
+        from agc_runtime.capture_source_cache import checked_path
+
+        revision = RevisionRef.from_mapping(revision.to_mapping())
+        expected = CaptureReceipt.from_mapping(expected.to_mapping())
+        with capture_write_lock(self.paths):
+            self._assert_lease(lease)
+            if revision.key != expected.key or revision.key.task_id in excluded_task_ids:
+                raise RuntimeError("capture_bootstrap_required")
+            tombstone_path = self.capture.tombstones / f"{tombstone_id_for(revision.key)}.json"
+            checked_path(self.capture.root, tombstone_path)
+            if tombstone_path.exists():
+                CaptureSuppressionTombstone.from_mapping(read_json(tombstone_path))
+                raise RuntimeError("capture_bootstrap_required")
+            if self.source_health(revision.key.adapter_id, revision.key.source_root_id) != "healthy":
+                raise RuntimeError("capture_bootstrap_required")
+            run_path = self._census_run_path(run_id)
+            checked_path(self.capture.root, run_path)
+            if run_path.is_symlink() or not run_path.is_dir():
+                raise RuntimeError("capture_bootstrap_required")
+            run = self._read_census_run_manifest(run_path)
+            member_path = checked_path(self.capture.root, run_path / "members" / f"{expected.receipt_id}.json")
+            frozen = RevisionRef.from_mapping(read_json(member_path))
+            if (run.census_id != run_id or run.binding.adapter_id != revision.key.adapter_id
+                    or run.binding.source_root_id != revision.key.source_root_id
+                    or revision.key not in run.revision_keys
+                    or not same_revision_metadata(frozen, revision)):
+                raise RuntimeError("capture_bootstrap_required")
+            current = self._read_receipt(expected.receipt_id)
+            ledger = LedgerEntry.from_mapping(read_json(self._ledger_path(expected.receipt_id)))
+            validate_receipt_revision_truth(current, frozen)
+            if (current != expected or ledger.capture_key != current.key
+                    or ledger.receipt_id != current.receipt_id or ledger.status != current.status
+                    or ledger.discovered_at != current.discovered_at or ledger.processed_at is not None
+                    or current.status not in {"discovered", "queued", "retryable"}):
+                raise RuntimeError("capture_bootstrap_required")
+            return current
+
     def freeze_census(
         self,
         *,
@@ -786,13 +891,31 @@ class CaptureStore:
         census_id = canonical_census_id(binding, window, started_at)
         with capture_write_lock(self.paths):
             self._ensure_layout_locked()
-            prior_runs = self._read_census_run_manifests()
-            try:
-                prior_revisions: tuple[RevisionRef, ...] | None = (
-                    self._read_census_catalog(prior_runs)
-                )
-            except (FileNotFoundError, OSError, TypeError, ValueError):
-                prior_revisions = None
+            from agc_runtime.capture_maintenance import load_workset_locked
+            from agc_runtime.capture_schedule import (
+                load_locked as load_schedule_locked,
+                premark_census_locked,
+                publish_census_locked,
+            )
+
+            workset = load_workset_locked(self)
+            schedule = (
+                load_schedule_locked(self, workset)
+                if workset is not None and workset["baseline_status"] == "healthy"
+                else None
+            )
+            # The common case uses the audit-bound packed metadata. Tombstoned
+            # historical identity is deliberately absent from that view, so
+            # the public catalog's complete truth takes the legacy path then.
+            if schedule is not None and not any(self.capture.tombstones.glob("*.json")):
+                prior_runs = tuple(CensusRun.from_mapping(item) for item in schedule["runs"])
+                prior_revisions = tuple(RevisionRef.from_mapping(item) for item in schedule["revisions"])
+            else:
+                prior_runs = self._read_census_run_manifests()
+                try:
+                    prior_revisions = self._read_census_catalog(prior_runs)
+                except (FileNotFoundError, OSError, TypeError, ValueError):
+                    prior_revisions = None
             run_path = self._census_run_path(census_id)
             if run_path.exists():
                 current, current_revisions = self._read_frozen_run(run_path)
@@ -812,6 +935,8 @@ class CaptureStore:
                 ):
                     raise ValueError("census_run_conflict")
                 return current
+            if schedule is not None and workset is not None:
+                premark_census_locked(self, workset, census_id)
             census = CensusRun.from_mapping(
                 {
                     "schema_version": CAPTURE_SCHEMA_VERSION,
@@ -846,12 +971,21 @@ class CaptureStore:
                     unique.setdefault(item.key, item)
                 if not conflict:
                     self._publish_census_catalog_locked(
-                        self._read_census_run_manifests(),
+                        tuple(sorted((*prior_runs, census), key=lambda item: item.census_id)),
                         tuple(unique.values()),
                     )
                 else:
                     safe_unlink(self.capture.census_catalog / "active.json")
+            if workset is not None and schedule is not None:
+                publish_census_locked(self, workset, census, validated)
             return census
+
+    def source_scan_generation(self) -> str:
+        from agc_runtime.capture_source_cache import checked_path, source_generation_locked
+
+        checked_path(self.capture.root, self.capture.root)
+        with capture_write_lock(self.paths):
+            return source_generation_locked(self.capture.root)
 
     def load_scan_state(
         self, *, binding: SourceBindingKey, lookback_started_at: str
@@ -884,6 +1018,8 @@ class CaptureStore:
         hint: ScanHint | None,
         last_scan_at: str,
         lookback_started_at: str,
+        source_cache_snapshot: dict[str, Any] | None = None,
+        expected_generation: str | None = None,
     ) -> ScanState:
         from agc_runtime.capture_source import ScanState, SourceBindingKey
 
@@ -905,6 +1041,12 @@ class CaptureStore:
             raise
         with capture_write_lock(self.paths):
             self._ensure_layout_locked()
+            from agc_runtime.capture_source_cache import source_generation_locked
+
+            if expected_generation is not None and source_generation_locked(self.capture.root) != expected_generation:
+                raise ValueError("scan_state_conflict")
+            if source_cache_snapshot is not None and expected_generation is None:
+                raise ValueError("source cache requires generation")
             path = self._scan_state_path(binding)
             current_version = 1
             if path.exists():
@@ -914,7 +1056,45 @@ class CaptureStore:
                 current_version = current.state_version
             if current_version != expected_version:
                 raise ValueError("scan_state_conflict")
+            if source_cache_snapshot is not None:
+                if hint is None:
+                    raise ValueError("source cache requires hint")
+                from agc_runtime.capture_source_cache import checked_path, publish_snapshot_locked, snapshot_digest, valid_snapshot
+
+                if (not valid_snapshot(source_cache_snapshot, binding.source_root_id)
+                        or snapshot_digest(source_cache_snapshot) != hint.opaque_value):
+                    raise ValueError("invalid source cache snapshot")
+                # Forget suppresses a revision but the identity/locator of its
+                # entire file also carries personal metadata. Leave such files
+                # uncached; Census truth and source input are not changed here.
+                suppressed_tasks = set()
+                checked_path(self.capture.root, self.capture.tombstones)
+                for tombstone_path in self.capture.tombstones.glob("*.json"):
+                    checked_path(self.capture.root, tombstone_path)
+                    tombstone = CaptureSuppressionTombstone.from_mapping(read_json(tombstone_path))
+                    if tombstone_path.stem != tombstone.tombstone_id:
+                        raise ValueError("invalid Capture suppression tombstone")
+                    key = tombstone.capture_key
+                    if key.adapter_id == binding.adapter_id and key.source_root_id == binding.source_root_id:
+                        suppressed_tasks.add(key.task_id)
+                source_cache_snapshot = {
+                    **source_cache_snapshot,
+                    "entries": {locator: entry for locator, entry in source_cache_snapshot["entries"].items()
+                                if entry["identity"][0] not in suppressed_tasks},
+                }
+                hint = replace(hint, opaque_value=snapshot_digest(source_cache_snapshot))
+                desired = replace(desired, hint=hint)
+
+                self._point("before:source-cache:publish")
+                publish_snapshot_locked(self.capture.root / "source-cache", hint, source_cache_snapshot)
+                self._point("after:source-cache:publish")
+            self._point("before:scan-state:publish")
             atomic_write_json(path, desired.to_mapping())
+            self._point("after:scan-state:publish")
+            if source_cache_snapshot is not None:
+                from agc_runtime.capture_source_cache import retire_other_snapshots_locked
+
+                retire_other_snapshots_locked(self.capture.root / "source-cache", hint)
         return desired
 
     def ready_revisions(self) -> tuple[CaptureReceipt, ...]:
@@ -1044,6 +1224,8 @@ class CaptureStore:
             self._write_receipt(receipt)
             self._write_ledger(receipt, status="quarantined", processed_at=None)
             self._write_source_conflict(receipt.key, discovered_at)
+            from agc_runtime.capture_maintenance import retire_active_locked
+            retire_active_locked(self, receipt.receipt_id)
             return receipt
 
     def iter_receipts(self) -> tuple[CaptureReceipt, ...]:
@@ -1249,9 +1431,14 @@ class CaptureStore:
         """
         if not self.capture.root.exists():
             return CaptureSnapshot()
+        with self._capture_read_lock():
+            return self._read_snapshot_locked(read_workers=read_workers)
+
+    def _read_snapshot_locked(self, *, read_workers: int = 1) -> CaptureSnapshot:
+        """Internal full view; caller already holds the native Capture lock."""
         from agc_runtime.capture_snapshot_io import SnapshotJsonReader
 
-        with self._capture_read_lock(), SnapshotJsonReader(read_json, read_workers) as reader:
+        with SnapshotJsonReader(read_json, read_workers) as reader:
             diagnostics: list[CaptureIntegrityDiagnostic] = []
             unavailable_ids: set[str] = set()
 
@@ -1688,9 +1875,15 @@ class CaptureStore:
         return created
 
     def _write_receipt(self, receipt: CaptureReceipt) -> None:
+        from agc_runtime.capture_maintenance import mark_active_locked
+
+        mark_active_locked(self, receipt.receipt_id)
         atomic_write_json(self._receipt_path(receipt.receipt_id), receipt.to_mapping())
 
     def _write_ledger(self, receipt: CaptureReceipt, *, status: str, processed_at: str | None) -> None:
+        from agc_runtime.capture_maintenance import mark_active_locked
+
+        mark_active_locked(self, receipt.receipt_id)
         entry = LedgerEntry(CAPTURE_SCHEMA_VERSION, receipt.key, receipt.receipt_id, receipt.discovered_at, processed_at, status)
         atomic_write_json(self._ledger_path(receipt.receipt_id), entry.to_mapping())
 
@@ -1750,6 +1943,9 @@ class CaptureStore:
                 self._write_receipt(receipt)
                 self._point("after:discovery:receipt")
                 self._write_ledger(receipt, status=receipt.status, processed_at=None)
+                if receipt.status != "extracting":
+                    from agc_runtime.capture_maintenance import retire_active_locked
+                    retire_active_locked(self, receipt.receipt_id)
                 return ReconcileResult(receipt.status, True, receipt.receipt_id)
             current = self._read_receipt(receipt.receipt_id)
             if revision is not None:
@@ -1768,6 +1964,8 @@ class CaptureStore:
                 )
                 self._write_receipt(excluded)
                 self._write_ledger(excluded, status="excluded", processed_at=None)
+                from agc_runtime.capture_maintenance import retire_active_locked
+                retire_active_locked(self, excluded.receipt_id)
                 return ReconcileResult("excluded", False, excluded.receipt_id)
             if current.source_hash_schema_version != receipt.source_hash_schema_version:
                 return ReconcileResult(current.status, False, current.receipt_id)
@@ -1794,6 +1992,9 @@ class CaptureStore:
                             current.updated_at if current.status == "complete" else None
                         ),
                     )
+                    if current.status != "extracting":
+                        from agc_runtime.capture_maintenance import retire_active_locked
+                        retire_active_locked(self, current.receipt_id)
                 return ReconcileResult(current.status, False, current.receipt_id)
             self._write_source_conflict(current.key, receipt.updated_at)
             if current.status == "complete":
@@ -1801,6 +2002,8 @@ class CaptureStore:
             quarantined = replace(current, status="quarantined", updated_at=receipt.updated_at, sanitized_error=SanitizedError("source", "source_conflict", False), next_retry_at=None)
             self._write_receipt(quarantined)
             self._write_ledger(quarantined, status="quarantined", processed_at=None)
+            from agc_runtime.capture_maintenance import retire_active_locked
+            retire_active_locked(self, quarantined.receipt_id)
             return ReconcileResult("quarantined", False, current.receipt_id)
 
     def _write_source_conflict(self, key: CaptureKey, created_at: str) -> None:
@@ -1995,6 +2198,8 @@ class CaptureStore:
                 if self._read_manifest(current.receipt_id) != tuple(item.observation_id for item in unique):
                     raise ValueError("exact replay does not match immutable manifest")
                 return CommitResult(current.receipt_id, 0)
+            from agc_runtime.capture_maintenance import mark_active_locked
+            mark_active_locked(self, current.receipt_id)
             ids = tuple(item.observation_id for item in unique)
             journal = self._manifest_value(current.receipt_id, ids)
             self._point("before:journal")
@@ -2024,6 +2229,8 @@ class CaptureStore:
             self._point("before:cleanup")
             self._cleanup_ids(current.receipt_id, ids, remove_manifest=False)
             self._point("after:cleanup")
+            from agc_runtime.capture_maintenance import retire_active_locked
+            retire_active_locked(self, current.receipt_id)
             return CommitResult(current.receipt_id, len(unique))
 
     def transition_with_settlement(
@@ -2059,6 +2266,8 @@ class CaptureStore:
             validate_capture_transition(
                 current.status, target, reopen_reason=patch.reopen_reason
             )
+            from agc_runtime.capture_maintenance import mark_active_locked
+            mark_active_locked(self, current.receipt_id)
             self._point("before:budget:settlement")
             persist_settlement_locked(self.paths, reservation, settlement)
             self._point("after:budget:settlement")
@@ -2085,6 +2294,9 @@ class CaptureStore:
             self._write_receipt(updated)
             self._write_ledger(updated, status=target, processed_at=None)
             safe_unlink(self._transition_journal_path(current.receipt_id))
+            if target != "extracting":
+                from agc_runtime.capture_maintenance import retire_active_locked
+                retire_active_locked(self, current.receipt_id)
             return updated
 
     def transition(self, lease: CaptureLease, *, expected: frozenset[str], target: str, patch: ReceiptTransitionPatch) -> CaptureReceipt:
@@ -2099,6 +2311,8 @@ class CaptureStore:
             if current.status not in expected:
                 raise ValueError("receipt status does not match expected set")
             validate_capture_transition(current.status, target, reopen_reason=patch.reopen_reason)
+            from agc_runtime.capture_maintenance import mark_active_locked
+            mark_active_locked(self, current.receipt_id)
             updated = replace(current, status=target, updated_at=patch.updated_at or self._clock(), next_retry_at=patch.next_retry_at, sanitized_error=patch.sanitized_error)
             if target == "queued":
                 # Task 2's strict pre-extraction contract requires a reopened
@@ -2130,6 +2344,9 @@ class CaptureStore:
             self._point("before:transition:cleanup")
             safe_unlink(self._transition_journal_path(current.receipt_id))
             self._point("after:transition:cleanup")
+            if target != "extracting":
+                from agc_runtime.capture_maintenance import retire_active_locked
+                retire_active_locked(self, current.receipt_id)
             return updated
 
     def visible_observations(self, receipt_id: str) -> tuple[CollectedObservation, ...]:
@@ -2161,6 +2378,11 @@ class CaptureStore:
         return CaptureReceipt.from_mapping({**receipt.to_mapping(), "status": "retryable", "updated_at": now, "next_retry_at": now, "observation_count": None, "filtered_counts": None, "duplicate_suppression_count": None, "zero_reason": None, "sanitized_error": {"stage": "transaction", "code": "interrupted", "retryable": True}})
 
     def _quarantine(self, path: Path) -> None:
+        from agc_runtime.capture_maintenance import invalidate_locked
+
+        # Quarantine removes an invalid primary artifact. Never keep a
+        # previously healthy active-work credential after that mutation.
+        invalidate_locked(self)
         digest = hashlib.sha256(path.name.encode("utf-8")).hexdigest()
         atomic_write_json(self.capture.quarantines / f"corrupt-{digest}.json", {"schema_version": CAPTURE_SCHEMA_VERSION, "code": "corrupt_capture_artifact"})
         safe_unlink(path)
@@ -2222,6 +2444,111 @@ class CaptureStore:
         except (ValueError, TypeError):
             self._quarantine(path)
             return 0, 1
+
+    def _missing_receipt_has_bound_artifacts(self, receipt_id: str) -> bool:
+        """Exceptional path only: prove a marker has no remaining primary data."""
+        if any(path.exists() for path in (
+            self._ledger_path(receipt_id), self._manifest_path(receipt_id),
+            self._lease_path(receipt_id), self._epoch_path(receipt_id),
+        )):
+            return True
+        for directory in (self.capture.observations, self.capture.staging):
+            for path in directory.iterdir():
+                if not path.is_file() or not _OBSERVATION_ID.fullmatch(path.stem):
+                    return True
+                try:
+                    observation = CollectedObservation.from_mapping(read_json(path))
+                except (OSError, TypeError, ValueError):
+                    return True
+                if observation.receipt_id == receipt_id:
+                    return True
+        return False
+
+    def recover_active_transactions(self, *, now: str) -> ActiveRecoveryResult:
+        """Recover only audited, durably marked work; never scan completed history."""
+        from agc_runtime.capture_maintenance import load_workset_locked, retire_active_locked
+
+        if not self.capture.root.exists():
+            return ActiveRecoveryResult("capture_bootstrap_required")
+        recovered = partial = corrupt = 0
+        with capture_write_lock(self.paths):
+            self._ensure_layout_locked()
+            workset = load_workset_locked(self)
+            if workset is None:
+                return ActiveRecoveryResult("capture_bootstrap_required")
+            try:
+                audit_time = _parse_utc(workset["completed_at"])
+                current_time = _parse_utc(now)
+            except (TypeError, ValueError):
+                return ActiveRecoveryResult("capture_bootstrap_required")
+            status = "audit_due" if current_time > audit_time + timedelta(hours=24) else "ok"
+            for receipt_id in workset["active"]:
+                receipt_path = self._receipt_path(receipt_id)
+                transition_path = self._transition_journal_path(receipt_id)
+                journal_path = self._journal_path(receipt_id)
+                lease_path = self._lease_path(receipt_id)
+                try:
+                    if lease_path.exists():
+                        lease = CaptureLease.from_mapping(read_json(lease_path))
+                        if (receipt_id_for(lease.capture_key) != receipt_id
+                                or self._epoch(receipt_id, lease.capture_key) != lease.fencing_token):
+                            raise ValueError("invalid active lease")
+                        if _parse_utc(lease.expires_at) > current_time:
+                            continue
+                    if transition_path.exists():
+                        change, bad = self._recover_transition_journal(transition_path)
+                        recovered += change
+                        corrupt += bad
+                        if bad:
+                            return ActiveRecoveryResult("capture_bootstrap_required", report=RecoveryReport(recovered, 0, partial, 0, corrupt), audit_completed_at=workset["completed_at"], input_generation=workset["input_generation"])
+                    if not receipt_path.exists():
+                        if self._missing_receipt_has_bound_artifacts(receipt_id):
+                            raise ValueError("missing receipt has bound primary artifacts")
+                        if journal_path.exists():
+                            ids = self._binding_ids(read_json(journal_path), receipt_id)
+                            if not self._safe_cleanup_bound(receipt_id, ids, remove_manifest=True):
+                                raise ValueError("unsafe active cleanup")
+                            safe_unlink(journal_path)
+                            recovered += 1
+                        retire_active_locked(self, receipt_id)
+                        continue
+                    receipt = self._read_receipt(receipt_id)
+                    ids = self._binding_ids(read_json(journal_path), receipt_id) if journal_path.exists() else ()
+                    if receipt.status == "complete" and self._manifest_valid(receipt):
+                        if journal_path.exists():
+                            if ids != self._read_manifest(receipt_id) or not self._safe_cleanup_bound(receipt_id, ids, remove_manifest=False):
+                                raise ValueError("invalid completed journal")
+                            safe_unlink(journal_path)
+                        self._write_ledger(receipt, status="complete", processed_at=receipt.updated_at)
+                        retire_active_locked(self, receipt_id)
+                        recovered += 1
+                        continue
+                    if receipt.status == "extracting" or ids or receipt.status == "complete":
+                        partial += 1
+                        manifest_ids = self._read_manifest(receipt_id) if self._manifest_path(receipt_id).exists() else ()
+                        bound = tuple(dict.fromkeys((*ids, *manifest_ids)))
+                        if not self._safe_cleanup_bound(receipt_id, bound, remove_manifest=True):
+                            raise ValueError("unsafe active cleanup")
+                        safe_unlink(journal_path)
+                        retryable = self._retryable(receipt, now)
+                        self._write_receipt(retryable)
+                        self._write_ledger(retryable, status="retryable", processed_at=None)
+                        recovered += 1
+                    else:
+                        self._write_ledger(receipt, status=receipt.status, processed_at=None)
+                        if (receipt.status == "quarantined" and receipt.sanitized_error is not None
+                                and receipt.sanitized_error.code in {"revision_metadata_conflict", "source_conflict"}
+                                and not self._conflict_path(receipt.key).exists()):
+                            self._write_source_conflict(receipt.key, receipt.updated_at)
+                        recovered += 1
+                    retire_active_locked(self, receipt_id)
+                except (OSError, TypeError, ValueError):
+                    from agc_runtime.capture_maintenance import invalidate_locked
+                    invalidate_locked(self)
+                    return ActiveRecoveryResult("capture_bootstrap_required", report=RecoveryReport(recovered, 0, partial, 0, corrupt + 1), audit_completed_at=workset["completed_at"], input_generation=workset["input_generation"])
+            if workset["baseline_status"] != "healthy":
+                status = "capture_bootstrap_required"
+            return ActiveRecoveryResult(status, report=RecoveryReport(recovered, 0, partial, 0, corrupt), audit_completed_at=workset["completed_at"], input_generation=workset["input_generation"])
 
     def recover_transactions(self, *, now: str) -> RecoveryReport:
         if not self.capture.root.exists():
@@ -2325,6 +2652,9 @@ class CaptureStore:
                     corrupt += 1; self._quarantine(path); continue
                 if observation.observation_id not in active_stage_ids:
                     orphan += 1; safe_unlink(path)
+            if recovered or orphan or partial or duplicate or corrupt:
+                from agc_runtime.capture_maintenance import invalidate_locked
+                invalidate_locked(self)
         return RecoveryReport(recovered, orphan, partial, duplicate, corrupt)
 
     def object_counts(self) -> dict[str, int]:

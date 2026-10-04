@@ -9,12 +9,13 @@ import hashlib
 from pathlib import Path
 from typing import Iterable
 
-from agc_runtime.capture_contracts import CaptureKey, RevisionRef
+from agc_runtime.capture_contracts import CaptureKey, RevisionRef, CaptureSuppressionTombstone, receipt_id_for
 from agc_runtime.capture_ledger import receipt_for_revision, same_revision_metadata
 from agc_runtime.capture_source import (
     AdapterDescriptor,
     DirtyMarker,
     DiscoveryBatch,
+    ScanState,
     SourceAdapter,
     SourceBindingKey,
     TimeWindow,
@@ -58,11 +59,18 @@ class CaptureScanner:
         *,
         excluded_keys: Iterable[CaptureKey] = (),
         excluded_task_ids: Iterable[str] = (),
+        incremental: bool = False,
     ) -> None:
+        if type(incremental) is not bool:
+            raise ValueError("incremental must be a boolean")
         self.store = store
+        self._incremental = incremental
         unique: dict[tuple[str, str], tuple[AdapterDescriptor, SourceAdapter]] = {}
         for adapter in tuple(adapters):
             descriptor = AdapterDescriptor.from_mapping(adapter.describe().to_mapping())
+            configure_cache = getattr(adapter, "configure_metadata_cache", None)
+            if callable(configure_cache):
+                configure_cache(store.paths.capture.root / "source-cache")
             binding = (descriptor.adapter_id, descriptor.source_root_id)
             unique.setdefault(binding, (descriptor, adapter))
         self._adapters = tuple(unique[key] for key in sorted(unique))
@@ -89,7 +97,14 @@ class CaptureScanner:
             }
         )
 
-        self.store.recover_transactions(now=started_at)
+        scheduling = None
+        if self._incremental and not force_full:
+            recovery = self.store.recover_active_transactions(now=started_at)
+            if recovery.status == "capture_bootstrap_required":
+                raise RuntimeError("capture_bootstrap_required")
+            scheduling = self.store.read_background_scheduling_view(now=started_at)
+        else:
+            self.store.recover_transactions(now=started_at)
         configured = {
             (descriptor.adapter_id, descriptor.source_root_id): descriptor
             for descriptor, _adapter in self._adapters
@@ -99,6 +114,23 @@ class CaptureScanner:
         accounting_truth: dict[CaptureKey, RevisionRef] = {}
         resolved_marker_paths: set[Path] = set()
         created = replay = advanced = 0
+        trusted_accounted = set(scheduling.accounted_receipt_ids) if scheduling else set()
+        trusted_excluded = set(scheduling.excluded_receipt_ids) if scheduling else set()
+        trusted_unresolved = {item.receipt_id: item for item in scheduling.receipts} if scheduling else {}
+        suppressed_keys: set[CaptureKey] = set()
+        if scheduling is not None:
+            for path in sorted(self.store.capture.tombstones.glob("*.json")):
+                tombstone = CaptureSuppressionTombstone.from_mapping(read_json(path))
+                if path.stem != tombstone.tombstone_id:
+                    raise RuntimeError("capture_bootstrap_required")
+                suppressed_keys.add(tombstone.capture_key)
+
+        def accounted(revision: RevisionRef) -> bool:
+            if scheduling is None:
+                return self.store.is_revision_accounted(revision)
+            if revision.key in suppressed_keys:
+                return self.store.is_revision_accounted(revision)
+            return receipt_id_for(revision.key) in trusted_accounted or receipt_id_for(revision.key) in trusted_unresolved
 
         for descriptor, adapter in self._adapters:
             binding = SourceBindingKey.from_mapping(
@@ -108,28 +140,56 @@ class CaptureScanner:
                     "source_root_id": descriptor.source_root_id,
                 }
             )
-            state = self.store.load_scan_state(
-                binding=binding, lookback_started_at=window.start_at
-            )
+            invalid_state = False
+            generation = self.store.source_scan_generation()
+            try:
+                state = self.store.load_scan_state(
+                    binding=binding, lookback_started_at=window.start_at
+                )
+            except (OSError, ValueError, TypeError):
+                # Scan state is derived. Preserve the suspect file for review,
+                # but never let it suppress a source read or advance its CAS.
+                invalid_state = True
+                state = ScanState.from_mapping({
+                    "schema_version": 1,
+                    "binding": binding.to_mapping(),
+                    "state_version": 1,
+                    "hint": None,
+                    "last_scan_at": None,
+                    "lookback_started_at": window.start_at,
+                })
+                self.store.record_source_quarantine(
+                    binding, created_at=started_at, code="invalid_scan_state"
+                )
             binding_markers = tuple(
                 item
                 for item in markers
                 if item[1].adapter_id == binding.adapter_id
                 and item[1].source_root_id == binding.source_root_id
             )
-            raw_batch = adapter.discover(
-                None if force_full or binding_markers else state.hint, window
-            )
+            dirty_discover = getattr(adapter, "discover_with_dirty", None)
+            if (
+                not force_full and binding_markers and callable(dirty_discover)
+                and all(marker.locator is not None for _path, marker in binding_markers)
+            ):
+                raw_batch = dirty_discover(
+                    state.hint, window,
+                    frozenset(marker.locator for _path, marker in binding_markers),
+                )
+            else:
+                raw_batch = adapter.discover(
+                    None if force_full or binding_markers else state.hint, window
+                )
             batch = DiscoveryBatch.from_mapping(raw_batch.to_mapping())
             if batch.binding != binding or batch.window != window:
                 raise ValueError("discovery batch binding or window mismatch")
             revisions = tuple(
                 self._validate_revision(item, descriptor) for item in batch.revisions
             )
-            binding_failed_closed = False
+            binding_failed_closed = invalid_state
 
             try:
-                self.store.freeze_census(
+                frozen_run = self.store.freeze_census(
                     binding=binding,
                     window=window,
                     started_at=started_at,
@@ -150,7 +210,12 @@ class CaptureScanner:
                 )
             if batch.diagnostic_codes:
                 binding_failed_closed = True
-            durable = self.store.frozen_revision_records(binding=binding)
+            durable = (
+                tuple(item for item in scheduling.revisions if item.key.adapter_id == binding.adapter_id
+                      and item.key.source_root_id == binding.source_root_id)
+                if scheduling is not None
+                else self.store.frozen_revision_records(binding=binding)
+            )
             by_key: dict[CaptureKey, list[RevisionRef]] = {}
             for revision in (*durable, *revisions):
                 by_key.setdefault(revision.key, []).append(revision)
@@ -224,6 +289,15 @@ class CaptureScanner:
                         revision.key in self._excluded_keys
                         or revision.key.task_id in self._excluded_task_ids
                     )
+                    identifier = receipt_id_for(revision.key)
+                    if scheduling is not None and revision.key not in suppressed_keys and (
+                        (identifier in trusted_accounted and (not excluded or identifier in trusted_excluded)) or (
+                            identifier in trusted_unresolved
+                            and not excluded
+                        )
+                    ):
+                        replay += 1
+                        continue
                     try:
                         result = self.store.register_census_receipt(
                             receipt_for_revision(
@@ -257,40 +331,56 @@ class CaptureScanner:
                         created += 1
                     else:
                         replay += 1
+                    if scheduling is not None and result.status != "suppressed":
+                        if result.status in {"complete", "excluded", "coalesced"}:
+                            trusted_accounted.add(identifier)
+                            trusted_unresolved.pop(identifier, None)
+                            if result.status == "excluded":
+                                trusted_excluded.add(identifier)
+                        else:
+                            trusted_unresolved[identifier] = self.store.read_receipt(identifier)
             if (
                 not binding_failed_closed
                 and all(
-                    self.store.is_revision_accounted(accounting_truth[key])
+                    accounted(accounting_truth[key])
                     for key in binding_known
+                    if key in accounting_truth
                 )
             ):
                 try:
                     self.store.advance_scan_state(
                         binding=binding,
                         expected_version=state.state_version,
+                        expected_generation=generation,
                         hint=batch.next_hint,
                         last_scan_at=started_at,
                         lookback_started_at=window.start_at,
+                        source_cache_snapshot=(
+                            adapter.pending_metadata_snapshot(batch.next_hint)
+                            if callable(getattr(adapter, "pending_metadata_snapshot", None))
+                            else None
+                        ),
                     )
                 except ValueError as error:
                     if str(error) != "scan_state_conflict":
                         raise
                 else:
                     advanced += 1
+                self.store.complete_background_census(frozen_run.census_id)
 
         acknowledged = 0
         for path, marker in markers:
             if (
                 path in resolved_marker_paths
                 and marker.key in accounting_truth
-                and self.store.is_revision_accounted(accounting_truth[marker.key])
+                and accounted(accounting_truth[marker.key])
             ):
                 safe_unlink(path)
                 acknowledged += 1
 
         accounted = sum(
             key in accounting_truth
-            and self.store.is_revision_accounted(accounting_truth[key])
+            and accounted(accounting_truth[key])
             for key in known
         )
         quarantines = self.store.source_quarantine_count()

@@ -239,6 +239,9 @@ def test_runner_snapshot_io_is_bounded_without_changing_manual_mode(tmp_path, mo
         config.write_text(config.read_text(encoding="utf-8").replace(
             "mode: scanner_only", "mode: runner"
         ).replace("incremental_total_tokens: null", "incremental_total_tokens: 100000"), encoding="utf-8")
+        from agc_runtime.capture_maintenance import run_full_audit
+
+        assert run_full_audit(CaptureStore(paths), now=NOW).status == "healthy"
     original = CaptureStore.read_snapshot
     original_frozen = CaptureStore.frozen_revisions
     workers = []
@@ -260,8 +263,8 @@ def test_runner_snapshot_io_is_bounded_without_changing_manual_mode(tmp_path, mo
               runner.run_manual_backfill(authorization_digest=preparation.authorization_digest,
                                          max_items=1, now=RUN_AT))
     assert report.completed_count == report.observation_count == 1
-    assert workers and set(workers) == ({4} if background else {1})
-    assert frozen_workers and set(frozen_workers) == ({4} if background else {1})
+    assert workers == [] if background else set(workers) == {1}
+    assert frozen_workers == [] if background else set(frozen_workers) == {1}
 
 
 def test_manual_runner_collects_one_observation_and_settles_actual_usage(tmp_path: Path) -> None:
@@ -754,6 +757,10 @@ def _switch_to_runner_mode(
         ),
         encoding="utf-8",
     )
+    from agc_runtime.capture_maintenance import run_full_audit
+    from agc_runtime.capture_store import CaptureStore
+
+    assert run_full_audit(CaptureStore(paths), now=NOW).status == "healthy"
 
 
 def test_runner_mode_processes_latest_frozen_census_with_incremental_budget(

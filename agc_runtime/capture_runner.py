@@ -128,6 +128,7 @@ class CaptureRunner:
         self.adapters = tuple(adapters)
         self.extractor = extractor
         self.preparation = preparation
+        self.last_scheduling_view = None
 
     def _validate_authorization(self, digest: str) -> tuple[object, object]:
         if self.preparation is None:
@@ -445,14 +446,19 @@ class CaptureRunner:
             if str(error) != "active Capture runner lock exists":
                 raise
             started_ns = time.monotonic_ns()
-            snapshot = CaptureStore(self.paths).read_snapshot()
             if _background:
+                scheduling = CaptureStore(self.paths).read_background_scheduling_view(now=now)
+                self.last_scheduling_view = scheduling
                 run = max(
-                    snapshot.census_runs,
+                    scheduling.runs,
                     key=lambda item: (item.frozen_at, item.census_id),
                     default=None,
                 )
-            elif self.preparation is not None:
+                receipts = scheduling.receipts
+            else:
+                snapshot = CaptureStore(self.paths).read_snapshot()
+                receipts = snapshot.receipts
+            if not _background and self.preparation is not None:
                 run = next(
                     (
                         item
@@ -461,11 +467,11 @@ class CaptureRunner:
                     ),
                     None,
                 )
-            else:
+            elif not _background:
                 run = None
             keys = frozenset(run.revision_keys) if run is not None else frozenset()
             return replace(
-                self._empty_report(snapshot.receipts, keys, started_ns=started_ns),
+                self._empty_report(receipts, keys, started_ns=started_ns),
                 lease_contention_count=1,
             )
 
@@ -483,14 +489,21 @@ class CaptureRunner:
         # Background cycles must fit the scheduled worker deadline. Reuse the
         # bounded per-call reader; validation and lock ownership stay unchanged.
         read_workers = 4 if _background else 1
-        snapshot = store.read_snapshot(read_workers=read_workers)
         if _background:
+            recovery = store.recover_active_transactions(now=now)
+            if recovery.status == "capture_bootstrap_required":
+                raise RuntimeError("capture_bootstrap_required")
+            scheduling = store.read_background_scheduling_view(now=now)
+            self.last_scheduling_view = scheduling
             run = max(
-                snapshot.census_runs,
+                scheduling.runs,
                 key=lambda item: (item.frozen_at, item.census_id),
                 default=None,
             )
+            before_receipts = scheduling.receipts
         else:
+            snapshot = store.read_snapshot(read_workers=read_workers)
+            before_receipts = snapshot.receipts
             if self.preparation is None:
                 raise RuntimeError("capture_backfill_authorization_stale")
             run = next(
@@ -511,7 +524,7 @@ class CaptureRunner:
                 or run is None
             ):
                 return self._empty_report(
-                    snapshot.receipts, run_keys, started_ns=started_ns
+                    before_receipts, run_keys, started_ns=started_ns
                 )
             capture = current_config
             extractor_descriptor = self.extractor.describe()
@@ -525,7 +538,7 @@ class CaptureRunner:
         else:
             if current_config.paused:
                 return self._empty_report(
-                    snapshot.receipts, run_keys, started_ns=started_ns
+                    before_receipts, run_keys, started_ns=started_ns
                 )
             capture, extractor_descriptor = self._validate_authorization(
                 authorization_digest
@@ -544,21 +557,32 @@ class CaptureRunner:
             target_token_limit=capture.capsule.target_tokens,
             hard_token_limit=capture.capsule.max_tokens,
         )
-        store.recover_transactions(now=now)
-        snapshot = store.read_snapshot(read_workers=read_workers)
-        run = next(
-            item for item in snapshot.census_runs if item.census_id == run.census_id
-        )
-        revisions = {
-            item.key: item
-            for item in store.frozen_revisions(read_workers=read_workers)
-            if item.key in frozenset(run.revision_keys)
-        }
+        if _background:
+            revisions = {
+                item.key: item for item in scheduling.revisions
+                if item.key in run_keys
+            }
+            receipt_source = tuple(
+                item for item in scheduling.receipts
+                if item.receipt_id not in scheduling.active_receipt_ids
+            )
+        else:
+            store.recover_transactions(now=now)
+            snapshot = store.read_snapshot(read_workers=read_workers)
+            run = next(
+                item for item in snapshot.census_runs if item.census_id == run.census_id
+            )
+            revisions = {
+                item.key: item
+                for item in store.frozen_revisions(read_workers=read_workers)
+                if item.key in frozenset(run.revision_keys)
+            }
+            receipt_source = store.ready_revisions()
         ready = tuple(
             sorted(
                 (
                     item
-                    for item in store.ready_revisions()
+                    for item in receipt_source
                     if item.key in revisions and self._is_due(item, now)
                 ),
                 key=lambda item: (item.discovered_at, item.receipt_id),
@@ -607,11 +631,29 @@ class CaptureRunner:
             reservation = None
             try:
                 revision = revisions[current.key]
+                if _background:
+                    try:
+                        store.validate_background_selected(
+                            run_id=run.census_id,
+                            revision=revision,
+                            expected=current,
+                            lease=lease,
+                            excluded_task_ids=frozenset(capture.exclude.task_ids),
+                        )
+                    except (OSError, KeyError, TypeError, ValueError) as error:
+                        raise RuntimeError("capture_bootstrap_required") from error
                 if prepared.load_error is not None:
                     raise prepared.load_error
                 capsule_result = prepared.capsule_result
                 if capsule_result is None:
                     raise TypeError("capture_capsule_unavailable")
+                if _background:
+                    adapter = adapter_by_binding[(current.adapter_id, current.source_root_id)]
+                    fresh_capsule = adapter.load_capsule(revision, policy)
+                    if (fresh_capsule.source_fingerprint != capsule_result.source_fingerprint
+                            or fresh_capsule.capsule_hash != capsule_result.capsule_hash):
+                        raise RuntimeError("capture_bootstrap_required")
+                    capsule_result = fresh_capsule
                 if not capsule_has_durable_signal(capsule_result.capsule):
                     extracting = store.begin_extraction(
                         lease, capsule_result, extractor_descriptor, now=now
@@ -828,10 +870,20 @@ class CaptureRunner:
                 except (FileNotFoundError, OSError, ValueError):
                     pass
         charged = budget.snapshot().charged_tokens - before_charge
-        final_snapshot = store.read_snapshot(read_workers=read_workers)
+        if _background:
+            final_scheduling = store.read_background_scheduling_view(now=now)
+            attempted_ids = {item.receipt.receipt_id for item in selected}
+            final_receipts = (
+                *final_scheduling.receipts,
+                *(store.read_receipt(item) for item in sorted(attempted_ids)
+                  if item not in {receipt.receipt_id for receipt in final_scheduling.receipts}),
+            )
+        else:
+            final_snapshot = store.read_snapshot(read_workers=read_workers)
+            final_receipts = final_snapshot.receipts
         attempt_delta, status_deltas = self._attempt_and_status_deltas(
-            snapshot.receipts,
-            final_snapshot.receipts,
+            before_receipts,
+            final_receipts,
             frozenset(run.revision_keys),
         )
         return RunnerReport(
@@ -845,9 +897,9 @@ class CaptureRunner:
             observation_count,
             charged,
             0,
-            self._backlog_count(final_snapshot.receipts, frozenset(run.revision_keys)),
+            self._backlog_count(final_receipts, frozenset(run.revision_keys)),
             self._oldest_unresolved_at(
-                final_snapshot.receipts, frozenset(run.revision_keys)
+                final_receipts, frozenset(run.revision_keys)
             ),
             attempt_delta,
             status_deltas,

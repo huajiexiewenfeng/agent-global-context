@@ -20,7 +20,7 @@ from agc_runtime.capture_transaction import _flush_parent, atomic_write_bytes, a
 from agc_runtime.paths import MemoryPaths
 
 
-_PRIMARY_NAMESPACES = frozenset({"receipts", "observations", "reviews", "ledger", "census", "census-runs", "census-catalog", "tombstones", "quarantines", "conflicts", "indexes", "dirty", "journals", "staging", "leases", "scan-state", "budgets", "metrics-cleanup"})
+_PRIMARY_NAMESPACES = frozenset({"receipts", "observations", "reviews", "ledger", "census", "census-runs", "census-catalog", "tombstones", "quarantines", "conflicts", "indexes", "dirty", "journals", "staging", "leases", "scan-state", "source-cache", "budgets", "metrics-cleanup"})
 
 
 def _managed_target(paths: MemoryPaths, path: Path) -> str:

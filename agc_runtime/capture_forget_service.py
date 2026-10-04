@@ -33,8 +33,20 @@ _RUNTIME_PREFIXES = (
     ".runtime/capture/staging/",
     ".runtime/capture/leases/",
     ".runtime/capture/scan-state/",
+    ".runtime/capture/source-cache/",
     ".runtime/capture/budgets/",
 )
+
+
+def _invalidate_source_checkpoint(entries: dict[str, bytes]) -> dict[str, bytes]:
+    """Forget invalidates every derived source hint, even for another binding."""
+    return {
+        name: data for name, data in entries.items()
+        if not name.startswith((
+            ".runtime/capture/source-cache/",
+            ".runtime/capture/scan-state/",
+        ))
+    }
 
 
 def _failed(code: str, message: str) -> ToolResponse:
@@ -93,7 +105,7 @@ def _read_primary(paths: MemoryPaths) -> dict[str, bytes]:
         if not resolved.is_relative_to(capture_root):
             raise ValueError("Capture artifact escapes the managed root")
         relative_capture = resolved.relative_to(capture_root).as_posix()
-        if relative_capture in {".writer.lock", "cursor-hmac-key", "schema-version"}:
+        if relative_capture in {".writer.lock", "cursor-hmac-key", "schema-version", "source-generation.json", "active-workset.json", "active-workset-seal.json", "scheduling-view.json", "scheduling-view-seal.json"}:
             continue
         if relative_capture.startswith("forget-staging/"):
             continue
@@ -187,7 +199,7 @@ def _scrub_observation_runtime(entries: dict[str, bytes], observation_id: str) -
 
 def _updated_observation(entries: dict[str, bytes], observation_id: str) -> tuple[dict[str, bytes], str | None]:
     name = f".runtime/capture/observations/{observation_id}.json"
-    result = dict(entries)
+    result = _invalidate_source_checkpoint(entries)
     result.pop(f".runtime/capture/reviews/{observation_id}.json", None)
     observation: CollectedObservation | None = None
     if name in entries:
@@ -245,7 +257,7 @@ def _updated_observation(entries: dict[str, bytes], observation_id: str) -> tupl
 
 def _updated_revision(entries: dict[str, bytes], key: CaptureKey) -> dict[str, bytes]:
     receipt_id = receipt_id_for(key)
-    result = dict(entries)
+    result = _invalidate_source_checkpoint(entries)
     tombstone_name = f".runtime/capture/tombstones/{tombstone_id_for(key)}.json"
     target_observations: set[str] = set()
     observations: dict[str, CollectedObservation] = {}
@@ -553,6 +565,13 @@ def capture_forget(paths: MemoryPaths, request: dict[str, Any]) -> ToolResponse:
                         before.get(name) != after.get(name)
                         for name in set(before) | set(after)
                     )
+                    if primary_change_count:
+                        from agc_runtime.capture_maintenance import invalidate_locked
+                        from agc_runtime.capture_source_cache import source_generation_locked
+                        from agc_runtime.capture_store import CaptureStore
+
+                        invalidate_locked(CaptureStore(paths))
+                        source_generation_locked(paths.capture.root, invalidate=True)
                     tx.begin(primary_change_count + len(backup_updates) + int(cleanup_intent is not None))
                     _apply_files(tx, paths, before, after)
                     if cleanup_intent is not None:

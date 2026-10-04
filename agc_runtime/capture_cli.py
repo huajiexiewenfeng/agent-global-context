@@ -49,6 +49,10 @@ def _failed(
 
 
 def _parse(arguments: list[str]) -> tuple[str, Path, Any] | None:
+    if (len(arguments) == 4 and arguments[0] == "audit"
+            and arguments[1] == "--root" and arguments[2]
+            and arguments[3] == "--once"):
+        return "audit", Path(arguments[2]), None
     if (
         len(arguments) in {5, 7}
         and arguments[0] == "activation"
@@ -635,19 +639,22 @@ def _run_runner(
                 CaptureStore(paths),
                 adapters,
                 excluded_task_ids=capture.exclude.task_ids,
+                incremental=True,
             ).scan(run_started_at=now)
         extractor = CodexExtractor(
             executable=_extractor_command(capture.extractor.executable),
             explicit_model=capture.extractor.model,
         )
-        report = CaptureRunner(paths, adapters, extractor, None).run_once(
+        runner = CaptureRunner(paths, adapters, extractor, None)
+        report = runner.run_once(
             max_items=maximum,
             now=now,
         )
+        scheduling_view = runner.last_scheduling_view
     except RuntimeError as error:
         code = (
             str(error)
-            if str(error) in {"capture_extractor_unavailable"}
+            if str(error) in {"capture_extractor_unavailable", "capture_bootstrap_required"}
             else "capture_busy"
         )
         from agc_runtime.capture_extractor import CapabilityUnavailable
@@ -682,6 +689,12 @@ def _run_runner(
     }
     if scan is not None:
         data["scan"] = _scan_mapping(scan)
+    if scheduling_view is not None:
+        data["scheduling"] = {
+            "scope": scheduling_view.scope,
+            "audit_status": scheduling_view.audit_status,
+            "audit_completed_at": scheduling_view.audit_completed_at,
+        }
     return _emit(
         ToolResponse(tool=_TOOL, action=action, status="accepted", data=data),
         exit_code=0,
@@ -708,6 +721,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     if action == "probe":
         return _probe(paths)
+    if action == "audit":
+        from agc_runtime.capture_maintenance import run_full_audit
+
+        try:
+            result = run_full_audit(CaptureStore(paths), now=_utc_now())
+        except (OSError, RuntimeError, TypeError, ValueError):
+            return _failed("audit", "capture_audit_failed", "Capture audit could not complete", exit_code=1)
+        data = {
+            "scope": result.scope,
+            "completed_at": result.completed_at,
+            "valid_until": result.valid_until,
+            "input_generation": result.input_generation,
+            "diagnostics": list(result.diagnostics),
+            "next_action": result.next_action,
+        }
+        if result.status != "healthy":
+            return _failed("audit", result.status, "Capture audit did not establish a healthy baseline", exit_code=1, data=data)
+        return _emit(ToolResponse(tool=_TOOL, action="audit", status="accepted", data=data), exit_code=0)
     if action == "activation":
         evidence_path, consent_digest = mode
         return _activation(paths, evidence_path, consent_digest)

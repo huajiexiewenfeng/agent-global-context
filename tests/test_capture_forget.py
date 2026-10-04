@@ -317,6 +317,21 @@ def test_revision_capture_forget_leaves_only_content_free_suppression_tombstone(
     assert not list(paths.capture.indexes.glob("*.json"))
 
 
+def test_revision_forget_transactionally_invalidates_source_cache_and_checkpoint(tmp_path: Path):
+    paths, _store, _receipt, _observations = _populated(tmp_path)
+    cache = paths.capture.root / "source-cache" / "binding" / "snapshot.json"
+    cache.parent.mkdir(parents=True)
+    cache.write_text(json.dumps({"task_id": _key().task_id}), encoding="utf-8")
+    checkpoint = paths.capture.scan_state / "state-derived.json"
+    checkpoint.write_text(json.dumps({"hint": "snapshot"}), encoding="utf-8")
+
+    response = dispatch_write(paths, _request({"type": "revision", **_key().to_mapping()}))
+
+    assert response.status == "accepted", response
+    assert not cache.exists()
+    assert not checkpoint.exists()
+
+
 def test_revision_forget_rewrites_authoritative_census_run_and_every_backup(
     tmp_path: Path,
 ):

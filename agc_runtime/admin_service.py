@@ -570,6 +570,8 @@ def _preserve_during_restore(paths: MemoryPaths, path: Path) -> bool:
         or relative.startswith(".runtime/backups/")
         or relative.startswith(".runtime/tombstones/")
         or relative == ".runtime/capture/cursor-hmac-key"
+        or relative == ".runtime/capture/source-generation.json"
+        or relative == ".runtime/capture/.writer.lock"
     )
 
 
@@ -738,6 +740,11 @@ def _handle_restore(paths: MemoryPaths, request: dict[str, Any]) -> ToolResponse
                     str(error),
                 )
             snapshot = _current_replaceable_files(paths)
+            from agc_runtime.capture_maintenance import invalidate_locked
+            from agc_runtime.capture_source_cache import source_generation_locked
+
+            invalidate_locked(CaptureStore(paths))
+            source_generation_locked(paths.capture.root, invalidate=True)
             try:
                 _clear_replaceable_files(paths)
                 for _name, pure, text in prepared:
@@ -759,6 +766,7 @@ def _handle_restore(paths: MemoryPaths, request: dict[str, Any]) -> ToolResponse
                 catalog = rebuild_catalog(paths, acquire_lock=False)
             except BaseException:
                 _restore_file_snapshot(paths, snapshot)
+                invalidate_locked(CaptureStore(paths))
                 raise
 
     return ToolResponse(
