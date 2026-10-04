@@ -1,5 +1,39 @@
 # Capture extractor unavailable without Windows system proxy
 
+## 2026-10-03 local-I/O diagnosis after repeated deadlines
+
+- Current automatic worker started at 20:56:47 Asia/Shanghai. Nonblocking
+  py-spy dumps at 20:58:16 and a 40-second, 2-Hz sample from 20:58:54 found
+  scanner transaction recovery. All 79 sampled main-thread stacks were inside
+  recovery reading receipt/manifest/observation JSON; the other 79 samples were
+  the idle deadline watchdog. No sample errors; not a whole-cycle time share.
+- At 20:59:56, 21:01:02 and 21:02:55, the same worker was in Codex source
+  discovery (path resolution or source-file parsing), before extractor creation.
+  These samples establish local work before model invocation, not the exact
+  cause or timing breakdown of the previous killed cycle.
+- Read-only namespace inventory: 6,826 receipts, 4,042 indexes, 434 observations,
+  6,826 ledger objects, 1,993 Census runs; journals/staging both empty at sampling.
+- Source confirms scanner and Runner each call full recovery; healthy completed
+  manifests are read for validation and again for referenced IDs. Source adapter
+  validates but does not use scan hints to narrow files and returns no next hint;
+  it filters the seven-day window after source parsing. Full Runner snapshots and
+  Census validation add more history-sized work.
+- Isolated synthetic reproduction (10 completed receipts, no production data or
+  model call): 50 JSON reads across 30 unique paths: receipts 10, indexes 20,
+  observations 20; recovery report entirely zero. Raw output `a67f8e`.
+- Hypothesis: repeated history-sized local I/O leaves too little margin under
+  the existing cycle deadline. It is an evidenced bottleneck, not proof that
+  every timeout has the same cause or that a particular model is slow.
+- Next decision requested: define a bounded incremental hot path with a separate
+  full-integrity audit, preserving send-time exclusion/forget/source validation.
+  Do not implement a fourth unmeasured local speed tweak, skip validations,
+  delete history, extend timeouts or add a database without approved scope.
+- User approved defining the minimal incremental-processing plus independent
+  full-audit boundary before implementation. See
+  [boundary design](../../docs/superpowers/specs/2026-10-03-agc-incremental-capture-design.md).
+  The proposed 24-hour audit-validity policy still needs a decision; no new
+  production logic, configuration or schedule has been enabled.
+
 ## 2026-10-03 delivery closeout
 
 - flow_id: agc-capture-reliability-closeout
