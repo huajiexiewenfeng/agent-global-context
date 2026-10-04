@@ -104,22 +104,30 @@ def _issue(issues: list[dict[str, str]], path: Path, message: str) -> None:
 def _strict_decode_managed(paths: MemoryPaths, issues: list[dict[str, str]]) -> None:
     if not paths.root.exists():
         return
-    for path in sorted(paths.root.rglob("*")):
-        if not path.is_file():
-            continue
-        relative = str(path.relative_to(paths.root)).replace("\\", "/")
-        if relative.startswith(".runtime/locks/") or relative.startswith(
-            ".runtime/backups/"
-        ) or relative.startswith(".runtime/capture/") or relative.endswith(".tmp"):
-            continue
-        is_migration_text = relative.startswith(".runtime/migrations/")
-        if not is_migration_text and path.suffix.lower() not in _TEXT_SUFFIXES:
-            _issue(issues, path, "unsupported binary managed file")
-            continue
-        try:
-            strict_read_text(path)
-        except UnicodeDecodeError as error:
-            _issue(issues, path, f"invalid UTF-8: {error}")
+    excluded = {".runtime/locks", ".runtime/backups", ".runtime/capture"}
+    for directory, children, filenames in os.walk(paths.root, followlinks=False):
+        base = Path(directory)
+        # These namespaces were already excluded from this generic text pass.
+        # Capture's own validator and the archive safety walk remain separate.
+        children[:] = sorted(
+            child for child in children
+            if (base / child).relative_to(paths.root).as_posix() not in excluded
+        )
+        for name in sorted(filenames):
+            path = base / name
+            if not path.is_file():
+                continue
+            relative = path.relative_to(paths.root).as_posix()
+            if relative.endswith(".tmp"):
+                continue
+            is_migration_text = relative.startswith(".runtime/migrations/")
+            if not is_migration_text and path.suffix.lower() not in _TEXT_SUFFIXES:
+                _issue(issues, path, "unsupported binary managed file")
+                continue
+            try:
+                strict_read_text(path)
+            except UnicodeDecodeError as error:
+                _issue(issues, path, f"invalid UTF-8: {error}")
 
 
 def _validate_memories(

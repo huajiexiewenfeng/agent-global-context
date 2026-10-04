@@ -332,8 +332,9 @@ def test_revision_forget_transactionally_invalidates_source_cache_and_checkpoint
     assert not checkpoint.exists()
 
 
+@pytest.mark.parametrize("extra_members", [0, 5000])
 def test_revision_forget_rewrites_authoritative_census_run_and_every_backup(
-    tmp_path: Path,
+    tmp_path: Path, extra_members: int,
 ):
     paths, store, receipt, _observations = _populated(tmp_path)
     target = _revision(_key())
@@ -344,6 +345,17 @@ def test_revision_forget_rewrites_authoritative_census_run_and_every_backup(
     census = _freeze_census(store, (target, remaining))
     assert (paths.capture.census_catalog / "active.json").is_file()
     first_backup = Path(dispatch_admin(paths, {"action": "backup"}).data["backup_path"])
+    extra = {
+        f"contexts/unrelated-{index:064x}.txt": f"Unrelated evidence {index}\n".encode()
+        for index in range(extra_members)
+    }
+    if extra:
+        entries, _manifest_value = managed_backup.read_verified_archive(first_backup)
+        entries.update(extra)
+        files = list(entries.items())
+        first_backup.write_bytes(
+            managed_backup.archive_bytes(files, managed_backup.manifest(files))
+        )
     nested_backup = paths.backups / "nested" / "managed-copy.zip"
     nested_backup.parent.mkdir(parents=True)
     shutil.copy2(first_backup, nested_backup)
@@ -367,6 +379,7 @@ def test_revision_forget_rewrites_authoritative_census_run_and_every_backup(
     needles = (_key().task_id, _key().revision_id, receipt.receipt_id)
     for backup in (first_backup, nested_backup):
         entries, _manifest_value = managed_backup.read_verified_archive(backup)
+        assert all(entries[name] == value for name, value in extra.items())
         assert all(
             all(needle not in name for needle in needles)
             for name in entries

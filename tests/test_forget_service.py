@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from agc_runtime import forget_transaction
+from agc_runtime import forget_transaction, managed_backup
 from agc_runtime.catalog import rebuild_catalog
 from agc_runtime.capture_transaction import safe_unlink as durable_unlink
 from agc_runtime.contracts import SourceKey
@@ -356,7 +356,9 @@ def test_formal_forget_rejects_unrestorable_rebuilt_archive_before_mutation(
             archive.writestr("highly-compressible.txt", b"0" * (1024 * 1024))
         else:
             suffix = "x" * 220
-            for index in range(4095):
+            # Stay within the member-count bound, but exceed the current
+            # manifest bound after Forget rebuilds this legacy archive.
+            for index in range(managed_backup._MAX_ARCHIVE_FILES - 1):
                 archive.writestr(f"contexts/{index:04d}-{suffix}.txt", b"")
     before = backup_zip.read_bytes()
 

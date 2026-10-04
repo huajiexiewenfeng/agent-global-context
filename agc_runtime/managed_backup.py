@@ -13,6 +13,7 @@ import re
 import stat
 import tempfile
 import zipfile
+from collections.abc import Iterator
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -43,10 +44,12 @@ _CENSUS_NAME = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 _CENSUS_RUN_ID = re.compile(r"^census-[0-9a-f]{32}$")
 _CONFLICT_NAME = re.compile(r"^source-[0-9a-f]{64}$")
 _DIAGNOSTIC_NAME = re.compile(r"^[A-Za-z0-9._-]{1,160}$")
-_MAX_ARCHIVE_FILES = 4096
+# Bound metadata separately from payload bytes: routine Capture history can
+# contain tens of thousands of small receipts, ledgers and Census revisions.
+_MAX_ARCHIVE_FILES = 32768
 _MAX_FILE_SIZE = 16 * 1024 * 1024
 _MAX_TOTAL_SIZE = 64 * 1024 * 1024
-_MAX_MANIFEST_SIZE = 1024 * 1024
+_MAX_MANIFEST_SIZE = 8 * 1024 * 1024
 _MAX_COMPRESSION_RATIO = 200
 _MAX_ARCHIVE_SIZE = _MAX_TOTAL_SIZE + _MAX_MANIFEST_SIZE + (2 * 1024 * 1024)
 _RUNTIME_EXCLUDED_ROOTS = frozenset({
@@ -132,21 +135,38 @@ def _validate_backup_files_for_write(files: list[tuple[str, bytes]]) -> None:
             raise ValueError("backup total size exceeds safe limit")
 
 
+def _walk_regular_backup_files(root: Path) -> Iterator[tuple[Path, os.stat_result]]:
+    """Inspect every entry without repeating Path.stat for cold Census members.
+
+    Even excluded namespaces are safety-walked: links/reparse points there
+    must still fail closed. On Windows, DirEntry provides cached metadata
+    from directory enumeration instead of a separate syscall per check.
+    """
+    pending = [root]
+    while pending:
+        directory = pending.pop()
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                metadata = entry.stat(follow_symlinks=False)
+                reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+                if stat.S_ISLNK(metadata.st_mode) or (
+                    getattr(metadata, "st_file_attributes", 0) & reparse_flag
+                ):
+                    raise ValueError("managed backup path is a symbolic link or reparse point")
+                if stat.S_ISDIR(metadata.st_mode):
+                    pending.append(Path(entry.path))
+                elif stat.S_ISREG(metadata.st_mode):
+                    yield Path(entry.path), metadata
+
+
 def backup_files(paths: MemoryPaths) -> list[tuple[str, bytes]]:
     if not paths.root.exists():
         return []
     files: list[tuple[str, bytes]] = []
     total = 0
     root = paths.root.resolve()
-    for path in paths.root.rglob("*"):
-        if _is_link_or_reparse(path):
-            raise ValueError("managed backup path is a symbolic link or reparse point")
-        if not path.is_file():
-            continue
-        resolved = path.resolve()
-        if resolved == root or not resolved.is_relative_to(root):
-            raise ValueError("managed backup path escapes the memory root")
-        relative = resolved.relative_to(root).as_posix()
+    for path, metadata in _walk_regular_backup_files(paths.root):
+        relative = path.relative_to(paths.root).as_posix()
         if _runtime_name_excluded(relative) or _has_temporary_component(relative):
             continue
         if not _capture_name_allowed(relative):
@@ -155,9 +175,13 @@ def backup_files(paths: MemoryPaths) -> list[tuple[str, bytes]]:
             ".runtime/capture/census/",
             ".runtime/capture/census-runs/",
         )):
-            if resolved.stat().st_size > _MAX_FILE_SIZE:
+            if metadata.st_size > _MAX_FILE_SIZE:
                 raise ValueError("backup file size exceeds safe limit")
             continue
+        resolved = path.resolve()
+        if resolved == root or not resolved.is_relative_to(root):
+            raise ValueError("managed backup path escapes the memory root")
+        relative = resolved.relative_to(root).as_posix()
         if len(files) >= _MAX_ARCHIVE_FILES:
             raise ValueError("backup file count exceeds safe limit")
         size = resolved.stat().st_size

@@ -199,6 +199,29 @@ def test_restore_into_fresh_root_recreates_empty_capture_layout(tmp_path: Path):
     assert not target_paths.capture.cursor_hmac_key.exists()
 
 
+def test_backup_uses_cached_metadata_for_cold_census(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    paths, store, _observation_value = _populated(tmp_path)
+    census = _freeze_census(store, (_revision(),))
+    store.ensure_census_catalog()
+    cold_root = paths.capture.root / "census-runs" / census.census_id / "members"
+    cold_stats: list[Path] = []
+    original_stat = Path.stat
+
+    def counted_stat(path: Path, *args, **kwargs):
+        if path.is_relative_to(cold_root) and path.suffix == ".json":
+            cold_stats.append(path)
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", counted_stat)
+    files = dict(managed_backup.backup_files(paths))
+
+    canonical = f".runtime/capture/census/{receipt_id_for(_revision().key)}.json"
+    assert json.loads(files[canonical]) == _revision().to_mapping()
+    assert cold_stats == []
+
+
 def test_restore_never_reuses_pre_restore_source_cache_or_scan_state(tmp_path: Path):
     paths, _store, _observation = _populated(tmp_path)
     backup = dispatch_admin(paths, {"action": "backup"})
@@ -775,11 +798,16 @@ def test_restore_failure_rolls_back_non_utf8_snapshot_byte_exact(
     assert admin_service._current_replaceable_files(paths) == before
 
 
-def test_backup_rejects_symbolic_link_before_reading_target(tmp_path: Path):
+@pytest.mark.parametrize(
+    "relative", ["contexts", ".runtime/backups", ".runtime/capture/census-runs/cold/members"]
+)
+def test_backup_rejects_symbolic_link_before_reading_target(tmp_path: Path, relative: str):
     paths, _store, _observation_value = _populated(tmp_path)
     outside = tmp_path / "outside.txt"
     outside.write_text("outside secret", encoding="utf-8")
-    link = paths.contexts / "escape.txt"
+    link_parent = paths.root / relative
+    link_parent.mkdir(parents=True, exist_ok=True)
+    link = link_parent / "escape.txt"
     try:
         link.symlink_to(outside)
     except (OSError, NotImplementedError):
@@ -788,7 +816,7 @@ def test_backup_rejects_symbolic_link_before_reading_target(tmp_path: Path):
         outside_directory = tmp_path / "outside-directory"
         outside_directory.mkdir()
         (outside_directory / "secret.txt").write_text("outside secret", encoding="utf-8")
-        link = paths.contexts / "escape-directory"
+        link = link_parent / "escape-directory"
         result = subprocess.run(
             ["cmd", "/c", "mklink", "/J", str(link), str(outside_directory)],
             capture_output=True,
